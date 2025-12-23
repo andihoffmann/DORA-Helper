@@ -1,0 +1,12 @@
+{
+  "addons": {
+    "dora@lib4ri.ch": {
+      "updates": [
+        {
+          "version": "2.15",
+          "update_link": "https://github.com/andihoffmann/DORA-Helper/edit/main/dora-helper_2.15.xpi"
+        }
+      ]
+    }
+  }
+}
