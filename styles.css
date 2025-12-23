@@ -1,0 +1,173 @@
+/* ==========================================================================
+   1. MAIN BUTTON (Neben DOI)
+   ========================================================================== */
+.dora-helper-button {
+    background-color: #0073e6;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+    margin-left: 10px;
+    font-family: sans-serif;
+    transition: background 0.2s;
+}
+.dora-helper-button:hover { background-color: #005bb5; }
+
+/* ==========================================================================
+   2. STICKY INFO BOX (Design)
+   ========================================================================== */
+/* Positionierung erfolgt via JS, hier ist das Aussehen */
+#dora-result-box {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #333;
+    line-height: 1.5;
+}
+
+/* Header */
+.dora-meta-header {
+    border-bottom: 1px solid #edf2f7;
+    padding-bottom: 10px;
+    margin-bottom: 15px;
+}
+.dora-meta-title { font-weight: 700; font-size: 1.1em; color: #1a202c; margin-bottom: 4px; }
+.dora-meta-journal { color: #718096; font-size: 0.9em; }
+
+/* Badges */
+.dora-badge {
+    display: inline-flex; align-items: center; padding: 3px 10px;
+    border-radius: 9999px; font-size: 0.8em; font-weight: 700;
+    margin-bottom: 6px; margin-right: 4px; text-transform: uppercase;
+}
+.badge-green  { background: #def7ec; color: #03543f; border: 1px solid #bcf0da; }
+.badge-gold   { background: #fdf6b2; color: #723b13; border: 1px solid #fce96a; }
+.badge-hybrid { background: #fff8e1; color: #b45309; border: 1px solid #fcd34d; } /* ORANGE */
+.badge-red    { background: #fde8e8; color: #9b1c1c; border: 1px solid #fbd5d5; }
+.badge-blue   { background: #e1effe; color: #1e429f; border: 1px solid #c3ddfd; }
+.badge-gray   { background: #f3f4f6; color: #374151; border: 1px solid #d1d5db; }
+
+/* ==========================================================================
+   3. ACTION BUTTONS (Innerhalb der Box)
+   ========================================================================== */
+.dora-btn-container {
+    display: flex; flex-direction: column; gap: 8px;
+    margin-top: 12px; padding-top: 10px; border-top: 1px solid #f1f5f9;
+}
+
+.dora-box-btn {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; padding: 10px 12px; /* Etwas größer für bessere Klickbarkeit */
+    border-radius: 5px; font-size: 0.95em; font-weight: 600;
+    text-decoration: none; cursor: pointer; border: 1px solid transparent;
+    box-sizing: border-box; transition: all 0.2s;
+}
+
+/* ORANGE HYBRID BUTTON */
+.btn-hybrid-action {
+    background-color: #f97316; /* Leuchtendes Orange */
+    color: white !important;   /* Text Weiß erzwingen */
+    border: 1px solid #ea580c;
+    box-shadow: 0 2px 4px rgba(249, 115, 22, 0.3);
+}
+.btn-hybrid-action:hover {
+    background-color: #ea580c;
+    box-shadow: 0 4px 6px rgba(249, 115, 22, 0.4);
+}
+
+/* STANDARD BUTTONS (PDF, etc.) */
+.btn-secondary {
+    background-color: #f8fafc; color: #475569; border: 1px solid #cbd5e0;
+}
+.btn-secondary:hover {
+    background-color: #f1f5f9; color: #1e293b; border-color: #94a3b8;
+}
+
+/* ==========================================================================
+   4. KEYWORD MANAGER
+   ========================================================================== */
+#dora-keyword-manager {
+    border: 1px solid #e2e8f0; background: #f8fafc;
+    padding: 12px; margin-bottom: 15px; border-radius: 6px;
+    font-family: sans-serif;
+}
+
+#dora-keyword-list { list-style: none; padding: 0; margin: 10px 0 0 0; }
+
+.dora-keyword-item {
+    background: #f9f9f9; border: 1px solid #e2e8f0;
+    margin-bottom: 6px; padding: 0; /* Padding innen regeln */
+    display: flex; align-items: stretch; border-radius: 4px; overflow: hidden;
+}
+
+/* Editierbares Feld */
+.dora-keyword-input {
+    flex-grow: 1; border: none; background: #fff;
+    padding: 8px 10px; font-size: 1em; color: #333;
+    font-family: inherit; cursor: text;
+}
+.dora-keyword-input:focus {
+    outline: none; box-shadow: inset 0 0 0 2px #0073e6;
+}
+
+/* Der Griff */
+.dora-drag-handle {
+    width: 40px; display: flex; align-items: center; justify-content: center;
+    background: #eee; color: #999; cursor: grab; font-size: 1.4em;
+    border-left: 1px solid #ddd; user-select: none;
+}
+.dora-drag-handle:hover { background: #e2e2e2; color: #555; }
+.dora-drag-handle:active { cursor: grabbing; background: #ccc; }
+
+.original-keywords-hidden .tag-list { opacity: 0.3; pointer-events: none; filter: grayscale(100%); }
+
+/* KEYWORD MANAGER */
+#dora-keyword-list { list-style: none; padding: 0; margin: 10px 0 0 0; }
+
+.dora-keyword-item {
+    background: #f9f9f9;
+    border: 1px solid #e2e8f0; /* Standard Rand */
+    margin-bottom: 6px;
+    padding: 0;
+    display: flex;
+    align-items: stretch;
+    border-radius: 4px;
+    transition: all 0.1s; /* Weicher Übergang */
+    position: relative;
+}
+
+/* Neuer Drag-Effekt: Linie statt Rahmen */
+.dora-keyword-item.drop-target-top {
+    border-top: 3px solid #0073e6 !important;
+    margin-top: 4px; /* Ausgleich damit es nicht hüpft */
+}
+
+.dora-keyword-item.drop-target-bottom {
+    border-bottom: 3px solid #0073e6 !important;
+    margin-bottom: 4px; 
+}
+
+/* Das Element, das gerade gezogen wird (etwas transparenter) */
+.dora-keyword-item.is-dragging {
+    opacity: 0.4;
+    background: #eef;
+}
+
+/* ... Input und Handle Styles bleiben wie vorher ... */
+.dora-keyword-input {
+    flex-grow: 1; border: none; background: #fff;
+    padding: 8px 10px; font-size: 1em; color: #333;
+    font-family: inherit; cursor: text;
+}
+.dora-keyword-input:focus {
+    outline: none; box-shadow: inset 0 0 0 2px #0073e6;
+}
+.dora-drag-handle {
+    width: 40px; display: flex; align-items: center; justify-content: center;
+    background: #eee; color: #999; cursor: grab; font-size: 1.4em;
+    border-left: 1px solid #ddd; user-select: none;
+}
+.dora-drag-handle:hover { background: #e2e2e2; color: #555; }
+.dora-drag-handle:active { cursor: grabbing; background: #ccc; }
+
+.original-keywords-hidden .tag-list { opacity: 0.3; pointer-events: none; filter: grayscale(100%); }

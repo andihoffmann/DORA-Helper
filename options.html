@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Dora Helper Einstellungen</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; width: 400px; }
+    h2 { color: #0073e6; margin-top: 0; }
+    textarea { width: 100%; height: 300px; font-family: monospace; border: 1px solid #ccc; padding: 5px; }
+    button { background: #0073e6; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; font-weight: bold; margin-top: 10px; }
+    button:hover { background: #005bb5; }
+    #status { margin-left: 10px; color: green; display: none; }
+    .hint { font-size: 0.85em; color: #666; margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+  <h2>Keyword Ausnahmen</h2>
+  <div class="hint">
+    Format: <code>suchwort -> Ersetzung</code><br>
+    Ein Eintrag pro Zeile. Groß-/Kleinschreibung links ist egal.
+  </div>
+  
+  <textarea id="exceptions"></textarea>
+  
+  <br>
+  <button id="save">Speichern</button>
+  <span id="status">Gespeichert!</span>
+
+  <script src="options.js"></script>
+</body>
+</html>

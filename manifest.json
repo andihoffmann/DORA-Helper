@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "Dora Lib4ri Assistant",
+  "version": "2.13",
+  "description": "Metadaten-Check, Auto-Fetch und Smart Keyword Manager für Dora.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "*://*.dora.lib4ri.ch/*",
+    "https://api.unpaywall.org/*",
+    "https://api.crossref.org/*"
+  ],
+  
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "dora@lib4ri.ch",
+      "strict_min_version": "115.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  },
+
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+
+  "background": {
+    "scripts": ["background.js"]
+  },
+  
+  "icons": {
+    "48": "icons/logo-48.png",
+    "128": "icons/logo-128.png"
+  },
+  
+  "action": {
+    "default_icon": {
+      "16": "icons/logo-16.png",
+      "32": "icons/logo-32.png"
+    }
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["*://*.dora.lib4ri.ch/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"]
+    }
+  ]
+}
