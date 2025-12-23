@@ -3,10 +3,11 @@
     "dora@lib4ri.ch": {
       "updates": [
         {
-          "version": "2.15",
-          "update_link": "https://github.com/andihoffmann/DORA-Helper/edit/main/dora-helper_2.15.xpi"
+          "version": "2.16",
+          "update_link": "https://github.com/andihoffmann/DORA-Helper/edit/main/dora-helper_2.16.xpi"
         }
       ]
     }
   }
+
 }
