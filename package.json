@@ -1,0 +1,27 @@
+{
+  "name": "dora-helper",
+  "version": "2.17.0",
+  "description": "Metadaten-Check, Auto-Fetch und Smart Keyword Manager für Dora.",
+  "main": "background.js",
+  "scripts": {
+    "start": "web-ext run --start-url \"https://www.dora.lib4ri.ch\"",
+    "build": "web-ext build --overwrite-dest",
+    "lint": "web-ext lint"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andihoffmann/DORA-Helper.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/andihoffmann/DORA-Helper/issues"
+  },
+  "homepage": "https://github.com/andihoffmann/DORA-Helper#readme",
+  "devDependencies": {
+    "copyfiles": "^2.4.1",
+    "web-ext": "^9.2.0"
+  }
+}

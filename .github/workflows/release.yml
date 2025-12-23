@@ -1,0 +1,40 @@
+name: Sign & Release Firefox Extension
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  sign-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Install dependencies
+        run: npm install
+
+      # Baut und signiert das Add-on via Mozilla API
+      - name: Build and Sign
+        id: web-ext-sign
+        uses: mozilla/web-ext-sign-action@v0
+        with:
+          jwt-issuer: ${{ secrets.AMO_JWT_ISSUER }}
+          jwt-secret: ${{ secrets.AMO_JWT_SECRET }}
+          channel: 'unlisted'  # Wichtig für self-hosted (signiert, aber nicht im Store)
+          extension-id: 'dora@lib4ri.ch'
+          timeout: 600000 # Erhöht Timeout auf 10 Min (manchmal ist Mozilla langsam)
+
+      # Lädt die fertige .xpi Datei direkt in dein GitHub Release
+      - name: Upload Signed XPI to Release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ${{ steps.web-ext-sign.outputs.xpi_path }}
+          asset_name: dora-helper-signed.xpi
+          tag: ${{ github.ref }}

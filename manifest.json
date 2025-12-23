@@ -14,7 +14,7 @@
     "gecko": {
       "id": "dora@lib4ri.ch",
       "strict_min_version": "115.0",
-      "update_url": "https://github.com/andihoffmann/DORA-Helper/blob/main/updates.json",
+      "update_url": "https://raw.githubusercontent.com/andihoffmann/DORA-Helper/refs/heads/main/updates.json",
       "data_collection_permissions": {
          "required": ["none"]
       }
