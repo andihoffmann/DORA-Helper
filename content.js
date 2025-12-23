@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.8 (Mozilla Validator Safe: No innerHTML)
+// Version: 2.13 (Mozilla Validator Safe: No innerHTML)
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -37,6 +37,8 @@ function scanAndInject() {
     if (topicContainer && !document.getElementById('dora-keyword-manager')) {
         injectKeywordManager(topicContainer);
     }
+
+    validateForm();
 }
 
 function findKeywordContainer() {
@@ -438,4 +440,274 @@ function formatKeyword(text) {
     let out = text.toLowerCase().trim();
     cachedExceptions.forEach(ex => { out = out.replace(ex.regex, ex.replacement); });
     return out;
+}
+
+// --- VALIDATION ---
+function validateForm() {
+    const getField = (labelPart) => {
+        const labels = document.querySelectorAll('label');
+        for (const l of labels) {
+            if (l.innerText.toLowerCase().includes(labelPart.toLowerCase())) {
+                const id = l.getAttribute('for');
+                if (id) {
+                    const el = document.getElementById(id);
+                    if (el) return el;
+                }
+                // Try finding input in the same form-item container
+                const container = l.closest('.form-item') || l.parentNode;
+                if (container) {
+                    const input = container.querySelector('input:not([type="hidden"]), select, textarea');
+                    if (input) return input;
+                }
+            }
+        }
+        return null;
+    };
+
+    const statusEl = getField('Publication Status');
+    const volumeEl = getField('Volume');
+    const startPageEl = getField('Start Page');
+    const endPageEl = getField('End Page');
+    const titleEl = getField('Article Title') || getField('Title');
+
+    // Attach listeners for real-time validation
+    const attachListener = (el) => {
+        if (!el) return;
+        if (!el.dataset.doraValidatorAttached) {
+            el.addEventListener('input', validateForm);
+            el.addEventListener('change', validateForm);
+            el.dataset.doraValidatorAttached = "true";
+        }
+        // Special handling for CKEditor
+        if (el.classList.contains('ckeditor-processed')) {
+            const ckeId = 'cke_' + el.id;
+            const cke = document.getElementById(ckeId);
+            if (cke) {
+                const iframe = cke.querySelector('iframe');
+                if (iframe && iframe.contentDocument) {
+                    if (!iframe.dataset.doraValidatorAttached) {
+                        const body = iframe.contentDocument.body;
+                        if (body) {
+                            body.addEventListener('input', validateForm);
+                            body.addEventListener('keyup', validateForm);
+                            body.addEventListener('blur', validateForm);
+                            iframe.dataset.doraValidatorAttached = "true";
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    [statusEl, volumeEl, startPageEl, endPageEl, titleEl].forEach(el => attachListener(el));
+
+    // Rule 1: Volume required if Published
+    if (statusEl && volumeEl) {
+        let statusText = statusEl.value;
+        if (statusEl.tagName === 'SELECT') {
+             statusText = statusEl.options[statusEl.selectedIndex]?.text || '';
+        }
+
+        if (statusText.toLowerCase().includes('published')) {
+            if (!volumeEl.value.trim()) {
+                markError(volumeEl, true, 'Volume ist bei "Published" Pflicht.');
+            } else {
+                markError(volumeEl, false);
+            }
+        } else {
+            markError(volumeEl, false);
+        }
+    }
+
+    // Rule 2: Start Page needs (X pp.) if End Page empty
+    if (startPageEl && endPageEl) {
+        const startVal = startPageEl.value.trim();
+        const endVal = endPageEl.value.trim();
+
+        if (startVal && !endVal) {
+            const ppPattern = /\(\d+\s*pp\.?\)/i;
+            if (!ppPattern.test(startVal)) {
+                markError(startPageEl, true, 'Wenn End Page leer ist, muss hier die Seitenzahl stehen (z.B. "12 (5 pp.)").');
+            } else {
+                markError(startPageEl, false);
+            }
+        } else {
+            markError(startPageEl, false);
+        }
+    }
+
+    // Rule 3: Title should be Sentence case
+    if (titleEl) {
+        let val = titleEl.value.trim();
+
+        // Try reading from CKEditor if available
+        if (titleEl.classList.contains('ckeditor-processed')) {
+             const cke = document.getElementById('cke_' + titleEl.id);
+             if (cke) {
+                 const iframe = cke.querySelector('iframe');
+                 if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
+                     // Use text content from editor for validation
+                     const editorText = iframe.contentDocument.body.innerText.trim();
+                     if (editorText) val = editorText;
+                 }
+             }
+        }
+
+        if (val) {
+            const words = val.split(/\s+/);
+            if (words.length > 1) {
+                const stopWords = ['And', 'Or', 'But', 'The', 'A', 'An', 'In', 'On', 'Of', 'For', 'To', 'At', 'By', 'With'];
+                // Check middle words (exclude first)
+                const middleWords = words.slice(1);
+
+                // 1. Check for capitalized stop words (strong indicator of Title Case)
+                const hasCapStopWord = middleWords.some(w => {
+                    const cleanW = w.replace(/[^\w]/g, ''); // remove punctuation
+                    return stopWords.includes(cleanW);
+                });
+
+                // 2. Check ratio of capitalized words (excluding ALL CAPS acronyms)
+                const mixedCaseCapWords = middleWords.filter(w => /^[A-Z][a-z]+/.test(w));
+                const ratio = mixedCaseCapWords.length / middleWords.length;
+
+                if (hasCapStopWord) {
+                    markError(titleEl, true, 'Titel enthält großgeschriebene Stoppwörter (bitte Sentence case verwenden).');
+                } else if (mixedCaseCapWords.length > 1 && ratio > 0.6) {
+                    markError(titleEl, true, 'Titel scheint Title Case zu sein (bitte Sentence case verwenden).');
+                } else {
+                    markError(titleEl, false);
+                }
+            } else {
+                markError(titleEl, false);
+            }
+        } else {
+            markError(titleEl, false);
+        }
+    }
+
+    // Rule 4: Author Table Validation
+    validateAuthorRows();
+}
+
+function validateAuthorRows() {
+    // 1. Specific Islandora Fieldpanel Logic
+    const authorsContainer = document.querySelector('.form-item-authors');
+    if (authorsContainer) {
+        const panes = authorsContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
+        panes.forEach(pane => {
+            const nameInput = pane.querySelector('input[type="text"][name$="[valName]"]');
+            const deptInput = pane.querySelector('input[type="text"][name$="[affiliation]"]');
+
+            if (nameInput && deptInput) {
+                // Attach listeners
+                if (!nameInput.dataset.doraValidatorAttached) {
+                    nameInput.addEventListener('input', validateForm);
+                    nameInput.dataset.doraValidatorAttached = "true";
+                }
+                if (!deptInput.dataset.doraValidatorAttached) {
+                    deptInput.addEventListener('input', validateForm);
+                    deptInput.addEventListener('change', validateForm);
+                    deptInput.dataset.doraValidatorAttached = "true";
+                }
+
+                const nameVal = nameInput.value.trim();
+                const deptVal = deptInput.value.trim();
+
+                // Rule 4a: Check Name content
+                if (/nomatch/i.test(nameVal) || /4ri/i.test(nameVal)) {
+                    markError(nameInput, true, 'Darf nicht "nomatch" oder "4RI" enthalten.');
+                } else {
+                    markError(nameInput, false);
+                }
+
+                // Rule 4b: Dependency
+                if (nameVal) {
+                    if (!deptVal || deptVal === '_none' || deptVal === '- Select -') {
+                        markError(deptInput, true, 'Affiliation/Department ist erforderlich.');
+                    } else {
+                        markError(deptInput, false);
+                    }
+                } else {
+                    markError(deptInput, false);
+                }
+            }
+        });
+    }
+
+    // 2. Fallback / Generic Table Logic (for other forms)
+    const tables = document.querySelectorAll('table');
+    tables.forEach(table => {
+        // Find headers
+        const headers = Array.from(table.querySelectorAll('thead th, tr th')).map(th => th.innerText.trim().toLowerCase());
+
+        // Locate columns
+        const nameIdx = headers.findIndex(h => h.includes('standardized form of name'));
+        const deptIdx = headers.findIndex(h => h.includes('department') || h.includes('affiliation'));
+
+        if (nameIdx !== -1 && deptIdx !== -1) {
+            const rows = table.querySelectorAll('tbody tr');
+            rows.forEach(row => {
+                const cells = row.querySelectorAll('td');
+                if (cells.length > Math.max(nameIdx, deptIdx)) {
+                    const nameInput = cells[nameIdx].querySelector('input[type="text"]');
+                    const deptInput = cells[deptIdx].querySelector('input, select');
+
+                    if (nameInput && deptInput && !nameInput.dataset.doraValidatorAttached) {
+                         // Avoid double binding if handled by specific logic above
+                         // (Though specific logic targets panes, this targets generic tables)
+                         // We can just re-bind or check.
+                         // For safety, we just run the logic.
+
+                         if (!nameInput.dataset.doraValidatorAttached) {
+                            nameInput.addEventListener('input', validateForm);
+                            nameInput.dataset.doraValidatorAttached = "true";
+                        }
+                        if (!deptInput.dataset.doraValidatorAttached) {
+                            deptInput.addEventListener('input', validateForm);
+                            deptInput.addEventListener('change', validateForm);
+                            deptInput.dataset.doraValidatorAttached = "true";
+                        }
+
+                        const nameVal = nameInput.value.trim();
+                        const deptVal = deptInput.value.trim();
+
+                        if (/nomatch/i.test(nameVal) || /4ri/i.test(nameVal)) {
+                            markError(nameInput, true, 'Darf nicht "nomatch" oder "4RI" enthalten.');
+                        } else {
+                            markError(nameInput, false);
+                        }
+
+                        if (nameVal) {
+                            if (!deptVal || deptVal === '_none' || deptVal === '- Select -') {
+                                markError(deptInput, true, 'Affiliation/Department ist erforderlich.');
+                            } else {
+                                markError(deptInput, false);
+                            }
+                        } else {
+                            markError(deptInput, false);
+                        }
+                    }
+                }
+            });
+        }
+    });
+}
+
+function markError(el, isError, msg = '') {
+    let target = el;
+    // Handle CKEditor visual target
+    if (el.classList.contains('ckeditor-processed')) {
+        const cke = document.getElementById('cke_' + el.id);
+        if (cke) target = cke;
+    }
+
+    if (isError) {
+        target.style.border = '2px solid #e53e3e';
+        if (target === el) target.style.backgroundColor = '#fff5f5'; // Only color bg if it's the input
+        target.title = msg;
+    } else {
+        target.style.border = '';
+        if (target === el) target.style.backgroundColor = '';
+        target.title = '';
+    }
 }
