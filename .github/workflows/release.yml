@@ -19,19 +19,16 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # Schritt 1: Signieren (nutzt direkt dein installiertes web-ext)
+      # Schritt 1: Signieren (Ohne --id Flag!)
       - name: Sign Extension
         run: |
           npx web-ext sign \
             --api-key=${{ secrets.AMO_JWT_ISSUER }} \
             --api-secret=${{ secrets.AMO_JWT_SECRET }} \
             --channel=unlisted \
-            --id="dora@lib4ri.ch" \
             --timeout=600000
 
-      # Schritt 2: Datei umbenennen (damit wir den Namen kennen)
-      # web-ext erzeugt lange Namen wie 'dora_assistant-2.16.xpi'.
-      # Wir benennen die gefundene .xpi einfach um.
+      # Schritt 2: Datei umbenennen
       - name: Rename Signed XPI
         run: mv web-ext-artifacts/*.xpi web-ext-artifacts/dora-helper-signed.xpi
 
