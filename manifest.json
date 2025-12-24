@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Dora Lib4ri Assistant",
-  "version": "2.18",
+  "version": "2.19",
   "description": "Metadaten-Check, Auto-Fetch und Smart Keyword Manager für Dora.",
   "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": [
