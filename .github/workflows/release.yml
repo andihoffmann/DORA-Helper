@@ -4,6 +4,10 @@ on:
   release:
     types: [published]
 
+# WICHTIG: Gibt dem Bot Schreibrechte für das Release
+permissions:
+  contents: write
+
 jobs:
   sign-and-publish:
     runs-on: ubuntu-latest
@@ -19,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # Schritt 1: Signieren (Ohne --id Flag!)
+      # Signieren (Ohne --id Flag, liest aus manifest.json)
       - name: Sign Extension
         run: |
           npx web-ext sign \
@@ -28,11 +32,11 @@ jobs:
             --channel=unlisted \
             --timeout=600000
 
-      # Schritt 2: Datei umbenennen
+      # Datei umbenennen (damit der Name sauber ist)
       - name: Rename Signed XPI
         run: mv web-ext-artifacts/*.xpi web-ext-artifacts/dora-helper-signed.xpi
 
-      # Schritt 3: Hochladen ins Release
+      # Hochladen ins Release (jetzt mit Schreibrechten)
       - name: Upload Signed XPI to Release
         uses: svenstaro/upload-release-action@v2
         with:
