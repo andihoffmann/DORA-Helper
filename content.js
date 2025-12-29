@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.16 (Mozilla Validator Safe: No innerHTML)
+// Version: 2.25 (Mozilla Validator Safe: No innerHTML)
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -140,9 +140,14 @@ function renderResultBox(data) {
 
     // 2. Header
     const header = createEl('div', 'dora-meta-header');
-    const title = createEl('div', 'dora-meta-title', meta.title || 'Kein Titel');
-    const journalInfo = `${meta.containerTitle || ''} (${meta.published || '-'})`;
+    const titleText = meta.title ? meta.title[0] : 'Kein Titel';
+    const title = createEl('div', 'dora-meta-title', titleText);
+
+    const containerTitle = meta['container-title'] ? meta['container-title'][0] : '';
+    const pubDate = meta.created && meta.created['date-parts'] ? meta.created['date-parts'][0][0] : '-';
+    const journalInfo = `${containerTitle} (${pubDate})`;
     const journal = createEl('div', 'dora-meta-journal', journalInfo);
+
     header.appendChild(title);
     header.appendChild(journal);
     box.appendChild(header);
@@ -187,6 +192,25 @@ function renderResultBox(data) {
     // 5. Buttons Container
     const btnContainer = createEl('div', 'dora-btn-container');
 
+    // Check if it is a Book Chapter
+    const pubTypeEl = document.getElementById('edit-publication-type');
+    const isBookChapter = pubTypeEl && pubTypeEl.value.toLowerCase().includes('book chapter');
+
+    if (isBookChapter) {
+        const importBtn = createEl('button', 'dora-box-btn btn-hybrid-action'); // Re-using orange style
+        importBtn.id = 'dora-import-book-chapter';
+        importBtn.innerHTML = '<span style="margin-right:5px;">📚</span> Metadaten importieren';
+        importBtn.title = "Importiert Titel, Buch-Titel, Seiten, Jahr, Verlag, Autoren, Editoren und Abstract aus Crossref";
+        importBtn.addEventListener('click', async () => {
+            importBtn.disabled = true;
+            importBtn.innerHTML = '<span>⏳</span> Import läuft...';
+            await fillBookChapterMetadata(meta);
+            importBtn.disabled = false;
+            importBtn.innerHTML = '<span style="margin-right:5px;">📚</span> Metadaten importieren';
+        });
+        btnContainer.appendChild(importBtn);
+    }
+
     // Hybrid Button
     if (isHybrid) {
         const hybridBtn = createEl('button', 'dora-box-btn btn-hybrid-action');
@@ -226,6 +250,180 @@ function renderResultBox(data) {
     btnContainer.appendChild(doiLink);
 
     box.appendChild(btnContainer);
+}
+
+async function addMissingRows(containerSelector, requiredCount) {
+    const container = document.querySelector(containerSelector + ' .islandora-form-fieldpanel-panel');
+    if (!container) return;
+
+    const addButton = container.querySelector('.fieldpanel-add.form-submit');
+    if (!addButton) {
+        console.warn('DORA Helper: Could not find the "Add" button in ' + containerSelector);
+        return;
+    }
+
+    let existingRows = container.querySelectorAll('.islandora-form-fieldpanel-pane').length;
+    const rowsToAdd = requiredCount - existingRows;
+
+    if (rowsToAdd <= 0) {
+        return; // No rows needed
+    }
+
+    for (let i = 0; i < rowsToAdd; i++) {
+        existingRows = container.querySelectorAll('.islandora-form-fieldpanel-pane').length; // update count
+
+        // Trigger mousedown instead of click, as Drupal AJAX often binds to mousedown
+        addButton.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+
+        // Wait for the new row to be added
+        await new Promise(resolve => {
+            const observer = new MutationObserver((mutations, obs) => {
+                const newRowCount = container.querySelectorAll('.islandora-form-fieldpanel-pane').length;
+                if (newRowCount > existingRows) {
+                    obs.disconnect(); // Clean up the observer
+                    resolve();
+                }
+            });
+            observer.observe(container, { childList: true });
+
+            // Add a timeout to prevent infinite waiting
+            setTimeout(() => {
+                observer.disconnect();
+                resolve(); // Resolve anyway to avoid getting stuck
+            }, 3000); // 3-second timeout
+        });
+    }
+}
+
+async function fillBookChapterMetadata(meta) {
+    if (!meta) { alert("Keine Metadaten verfügbar."); return; }
+
+    // 7. Authors - Add rows first
+    if (meta.author && meta.author.length > 0) {
+        await addMissingRows('.form-item-authors', meta.author.length);
+    }
+
+    // 8. Editors - Add rows first (if editors exist in metadata)
+    if (meta.editor && meta.editor.length > 0) {
+        await addMissingRows('.form-item-host-editor', meta.editor.length);
+    }
+
+    // 1. Article Title (Chapter Title)
+    const titleEl = document.getElementById('edit-titleinfo-title-text-format-value'); // CKEditor field
+    if (titleEl && meta.title && meta.title[0]) {
+        // Check if CKEditor is active
+        const cke = document.getElementById('cke_edit-titleinfo-title-text-format-value');
+        if (cke) {
+             const iframe = cke.querySelector('iframe');
+             if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
+                 iframe.contentDocument.body.innerHTML = meta.title[0];
+             }
+        } else {
+            titleEl.value = meta.title[0];
+        }
+    }
+
+    // 2. Host Title (Book Title)
+    const hostTitleEl = document.getElementById('edit-host-booktitle'); // Corrected ID from HTML
+    if (hostTitleEl && meta['container-title'] && meta['container-title'][0]) {
+        hostTitleEl.value = meta['container-title'][0];
+    }
+
+    // 3. Pages (Start & End)
+    if (meta.page) {
+        const parts = meta.page.split('-');
+        const startEl = document.getElementById('edit-host-part-pages-start'); // Corrected ID from HTML
+        const endEl = document.getElementById('edit-host-part-pages-end');     // Corrected ID from HTML
+
+        if (startEl && parts[0]) startEl.value = parts[0];
+        if (endEl && parts[1]) endEl.value = parts[1];
+    }
+
+    // 4. Publication Year
+    if (meta.published && meta.published['date-parts']) {
+        const year = meta.published['date-parts'][0][0];
+        const dateEl = document.getElementById('edit-origininfodate-0-dateissued'); // Corrected ID from HTML
+        if (dateEl) dateEl.value = year;
+    }
+
+    // 5. Publisher
+    if (meta.publisher) {
+        const pubEl = document.getElementById('edit-host-origininfo1-0-publisher'); // Corrected ID from HTML
+        if (pubEl) pubEl.value = meta.publisher;
+    }
+
+    // 6. ISBN
+    if (meta.ISBN && meta.ISBN.length > 0) {
+        const isbnEl = document.getElementById('edit-identifiers-isbn');
+        if (isbnEl) isbnEl.value = meta.ISBN[0];
+    }
+
+    // 7. Authors - Fill data
+    if (meta.author && meta.author.length > 0) {
+        const authorContainer = document.querySelector('.form-item-authors .islandora-form-fieldpanel-panel');
+        if (authorContainer) {
+            const authorPanes = authorContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
+            meta.author.forEach((auth, idx) => {
+                if (authorPanes[idx]) {
+                    const pane = authorPanes[idx];
+                    const familyEl = pane.querySelector('input[name$="[family]"]');
+                    const givenEl = pane.querySelector('input[name$="[given]"]');
+
+                    if (familyEl) familyEl.value = auth.family || '';
+                    if (givenEl) givenEl.value = auth.given || '';
+                }
+            });
+        }
+    }
+
+    // 8. Editors - Fill data
+    if (meta.editor && meta.editor.length > 0) {
+        const editorContainer = document.querySelector('.form-item-host-editor .islandora-form-fieldpanel-panel');
+        if (editorContainer) {
+            const editorPanes = editorContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
+            meta.editor.forEach((ed, idx) => {
+                if (editorPanes[idx]) {
+                    const pane = editorPanes[idx];
+                    // Note: Editor fields often have slightly different names, e.g. familyEditor vs family
+                    // Based on your HTML: name="host[editor][0][familyEditor]"
+                    const familyEl = pane.querySelector('input[name$="[familyEditor]"]');
+                    const givenEl = pane.querySelector('input[name$="[givenEditor]"]');
+
+                    if (familyEl) familyEl.value = ed.family || '';
+                    if (givenEl) givenEl.value = ed.given || '';
+                }
+            });
+        }
+    }
+
+    // 9. Series Title
+    const seriesTitleEl = document.getElementById('edit-host-series-titleinfo-title');
+    if (seriesTitleEl && meta['container-title'] && meta['container-title'].length > 1) {
+         // Assume the second one is the series title if available
+         seriesTitleEl.value = meta['container-title'][1];
+    }
+
+    // 10. Abstract
+    const abstractEl = document.getElementById('edit-abstract0-abstract-text-format-value');
+    if (abstractEl && meta.abstract) {
+        // Crossref abstract is often XML/HTML (e.g. <jats:p>...</jats:p>)
+        // We should strip tags or clean it up if necessary, but CKEditor might handle it.
+        // Let's try to strip basic JATS tags if present.
+        let cleanAbstract = meta.abstract.replace(/<jats:p>/g, '').replace(/<\/jats:p>/g, '\n\n').replace(/<[^>]+>/g, '');
+
+        // Check if CKEditor is active
+        const cke = document.getElementById('cke_edit-abstract0-abstract-text-format-value');
+        if (cke) {
+             const iframe = cke.querySelector('iframe');
+             if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
+                 iframe.contentDocument.body.innerHTML = cleanAbstract.trim();
+             }
+        } else {
+            abstractEl.value = cleanAbstract.trim();
+        }
+    }
+
+    alert("Metadaten für Buchkapitel wurden importiert.");
 }
 
 function insertHybridTag() {
@@ -474,6 +672,8 @@ function validateForm() {
     const confNameEl = getField('Conference Name');
     const procTitleEl = getField('Title of the Conference Proceedings');
     const seriesTitleEl = document.getElementById('edit-host-series-titleinfo-title');
+    const pubTypeEl = document.getElementById('edit-publication-type');
+    const bookTitleEl = document.getElementById('edit-host-booktitle'); // Book Title
 
     // Attach listeners for real-time validation
     const attachListener = (el) => {
@@ -504,10 +704,15 @@ function validateForm() {
         }
     };
 
-    [statusEl, volumeEl, startPageEl, endPageEl, titleEl, confNameEl, procTitleEl, seriesTitleEl].forEach(el => attachListener(el));
+    [statusEl, volumeEl, startPageEl, endPageEl, titleEl, confNameEl, procTitleEl, seriesTitleEl, bookTitleEl].forEach(el => attachListener(el));
 
-    // Rule 1: Volume required if Published
-    if (statusEl && volumeEl) {
+    // Rule 1: Volume required if Published (BUT NOT for Book Chapter)
+    let isBookChapter = false;
+    if (pubTypeEl && pubTypeEl.value.toLowerCase().includes('book chapter')) {
+        isBookChapter = true;
+    }
+
+    if (statusEl && volumeEl && !isBookChapter) {
         let statusText = statusEl.value;
         if (statusEl.tagName === 'SELECT') {
              statusText = statusEl.options[statusEl.selectedIndex]?.text || '';
@@ -523,6 +728,9 @@ function validateForm() {
         } else {
             markError(volumeEl, false);
         }
+    } else if (volumeEl) {
+        // Clear error if it was previously set but now ignored
+        markError(volumeEl, false);
     }
 
     // Rule 2: Start Page needs (X pp.) if End Page empty
@@ -548,6 +756,7 @@ function validateForm() {
     checkSentenceCase(confNameEl, 'Conference Name', errors);
     checkSentenceCase(procTitleEl, 'Proceedings Title', errors);
     checkSentenceCase(seriesTitleEl, 'Series Title', errors);
+    checkSentenceCase(bookTitleEl, 'Book Title', errors);
 
     // Rule 4: Author Table Validation
     validateAuthorRows(errors);

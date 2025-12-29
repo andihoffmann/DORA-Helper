@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Dora Lib4ri Assistant",
-  "version": "2.21",
-  "description": "Metadaten-Check, Auto-Fetch und Smart Keyword Manager für Dora.",
+  "version": "2.22",
+  "description": "Metadaten-Validator, Import-Tool und Smart Keyword Manager für Dora.",
   "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": [
     "*://*.dora.lib4ri.ch/*",
