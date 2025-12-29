@@ -1,6 +1,6 @@
 {
   "name": "dora-helper",
-  "version": "2.20",
+  "version": "2.21",
   "description": "Metadaten-Check und Smart Keyword Manager für Dora.",
   "main": "background.js",
   "scripts": {
