@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.13 (Mozilla Validator Safe: No innerHTML)
+// Version: 2.16 (Mozilla Validator Safe: No innerHTML)
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -444,6 +444,8 @@ function formatKeyword(text) {
 
 // --- VALIDATION ---
 function validateForm() {
+    const errors = []; // Collect errors for summary
+
     const getField = (labelPart) => {
         const labels = document.querySelectorAll('label');
         for (const l of labels) {
@@ -469,6 +471,9 @@ function validateForm() {
     const startPageEl = getField('Start Page');
     const endPageEl = getField('End Page');
     const titleEl = getField('Article Title') || getField('Title');
+    const confNameEl = getField('Conference Name');
+    const procTitleEl = getField('Title of the Conference Proceedings');
+    const seriesTitleEl = document.getElementById('edit-host-series-titleinfo-title');
 
     // Attach listeners for real-time validation
     const attachListener = (el) => {
@@ -499,7 +504,7 @@ function validateForm() {
         }
     };
 
-    [statusEl, volumeEl, startPageEl, endPageEl, titleEl].forEach(el => attachListener(el));
+    [statusEl, volumeEl, startPageEl, endPageEl, titleEl, confNameEl, procTitleEl, seriesTitleEl].forEach(el => attachListener(el));
 
     // Rule 1: Volume required if Published
     if (statusEl && volumeEl) {
@@ -511,6 +516,7 @@ function validateForm() {
         if (statusText.toLowerCase().includes('published')) {
             if (!volumeEl.value.trim()) {
                 markError(volumeEl, true, 'Volume ist bei "Published" Pflicht.');
+                errors.push('<b>Volume</b>: Pflichtfeld bei "Published".');
             } else {
                 markError(volumeEl, false);
             }
@@ -528,6 +534,7 @@ function validateForm() {
             const ppPattern = /\(\d+\s*pp\.?\)/i;
             if (!ppPattern.test(startVal)) {
                 markError(startPageEl, true, 'Wenn End Page leer ist, muss hier die Seitenzahl stehen (z.B. "12 (5 pp.)").');
+                errors.push('<b>Start Page</b>: Format "X (Y pp.)" erforderlich wenn End Page leer.');
             } else {
                 markError(startPageEl, false);
             }
@@ -536,65 +543,76 @@ function validateForm() {
         }
     }
 
-    // Rule 3: Title should be Sentence case
-    if (titleEl) {
-        let val = titleEl.value.trim();
-
-        // Try reading from CKEditor if available
-        if (titleEl.classList.contains('ckeditor-processed')) {
-             const cke = document.getElementById('cke_' + titleEl.id);
-             if (cke) {
-                 const iframe = cke.querySelector('iframe');
-                 if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
-                     // Use text content from editor for validation
-                     const editorText = iframe.contentDocument.body.innerText.trim();
-                     if (editorText) val = editorText;
-                 }
-             }
-        }
-
-        if (val) {
-            const words = val.split(/\s+/);
-            if (words.length > 1) {
-                const stopWords = ['And', 'Or', 'But', 'The', 'A', 'An', 'In', 'On', 'Of', 'For', 'To', 'At', 'By', 'With'];
-                // Check middle words (exclude first)
-                const middleWords = words.slice(1);
-
-                // 1. Check for capitalized stop words (strong indicator of Title Case)
-                const hasCapStopWord = middleWords.some(w => {
-                    const cleanW = w.replace(/[^\w]/g, ''); // remove punctuation
-                    return stopWords.includes(cleanW);
-                });
-
-                // 2. Check ratio of capitalized words (excluding ALL CAPS acronyms)
-                const mixedCaseCapWords = middleWords.filter(w => /^[A-Z][a-z]+/.test(w));
-                const ratio = mixedCaseCapWords.length / middleWords.length;
-
-                if (hasCapStopWord) {
-                    markError(titleEl, true, 'Titel enthält großgeschriebene Stoppwörter (bitte Sentence case verwenden).');
-                } else if (mixedCaseCapWords.length > 1 && ratio > 0.6) {
-                    markError(titleEl, true, 'Titel scheint Title Case zu sein (bitte Sentence case verwenden).');
-                } else {
-                    markError(titleEl, false);
-                }
-            } else {
-                markError(titleEl, false);
-            }
-        } else {
-            markError(titleEl, false);
-        }
-    }
+    // Rule 3: Sentence Case Checks
+    checkSentenceCase(titleEl, 'Article Title', errors);
+    checkSentenceCase(confNameEl, 'Conference Name', errors);
+    checkSentenceCase(procTitleEl, 'Proceedings Title', errors);
+    checkSentenceCase(seriesTitleEl, 'Series Title', errors);
 
     // Rule 4: Author Table Validation
-    validateAuthorRows();
+    validateAuthorRows(errors);
+
+    // Render Summary
+    renderErrorSummary(errors);
 }
 
-function validateAuthorRows() {
+function checkSentenceCase(el, label, errors) {
+    if (!el) return;
+
+    let val = el.value.trim();
+
+    // CKEditor handling
+    if (el.classList.contains('ckeditor-processed')) {
+         const cke = document.getElementById('cke_' + el.id);
+         if (cke) {
+             const iframe = cke.querySelector('iframe');
+             if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
+                 const editorText = iframe.contentDocument.body.innerText.trim();
+                 if (editorText) val = editorText;
+             }
+         }
+    }
+
+    if (val) {
+        const words = val.split(/\s+/);
+        if (words.length > 1) {
+            const stopWords = ['And', 'Or', 'But', 'The', 'A', 'An', 'In', 'On', 'Of', 'For', 'To', 'At', 'By', 'With'];
+            // Check middle words (exclude first)
+            const middleWords = words.slice(1);
+
+            // 1. Check for capitalized stop words (strong indicator of Title Case)
+            const hasCapStopWord = middleWords.some(w => {
+                const cleanW = w.replace(/[^\w]/g, ''); // remove punctuation
+                return stopWords.includes(cleanW);
+            });
+
+            // 2. Check ratio of capitalized words (excluding ALL CAPS acronyms)
+            const mixedCaseCapWords = middleWords.filter(w => /^[A-Z][a-z]+/.test(w));
+            const ratio = mixedCaseCapWords.length / middleWords.length;
+
+            if (hasCapStopWord) {
+                markError(el, true, `${label} enthält großgeschriebene Stoppwörter (bitte Sentence case verwenden).`);
+                errors.push(`<b>${label}</b>: Enthält großgeschriebene Stoppwörter (Sentence case verwenden).`);
+            } else if (mixedCaseCapWords.length > 1 && ratio > 0.6) {
+                markError(el, true, `${label} scheint Title Case zu sein (bitte Sentence case verwenden).`);
+                errors.push(`<b>${label}</b>: Scheint Title Case zu sein (Sentence case verwenden).`);
+            } else {
+                markError(el, false);
+            }
+        } else {
+            markError(el, false);
+        }
+    } else {
+        markError(el, false);
+    }
+}
+
+function validateAuthorRows(errors) {
     // 1. Specific Islandora Fieldpanel Logic
     const authorsContainer = document.querySelector('.form-item-authors');
     if (authorsContainer) {
         const panes = authorsContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
-        panes.forEach(pane => {
+        panes.forEach((pane, idx) => {
             const nameInput = pane.querySelector('input[type="text"][name$="[valName]"]');
             const deptInput = pane.querySelector('input[type="text"][name$="[affiliation]"]');
 
@@ -616,6 +634,7 @@ function validateAuthorRows() {
                 // Rule 4a: Check Name content
                 if (/nomatch/i.test(nameVal) || /4ri/i.test(nameVal)) {
                     markError(nameInput, true, 'Darf nicht "nomatch" oder "4RI" enthalten.');
+                    errors.push(`<b>Author ${idx + 1} (Name)</b>: Darf nicht "nomatch" oder "4RI" enthalten.`);
                 } else {
                     markError(nameInput, false);
                 }
@@ -624,6 +643,7 @@ function validateAuthorRows() {
                 if (nameVal) {
                     if (!deptVal || deptVal === '_none' || deptVal === '- Select -') {
                         markError(deptInput, true, 'Affiliation/Department ist erforderlich.');
+                        errors.push(`<b>Author ${idx + 1} (Dept)</b>: Affiliation/Department fehlt.`);
                     } else {
                         markError(deptInput, false);
                     }
@@ -646,18 +666,13 @@ function validateAuthorRows() {
 
         if (nameIdx !== -1 && deptIdx !== -1) {
             const rows = table.querySelectorAll('tbody tr');
-            rows.forEach(row => {
+            rows.forEach((row, idx) => {
                 const cells = row.querySelectorAll('td');
                 if (cells.length > Math.max(nameIdx, deptIdx)) {
                     const nameInput = cells[nameIdx].querySelector('input[type="text"]');
                     const deptInput = cells[deptIdx].querySelector('input, select');
 
                     if (nameInput && deptInput && !nameInput.dataset.doraValidatorAttached) {
-                         // Avoid double binding if handled by specific logic above
-                         // (Though specific logic targets panes, this targets generic tables)
-                         // We can just re-bind or check.
-                         // For safety, we just run the logic.
-
                          if (!nameInput.dataset.doraValidatorAttached) {
                             nameInput.addEventListener('input', validateForm);
                             nameInput.dataset.doraValidatorAttached = "true";
@@ -673,6 +688,7 @@ function validateAuthorRows() {
 
                         if (/nomatch/i.test(nameVal) || /4ri/i.test(nameVal)) {
                             markError(nameInput, true, 'Darf nicht "nomatch" oder "4RI" enthalten.');
+                            errors.push(`<b>Author Row ${idx + 1} (Name)</b>: Invalid content.`);
                         } else {
                             markError(nameInput, false);
                         }
@@ -680,6 +696,7 @@ function validateAuthorRows() {
                         if (nameVal) {
                             if (!deptVal || deptVal === '_none' || deptVal === '- Select -') {
                                 markError(deptInput, true, 'Affiliation/Department ist erforderlich.');
+                                errors.push(`<b>Author Row ${idx + 1} (Dept)</b>: Missing Department.`);
                             } else {
                                 markError(deptInput, false);
                             }
@@ -691,6 +708,60 @@ function validateAuthorRows() {
             });
         }
     });
+}
+
+function renderErrorSummary(errors) {
+    let box = document.getElementById('dora-error-summary');
+
+    if (errors.length === 0) {
+        if (box) box.style.display = 'none';
+        return;
+    }
+
+    if (!box) {
+        box = createEl('div', 'dora-error-summary');
+        box.id = 'dora-error-summary';
+        document.body.appendChild(box);
+        // Styles
+        Object.assign(box.style, {
+            position: 'fixed', bottom: '20px', right: '20px', width: '320px', zIndex: '9999',
+            backgroundColor: '#fff5f5', border: '1px solid #e53e3e', borderLeft: '5px solid #e53e3e',
+            borderRadius: '5px', padding: '15px', boxShadow: '0 5px 20px rgba(0,0,0,0.2)',
+            fontFamily: 'sans-serif', fontSize: '13px', color: '#2d3748'
+        });
+    }
+
+    box.style.display = 'block';
+    box.innerHTML = '';
+
+    // Header
+    const header = createEl('div', '', '');
+    header.style.cssText = "display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;";
+
+    const title = createEl('strong', '', `⚠️ ${errors.length} Probleme gefunden:`);
+    title.style.color = '#c53030';
+
+    const closeBtn = createEl('span', '', '×');
+    closeBtn.style.cssText = "cursor:pointer; font-size:18px; font-weight:bold; color:#c53030;";
+    closeBtn.onclick = () => { box.style.display = 'none'; };
+
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    box.appendChild(header);
+
+    // List
+    const ul = createEl('ul');
+    ul.style.paddingLeft = '20px';
+    ul.style.margin = '0';
+
+    errors.forEach(err => {
+        const li = createEl('li', '', '');
+        li.innerHTML = err; // Allow bold tags
+        li.style.marginBottom = '5px';
+        ul.appendChild(li);
+    });
+
+    box.appendChild(ul);
 }
 
 function markError(el, isError, msg = '') {

@@ -2,6 +2,7 @@
 const defaultExceptions = `
 x-ray -> X-ray
 x-rays -> X-rays
+3d -> 3D
 dna -> DNA
 rna -> RNA
 ph -> pH
