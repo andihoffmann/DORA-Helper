@@ -1,7 +1,7 @@
 {
   "name": "dora-helper",
-  "version": "2.21",
-  "description": "Metadaten-Check und Smart Keyword Manager für Dora.",
+  "version": "2.22",
+  "description": "Metadaten-Validator, Import-Tool und Smart Keyword Manager für Dora.",
   "main": "background.js",
   "scripts": {
     "start": "web-ext run --start-url \"https://www.dora.lib4ri.ch\"",

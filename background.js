@@ -29,14 +29,7 @@ async function fetchMetadata(doi) {
 
         return {
             unpaywall: unpaywallData,
-            crossref: {
-                title: crossrefData.title?.[0],
-                containerTitle: crossrefData['container-title']?.[0],
-                published: crossrefData.created?.['date-parts']?.[0]?.[0],
-                ISSN: crossrefData.ISSN,
-                DOI: crossrefData.DOI,
-                URL: crossrefData.URL
-            }
+            crossref: crossrefData // Return full object to allow more flexible usage in content.js
         };
     } catch (error) {
         throw new Error("Netzwerkfehler oder ungültige DOI");
