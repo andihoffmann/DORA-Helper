@@ -21,9 +21,10 @@ async function fetchMetadata(doi) {
     const email = "dora@lib4ri.ch"; 
     
     try {
-        const [unpaywallRes, crossrefRes] = await Promise.all([
+        const [unpaywallRes, crossrefRes, openalexRes] = await Promise.all([
             fetch(`https://api.unpaywall.org/v2/${doi}?email=${email}`),
-            fetch(`https://api.crossref.org/works/${doi}`)
+            fetch(`https://api.crossref.org/works/${doi}`),
+            fetch(`https://api.openalex.org/works/doi:${doi}`)
         ]);
 
         const unpaywallData = unpaywallRes.ok ? await unpaywallRes.json() : { is_oa: false };
@@ -34,9 +35,15 @@ async function fetchMetadata(doi) {
             crossrefData = json.message || {};
         }
 
+        let openalexData = {};
+        if (openalexRes.ok) {
+            openalexData = await openalexRes.json();
+        }
+
         return {
             unpaywall: unpaywallData,
-            crossref: crossrefData // Return full object to allow more flexible usage in content.js
+            crossref: crossrefData,
+            openalex: openalexData
         };
     } catch (error) {
         throw new Error("Netzwerkfehler oder ungültige DOI");

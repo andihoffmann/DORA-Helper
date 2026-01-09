@@ -22,11 +22,12 @@ The **DORA Lib4ri Assistant** is a browser extension designed to streamline the 
 ### 1. Metadata Auto-Fetch
 When you open an edit page in DORA, the assistant automatically scans for a DOI.
 
-*   **Auto-Check**: If a DOI is found, the assistant fetches metadata from **Crossref** and **Unpaywall**.
+*   **Auto-Check**: If a DOI is found, the assistant fetches metadata from **Crossref**, **Unpaywall**, and **OpenAlex**.
 *   **Result Box**: A floating panel appears on the right side displaying:
     *   **Open Access Status** (Gold, Green, Hybrid, Closed).
     *   **License Information** (e.g., CC-BY).
     *   **Version** (Published Version vs. Accepted Manuscript).
+    *   **Corresponding Author Check**: Validates if the corresponding author is affiliated with Eawag, Empa, PSI, or WSL (using OpenAlex data).
 *   **Quick Actions**:
     *   `#hybrid setzen`: Adds the `#hybrid` tag to the "Additional Information" field.
     *   `PDF ansehen`: Opens the full-text PDF (if available).
@@ -53,7 +54,7 @@ The assistant validates form fields as you type, highlighting errors with a **re
 
 **Validation Rules:**
 *   **Volume**: Must be filled if "Publication Status" is "Published".
-*   **Start Page**: Must include the page count (e.g., `(12 pp.)`) if the "End Page" is empty.
+*   **Start Page**: Must include the page count (e.g., `(12 pp.)`) if the "End Page" is empty. Required if "Publication Status" is "Published".
 *   **Sentence Case**: Detects Title Case usage (capitalized words) in:
     *   Article Title
     *   Conference Name
@@ -66,6 +67,7 @@ The assistant validates form fields as you type, highlighting errors with a **re
         *   **Group**: Must match the historical data.
         *   **Laboratory**: Must match the historical data.
         *   **Division**: Warns if it doesn't match (dotted line), as divisions are often renamed but valid for the record.
+        *   **Author Not Found**: Warns if an author is not found in the historical data (only for publications older than 3 years).
     *   **Completeness**: If Group is filled, Laboratory and Division must also be filled.
 
 > **[Screenshot: Place a screenshot here showing a form field with a red error border]**

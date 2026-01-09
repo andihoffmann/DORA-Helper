@@ -1,5 +1,4 @@
-// content.js - Dora Lib4ri Helper
-// Version: 2.39 (Mozilla Validator Safe: No innerHTML)
+// content.js - Dora Lib4ri Helper// Version: 2.45
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -137,6 +136,7 @@ function renderErrorBox(msgText) {
 function renderResultBox(data) {
     const oa = data.unpaywall;
     const meta = data.crossref;
+    const openalex = data.openalex;
     let box = createFloatingBox();
     box.innerHTML = ''; // Reset
 
@@ -148,8 +148,17 @@ function renderResultBox(data) {
 
     // 2. Header
     const header = createEl('div', 'dora-meta-header');
-    const titleText = meta.title ? meta.title[0] : 'Kein Titel';
+
+    // Title (Restored, smaller, stripped HTML)
+    let titleText = meta.title ? meta.title[0] : 'Kein Titel';
+    // Strip HTML tags
+    titleText = titleText.replace(/<[^>]*>?/gm, '');
+
     const title = createEl('div', 'dora-meta-title', titleText);
+    title.style.fontSize = '0.9em'; // Reduced by ~20-30% from 1.1em
+    title.style.fontWeight = 'bold';
+    title.style.marginBottom = '5px';
+    title.style.lineHeight = '1.3';
 
     const containerTitle = meta['container-title'] ? meta['container-title'][0] : '';
     const pubDate = meta.created && meta.created['date-parts'] ? meta.created['date-parts'][0][0] : '-';
@@ -197,6 +206,69 @@ function renderResultBox(data) {
     }
     box.appendChild(badgesDiv);
 
+    // OpenAlex Check
+    if (openalex && openalex.authorships) {
+        const targetInstitutions = [
+            "Paul Scherrer Institute",
+            "Swiss Federal Institute of Aquatic Science and Technology",
+            "Swiss Federal Laboratories for Materials Science and Technology",
+            "Swiss Federal Institute for Forest, Snow and Landscape Research"
+        ];
+        const targetRORs = [
+            "https://ror.org/0207ad741", // PSI
+            "https://ror.org/02j624c96", // Eawag
+            "https://ror.org/0335b2t11", // Empa
+            "https://ror.org/02d765t03"  // WSL
+        ];
+        const targetAcronyms = ["PSI", "Eawag", "Empa", "WSL"];
+
+        let correspondingAuthorFound = false;
+        let isAffiliated = false;
+        let affiliatedInst = "";
+
+        for (const authorship of openalex.authorships) {
+            if (authorship.is_corresponding) {
+                correspondingAuthorFound = true;
+                for (const inst of authorship.institutions) {
+                    // Check Name
+                    let idx = targetInstitutions.indexOf(inst.display_name);
+
+                    // Check ROR if name match failed
+                    if (idx === -1 && inst.ror) {
+                        idx = targetRORs.indexOf(inst.ror);
+                    }
+
+                    if (idx !== -1) {
+                        isAffiliated = true;
+                        affiliatedInst = targetAcronyms[idx];
+                        break;
+                    }
+                }
+                if (isAffiliated) break;
+            }
+        }
+
+        if (correspondingAuthorFound) {
+            const oaBadge = createEl('div', 'dora-oa-check');
+            oaBadge.style.marginTop = '10px';
+            oaBadge.style.padding = '5px';
+            oaBadge.style.borderRadius = '4px';
+            oaBadge.style.fontSize = '0.9em';
+            oaBadge.title = "Vorschlag basierend auf OpenAlex-Daten. Bitte überprüfen."; // Tooltip
+
+            if (isAffiliated) {
+                oaBadge.style.backgroundColor = '#d4edda';
+                oaBadge.style.color = '#155724';
+                oaBadge.innerHTML = `✅ Corr. author <b>${affiliatedInst}</b> <span style="font-size:0.85em; opacity:0.7;">(OpenAlex)</span>`;
+            } else {
+                oaBadge.style.backgroundColor = '#f8d7da';
+                oaBadge.style.color = '#721c24';
+                oaBadge.innerHTML = `❌ Corr. author: <b>External</b> <span style="font-size:0.85em; opacity:0.7;">(OpenAlex)</span>`;
+            }
+            box.appendChild(oaBadge);
+        }
+    }
+
     // 5. Buttons Container
     const btnContainer = createEl('div', 'dora-btn-container');
 
@@ -205,7 +277,7 @@ function renderResultBox(data) {
     const isBookChapter = pubTypeEl && pubTypeEl.value.toLowerCase().includes('book chapter');
 
     if (isBookChapter) {
-        const importBtn = createEl('button', 'dora-box-btn btn-hybrid-action'); // Re-using orange style
+        const importBtn = createEl('button', 'dora-box-btn btn-hybrid-action');
         importBtn.id = 'dora-import-book-chapter';
         importBtn.innerHTML = '<span style="margin-right:5px;">📚</span> Metadaten importieren';
         importBtn.title = "Importiert Titel, Buch-Titel, Seiten, Jahr, Verlag, Autoren, Editoren und Abstract aus Crossref";
@@ -224,7 +296,7 @@ function renderResultBox(data) {
         const hybridBtn = createEl('button', 'dora-box-btn btn-hybrid-action');
         hybridBtn.id = 'dora-add-hybrid-btn';
         hybridBtn.title = "Fügt #hybrid in Additional Information ein";
-        hybridBtn.innerHTML = '<span style="margin-right:5px;">📝</span> #hybrid setzen'; // Icon ist okay hier
+        hybridBtn.innerHTML = '<span style="margin-right:5px;">📝</span> #hybrid setzen';
         hybridBtn.addEventListener('click', insertHybridTag);
         btnContainer.appendChild(hybridBtn);
     }
@@ -684,9 +756,14 @@ function validateForm() {
     const bookTitleEl = document.getElementById('edit-host-booktitle'); // Book Title
 
     // Improved Year Selector: Try multiple IDs
-    const pubYearEl = document.getElementById('edit-origininfodate-0-dateissued') ||
-                      document.getElementById('edit-dateissued') ||
-                      getField('Publication Year');
+    let pubYearEl = document.getElementById('edit-origininfodate-0-dateissued') ||
+                      document.getElementById('edit-dateissued');
+    if (!pubYearEl) {
+         pubYearEl = document.querySelector('input[name*="dateIssued"]');
+    }
+    if (!pubYearEl) {
+         pubYearEl = getField('Publication Year');
+    }
 
     // Attach listeners for real-time validation
     const attachListener = (el) => {
@@ -746,22 +823,35 @@ function validateForm() {
         markError(volumeEl, false);
     }
 
-    // Rule 2: Start Page needs (X pp.) if End Page empty
-    if (startPageEl && endPageEl) {
+    // Start Page Validation
+    if (startPageEl) {
         const startVal = startPageEl.value.trim();
-        const endVal = endPageEl.value.trim();
+        let startPageError = null;
 
-        if (startVal && !endVal) {
-            const ppPattern = /\(\d+\s*pp\.?\)/i;
-            if (!ppPattern.test(startVal)) {
-                markError(startPageEl, true, 'Wenn End Page leer ist, muss hier die Seitenzahl stehen (z.B. "12 (5 pp.)").');
-                errors.push('<b>Start Page</b>: Format "X (Y pp.)" erforderlich wenn End Page leer.');
-            } else {
-                markError(startPageEl, false);
-            }
-        } else {
-            markError(startPageEl, false);
+        // 1. Required if Published
+        if (statusEl) {
+             let statusText = statusEl.value;
+             if (statusEl.tagName === 'SELECT') statusText = statusEl.options[statusEl.selectedIndex]?.text || '';
+
+             if (statusText.toLowerCase().includes('published') && !startVal) {
+                 startPageError = 'Start Page ist bei Status "Published" Pflicht.';
+                 errors.push('<b>Start Page</b>: Pflichtfeld bei Status "Published".');
+             }
         }
+
+        // 2. Format check if End Page is empty
+        if (!startPageError && startVal && endPageEl) {
+            const endVal = endPageEl.value.trim();
+            if (!endVal) {
+                const ppPattern = /\(\d+\s*pp\.?\)/i;
+                if (!ppPattern.test(startVal)) {
+                    startPageError = 'Wenn End Page leer ist, muss hier die Seitenzahl stehen (z.B. "12 (5 pp.)").';
+                    errors.push('<b>Start Page</b>: Format "X (Y pp.)" erforderlich wenn End Page leer.');
+                }
+            }
+        }
+
+        markError(startPageEl, !!startPageError, startPageError || '');
     }
 
     // Rule 3: Sentence Case Checks
@@ -939,7 +1029,14 @@ function validateAuthorRows(errors, pubYear) {
                         } else {
                             // Person not found in DB
                             console.log("Person not found in DB");
-                            errors.push(`<b>Author ${idx + 1}</b>: Person "${lastname}, ${firstname}" nicht in den Stammdaten gefunden.`);
+
+                            const currentYear = new Date().getFullYear();
+                            const pYear = parseInt(pubYear, 10);
+
+                            if (!isNaN(pYear) && (currentYear - pYear >= 3)) {
+                                errors.push(`<b>Author ${idx + 1}</b>: Person "${lastname}, ${firstname}" nicht in den Stammdaten gefunden.`);
+                            }
+
                             if (groupInput) markError(groupInput, false);
                             if (labInput) markError(labInput, false);
                             if (divisionInput) markError(divisionInput, false);

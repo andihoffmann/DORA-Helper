@@ -1,6 +1,6 @@
 {
   "name": "dora-helper",
-  "version": "2.39",
+  "version": "2.42",
   "description": "Metadaten-Validator, Import-Tool und Smart Keyword Manager für Dora.",
   "main": "background.js",
   "scripts": {
@@ -23,5 +23,8 @@
   "devDependencies": {
     "copyfiles": "^2.4.1",
     "web-ext": "^9.2.0"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^5.4.530"
   }
 }

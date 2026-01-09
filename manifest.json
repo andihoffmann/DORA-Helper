@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Dora Helper",
-  "version": "2.39",
+  "version": "2.42",
   "description": "Metadaten-Validator, Import-Tool und Smart Keyword Manager für DORA.",
   "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": [
     "*://*.dora.lib4ri.ch/*",
     "https://api.unpaywall.org/*",
     "https://api.crossref.org/*",
+    "https://api.openalex.org/*",
     "https://intranet.psi.ch/*",
     "http://localhost:8080/*"
   ],
@@ -47,7 +48,11 @@
   "content_scripts": [
     {
       "matches": ["*://*.dora.lib4ri.ch/*"],
-      "js": ["psi_data.js", "psi_affiliations.js", "content.js"],
+      "js": [
+        "psi_data.js",
+        "psi_affiliations.js",
+        "content.js"
+      ],
       "css": ["styles.css"]
     }
   ]
