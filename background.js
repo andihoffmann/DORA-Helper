@@ -7,6 +7,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true; // Wichtig für asynchrone Antwort
     }
+
+    if (request.action === "fetchPsiData") {
+        fetchPsiAffiliations(request.url)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
 });
 
 async function fetchMetadata(doi) {
@@ -33,5 +40,15 @@ async function fetchMetadata(doi) {
         };
     } catch (error) {
         throw new Error("Netzwerkfehler oder ungültige DOI");
+    }
+}
+
+async function fetchPsiAffiliations(url) {
+    try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        return await response.json();
+    } catch (error) {
+        throw new Error("Failed to fetch PSI data: " + error.message);
     }
 }

@@ -1,0 +1,133 @@
+<h1>DORA Lib4ri Assistant</h1>
+
+<p>The <strong>DORA Lib4ri Assistant</strong> is a browser extension designed to streamline the workflow for editing metadata in the DORA repository (Lib4ri). It provides automated metadata fetching, intelligent form validation, and a powerful keyword manager.</p>
+
+<hr />
+
+<h2>Installation</h2>
+
+<ol>
+    <li><strong>Download</strong>: Get the latest <code>.xpi</code> file (for Firefox) or the unpacked extension folder (for Chrome/Edge).</li>
+    <li><strong>Firefox</strong>:
+        <ul>
+            <li>Drag and drop the <code>.xpi</code> file into any open browser window.</li>
+            <li>Alternatively, go to <code>about:addons</code>, click the gear icon, and select <strong>"Install Add-on From File..."</strong>.</li>
+        </ul>
+    </li>
+    <li><strong>Chrome/Edge</strong>:
+        <ul>
+            <li>Go to <code>chrome://extensions</code>.</li>
+            <li>Enable <strong>"Developer mode"</strong> (toggle in the top right).</li>
+            <li>Click <strong>"Load unpacked"</strong> and select the extension folder.</li>
+        </ul>
+    </li>
+</ol>
+
+<hr />
+
+<h2>Core Features</h2>
+
+<h3>1. Metadata Auto-Fetch</h3>
+<p>When you open an edit page in DORA, the assistant automatically scans for a DOI.</p>
+
+<ul>
+    <li><strong>Auto-Check</strong>: If a DOI is found, the assistant fetches metadata from <strong>Crossref</strong> and <strong>Unpaywall</strong>.</li>
+    <li><strong>Result Box</strong>: A floating panel appears on the right side displaying:
+        <ul>
+            <li><strong>Open Access Status</strong> (Gold, Green, Hybrid, Closed).</li>
+            <li><strong>License Information</strong> (e.g., CC-BY).</li>
+            <li><strong>Version</strong> (Published Version vs. Accepted Manuscript).</li>
+        </ul>
+    </li>
+    <li><strong>Quick Actions</strong>:
+        <ul>
+            <li><code>#hybrid setzen</code>: Adds the <code>#hybrid</code> tag to the "Additional Information" field.</li>
+            <li><code>PDF ansehen</code>: Opens the full-text PDF (if available).</li>
+            <li><code>Policy prüfen</code>: Checks the journal policy via Jisc Open Policy Finder.</li>
+        </ul>
+    </li>
+</ul>
+
+<blockquote>
+    <p><strong>[Screenshot: Place a screenshot here showing the floating result box with OA status and buttons]</strong></p>
+</blockquote>
+
+<hr />
+
+<h3>2. Keyword Manager</h3>
+<p>The standard keyword input in DORA can be difficult to manage. The Assistant injects a <strong>"Keyword Manager"</strong> directly above the keyword field.</p>
+
+<ul>
+    <li><strong>Edit & Sort</strong>: Click the button to load existing keywords into a clean list.</li>
+    <li><strong>Drag & Drop</strong>: Reorder keywords by dragging the handle (☰).</li>
+    <li><strong>Auto-Formatting</strong>: Keywords are automatically corrected (e.g., "dna" &rarr; "DNA", "ph" &rarr; "pH") based on your settings.</li>
+    <li><strong>Sync</strong>: Any changes are immediately synced back to the DORA form.</li>
+</ul>
+
+<blockquote>
+    <p><strong>[Screenshot: Place a screenshot here showing the Keyword Manager with the sortable list]</strong></p>
+</blockquote>
+
+<hr />
+
+<h3>3. Real-time Validation</h3>
+<p>The assistant validates form fields as you type, highlighting errors with a <strong>red border</strong> and providing tooltips.</p>
+
+<p><strong>Validation Rules:</strong></p>
+<ul>
+    <li><strong>Volume</strong>: Must be filled if "Publication Status" is "Published".</li>
+    <li><strong>Start Page</strong>: Must include the page count (e.g., <code>(12 pp.)</code>) if the "End Page" is empty.</li>
+    <li><strong>Sentence Case</strong>: Detects Title Case usage (capitalized words) in:
+        <ul>
+            <li>Article Title</li>
+            <li>Conference Name</li>
+            <li>Proceedings Title</li>
+            <li>Series Title</li>
+        </ul>
+    </li>
+    <li><strong>Author/Affiliation</strong>:
+        <ul>
+            <li>Flags "Standardized Form of Name" if it contains "nomatch" or "4RI".</li>
+            <li>Requires an Affiliation/Department if an Author Name is entered.</li>
+        </ul>
+    </li>
+</ul>
+
+<blockquote>
+    <p><strong>[Screenshot: Place a screenshot here showing a form field with a red error border]</strong></p>
+</blockquote>
+
+<hr />
+
+<h3>4. Error Summary Panel</h3>
+<p>If validation errors are found, a summary panel appears at the <strong>bottom right</strong> of the screen.</p>
+
+<ul>
+    <li><strong>Overview</strong>: Displays the total count of issues.</li>
+    <li><strong>Details</strong>: Lists the specific errors to fix.</li>
+    <li><strong>Navigation</strong>: Helps you find missing fields quickly.</li>
+</ul>
+
+<blockquote>
+    <p><strong>[Screenshot: Place a screenshot here showing the Error Summary panel at the bottom right]</strong></p>
+</blockquote>
+
+<hr />
+
+<h2>Configuration</h2>
+
+<p>You can customize the keyword formatting rules.</p>
+
+<ol>
+    <li>Open your browser's extension menu.</li>
+    <li>Click <strong>DORA Lib4ri Assistant</strong> &rarr; <strong>Options</strong>.</li>
+    <li>Edit the list of exceptions (Format: <code>lowercase -> Replacement</code>).
+        <ul>
+            <li><em>Example:</em> <code>dna -> DNA</code></li>
+        </ul>
+    </li>
+</ol>
+
+<blockquote>
+    <p><strong>[Screenshot: Place a screenshot here of the Options page]</strong></p>
+</blockquote>

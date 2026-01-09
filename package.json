@@ -1,6 +1,6 @@
 {
   "name": "dora-helper",
-  "version": "2.22",
+  "version": "2.39",
   "description": "Metadaten-Validator, Import-Tool und Smart Keyword Manager für Dora.",
   "main": "background.js",
   "scripts": {
