@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.25 (Mozilla Validator Safe: No innerHTML)
+// Version: 2.39 (Mozilla Validator Safe: No innerHTML)
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -14,6 +14,14 @@ if (document.readyState === 'loading') {
 }
 
 function startObserver() {
+    // Initialize PSI Data (async)
+    if (typeof initPsiData === 'function') {
+        initPsiData().then(() => {
+            // Re-validate once data is loaded
+            validateForm();
+        });
+    }
+
     scanAndInject();
     const observer = new MutationObserver((mutations) => {
         if (observerTimeout) clearTimeout(observerTimeout);
@@ -675,6 +683,11 @@ function validateForm() {
     const pubTypeEl = document.getElementById('edit-publication-type');
     const bookTitleEl = document.getElementById('edit-host-booktitle'); // Book Title
 
+    // Improved Year Selector: Try multiple IDs
+    const pubYearEl = document.getElementById('edit-origininfodate-0-dateissued') ||
+                      document.getElementById('edit-dateissued') ||
+                      getField('Publication Year');
+
     // Attach listeners for real-time validation
     const attachListener = (el) => {
         if (!el) return;
@@ -704,7 +717,7 @@ function validateForm() {
         }
     };
 
-    [statusEl, volumeEl, startPageEl, endPageEl, titleEl, confNameEl, procTitleEl, seriesTitleEl, bookTitleEl].forEach(el => attachListener(el));
+    [statusEl, volumeEl, startPageEl, endPageEl, titleEl, confNameEl, procTitleEl, seriesTitleEl, bookTitleEl, pubYearEl].forEach(el => attachListener(el));
 
     // Rule 1: Volume required if Published (BUT NOT for Book Chapter)
     let isBookChapter = false;
@@ -720,8 +733,8 @@ function validateForm() {
 
         if (statusText.toLowerCase().includes('published')) {
             if (!volumeEl.value.trim()) {
-                markError(volumeEl, true, 'Volume ist bei "Published" Pflicht.');
-                errors.push('<b>Volume</b>: Pflichtfeld bei "Published".');
+                markError(volumeEl, true, 'Volume ist bei Status "Published" Pflicht.');
+                errors.push('<b>Volume</b>: Pflichtfeld bei Status "Published".');
             } else {
                 markError(volumeEl, false);
             }
@@ -758,8 +771,9 @@ function validateForm() {
     checkSentenceCase(seriesTitleEl, 'Series Title', errors);
     checkSentenceCase(bookTitleEl, 'Book Title', errors);
 
-    // Rule 4: Author Table Validation
-    validateAuthorRows(errors);
+    // Rule 4: Author Table Validation (including PSI Affiliation check)
+    const pubYear = pubYearEl ? pubYearEl.value.trim() : null;
+    validateAuthorRows(errors, pubYear);
 
     // Render Summary
     renderErrorSummary(errors);
@@ -816,29 +830,36 @@ function checkSentenceCase(el, label, errors) {
     }
 }
 
-function validateAuthorRows(errors) {
+function validateAuthorRows(errors, pubYear) {
     // 1. Specific Islandora Fieldpanel Logic
     const authorsContainer = document.querySelector('.form-item-authors');
     if (authorsContainer) {
         const panes = authorsContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
         panes.forEach((pane, idx) => {
             const nameInput = pane.querySelector('input[type="text"][name$="[valName]"]');
-            const deptInput = pane.querySelector('input[type="text"][name$="[affiliation]"]');
 
-            if (nameInput && deptInput) {
+            // Corrected selectors based on HTML structure
+            const groupInput = pane.querySelector('input[type="text"][name$="[affiliation]"]'); // "Group" field
+            const sectionInput = pane.querySelector('input[type="text"][name$="[section_name]"]');
+            const labInput = pane.querySelector('input[type="text"][name$="[department_name]"]'); // "Laboratory" field
+            const divisionInput = pane.querySelector('input[type="text"][name$="[division_name]"]');
+
+            // Get First and Last Name for lookup
+            const familyInput = pane.querySelector('input[name$="[family]"]');
+            const givenInput = pane.querySelector('input[name$="[given]"]');
+
+            if (nameInput) {
                 // Attach listeners
-                if (!nameInput.dataset.doraValidatorAttached) {
-                    nameInput.addEventListener('input', validateForm);
-                    nameInput.dataset.doraValidatorAttached = "true";
-                }
-                if (!deptInput.dataset.doraValidatorAttached) {
-                    deptInput.addEventListener('input', validateForm);
-                    deptInput.addEventListener('change', validateForm);
-                    deptInput.dataset.doraValidatorAttached = "true";
-                }
+                const inputs = [nameInput, groupInput, sectionInput, labInput, divisionInput, familyInput, givenInput];
+                inputs.forEach(inp => {
+                    if (inp && !inp.dataset.doraValidatorAttached) {
+                        inp.addEventListener('input', validateForm);
+                        inp.addEventListener('change', validateForm);
+                        inp.dataset.doraValidatorAttached = "true";
+                    }
+                });
 
                 const nameVal = nameInput.value.trim();
-                const deptVal = deptInput.value.trim();
 
                 // Rule 4a: Check Name content
                 if (/nomatch/i.test(nameVal) || /4ri/i.test(nameVal)) {
@@ -848,16 +869,101 @@ function validateAuthorRows(errors) {
                     markError(nameInput, false);
                 }
 
-                // Rule 4b: Dependency
+                // Rule 4b: Dependency (If name is present, at least Group or Lab should be present)
                 if (nameVal) {
-                    if (!deptVal || deptVal === '_none' || deptVal === '- Select -') {
-                        markError(deptInput, true, 'Affiliation/Department ist erforderlich.');
-                        errors.push(`<b>Author ${idx + 1} (Dept)</b>: Affiliation/Department fehlt.`);
+                    const hasAffiliation = (groupInput && groupInput.value.trim()) || (labInput && labInput.value.trim());
+                    if (!hasAffiliation) {
+                        // Mark Group as the primary missing field
+                        if (groupInput) markError(groupInput, true, 'Affiliation (Group/Lab) ist erforderlich.');
+                        errors.push(`<b>Author ${idx + 1}</b>: Affiliation fehlt.`);
                     } else {
-                        markError(deptInput, false);
+                        if (groupInput) markError(groupInput, false);
+                    }
+
+                    // Rule 4c: Historical Affiliation Check (Only for PSI)
+                    // Check if URL contains /psi/
+                    if (window.location.href.includes('/psi/') && typeof findPersonAffiliation === 'function' && familyInput) {
+                        const lastname = familyInput.value.trim();
+                        const firstname = givenInput ? givenInput.value.trim() : "";
+
+                        console.log(`Checking affiliation for: ${lastname}, ${firstname} (${pubYear})`);
+
+                        const personData = findPersonAffiliation(lastname, firstname, pubYear, nameVal);
+                        console.log("Person Data:", personData);
+
+                        if (personData) {
+                            if (personData.year) {
+                                // Check if current deptVal matches any of the valid units
+                                // Use looser matching: check if validName is contained in deptVal OR deptVal is contained in validName
+
+                                // Check Group
+                                if (groupInput) {
+                                    const groupVal = groupInput.value.trim();
+                                    if (groupVal && !personData.units.some(u => groupVal.includes(u) || u.includes(groupVal))) {
+                                         markError(groupInput, true, `Warnung: "${groupVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein.`);
+                                         errors.push(`<b>Author ${idx + 1} (Group)</b>: "${groupVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein. <br>Erwartet: ${personData.expectedGroup || 'N/A'}`);
+                                    } else {
+                                         markError(groupInput, false);
+                                    }
+                                }
+
+                                // Check Laboratory
+                                if (labInput) {
+                                    const labVal = labInput.value.trim();
+                                    if (labVal && !personData.units.some(u => labVal.includes(u) || u.includes(labVal))) {
+                                         markError(labInput, true, `Warnung: "${labVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein.`);
+                                         errors.push(`<b>Author ${idx + 1} (Lab)</b>: "${labVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein. <br>Erwartet: ${personData.expectedLab || 'N/A'}`);
+                                    } else {
+                                         markError(labInput, false);
+                                    }
+                                }
+
+                                // Check Division
+                                if (divisionInput) {
+                                    const divVal = divisionInput.value.trim();
+                                    if (divVal && !personData.units.some(u => divVal.includes(u) || u.includes(divVal))) {
+                                         markError(divisionInput, true, `Warnung: "${divVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein.`, true);
+                                         errors.push(`<b>Author ${idx + 1} (Division)</b>: Die Division wurde wahrscheinlich mitllerweile angepasst, hat aber Gültigkeit für den Eintrag.`);
+                                    } else {
+                                         markError(divisionInput, false);
+                                    }
+                                }
+
+                            } else {
+                                // Person found but not for this year
+                                console.log("Person found but not for year " + pubYear);
+                                if (groupInput) markError(groupInput, false);
+                                if (labInput) markError(labInput, false);
+                                if (divisionInput) markError(divisionInput, false);
+                            }
+                        } else {
+                            // Person not found in DB
+                            console.log("Person not found in DB");
+                            errors.push(`<b>Author ${idx + 1}</b>: Person "${lastname}, ${firstname}" nicht in den Stammdaten gefunden.`);
+                            if (groupInput) markError(groupInput, false);
+                            if (labInput) markError(labInput, false);
+                            if (divisionInput) markError(divisionInput, false);
+                        }
+                    } else {
+                        if (groupInput) markError(groupInput, false);
+                        if (labInput) markError(labInput, false);
+                        if (divisionInput) markError(divisionInput, false);
+                    }
+
+                    // Rule 4d: Completeness (If Group is set, Lab and Division should be set)
+                    if (groupInput && groupInput.value.trim()) {
+                        if (labInput && !labInput.value.trim()) {
+                             markError(labInput, true, 'Laboratory sollte ausgefüllt sein, wenn Group vorhanden ist.');
+                             errors.push(`<b>Author ${idx + 1} (Lab)</b>: Laboratory fehlt (Group ist gesetzt).`);
+                        }
+                        if (divisionInput && !divisionInput.value.trim()) {
+                             markError(divisionInput, true, 'Division sollte ausgefüllt sein, wenn Group vorhanden ist.');
+                             errors.push(`<b>Author ${idx + 1} (Division)</b>: Division fehlt (Group ist gesetzt).`);
+                        }
                     }
                 } else {
-                    markError(deptInput, false);
+                    // Reset if no name
+                    if (groupInput) markError(groupInput, false);
                 }
             }
         });
@@ -973,7 +1079,7 @@ function renderErrorSummary(errors) {
     box.appendChild(ul);
 }
 
-function markError(el, isError, msg = '') {
+function markError(el, isError, msg = '', isWarning = false) {
     let target = el;
     // Handle CKEditor visual target
     if (el.classList.contains('ckeditor-processed')) {
@@ -982,7 +1088,11 @@ function markError(el, isError, msg = '') {
     }
 
     if (isError) {
-        target.style.border = '2px solid #e53e3e';
+        if (isWarning) {
+            target.style.border = '2px dotted #e53e3e';
+        } else {
+            target.style.border = '2px solid #e53e3e';
+        }
         if (target === el) target.style.backgroundColor = '#fff5f5'; // Only color bg if it's the input
         target.title = msg;
     } else {

@@ -1,19 +1,21 @@
 {
   "manifest_version": 3,
-  "name": "Dora Lib4ri Assistant",
-  "version": "2.22",
-  "description": "Metadaten-Validator, Import-Tool und Smart Keyword Manager für Dora.",
+  "name": "Dora Helper",
+  "version": "2.39",
+  "description": "Metadaten-Validator, Import-Tool und Smart Keyword Manager für DORA.",
   "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": [
     "*://*.dora.lib4ri.ch/*",
     "https://api.unpaywall.org/*",
-    "https://api.crossref.org/*"
+    "https://api.crossref.org/*",
+    "https://intranet.psi.ch/*",
+    "http://localhost:8080/*"
   ],
   
   "browser_specific_settings": {
     "gecko": {
       "id": "dora@lib4ri.ch",
-      "strict_min_version": "142.0",
+      "strict_min_version": "115.0",
       "update_url": "https://raw.githubusercontent.com/andihoffmann/DORA-Helper/refs/heads/main/updates.json",
       "data_collection_permissions": {
          "required": ["none"]
@@ -45,10 +47,8 @@
   "content_scripts": [
     {
       "matches": ["*://*.dora.lib4ri.ch/*"],
-      "js": ["content.js"],
+      "js": ["psi_data.js", "psi_affiliations.js", "content.js"],
       "css": ["styles.css"]
     }
   ]
 }
-
-
