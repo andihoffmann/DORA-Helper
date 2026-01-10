@@ -1,4 +1,5 @@
-// content.js - Dora Lib4ri Helper// Version: 2.45
+// content.js - Dora Lib4ri Helper
+// Version: 2.57
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -18,7 +19,7 @@ function startObserver() {
         initPsiData().then(() => {
             // Re-validate once data is loaded
             validateForm();
-        });
+        }).catch(e => console.warn("DORA Helper: PSI Data Init failed", e));
     }
 
     scanAndInject();
@@ -95,17 +96,231 @@ function performFetch(doi) {
 }
 
 function injectDOIButton(doiInput) {
+    const container = createEl('div', 'dora-action-container');
+    container.style.display = 'flex';
+    container.style.alignItems = 'center';
+    container.style.gap = '10px';
+    container.id = 'dora-helper-btn'; // Keep ID for check
+
     const btn = createEl('button', 'dora-helper-button', '↻ Neu prüfen');
-    btn.id = 'dora-helper-btn';
     btn.type = 'button';
     btn.addEventListener('click', () => {
         const currentDoi = doiInput.value.trim();
-        if (!currentDoi) { alert("Keine DOI vorhanden."); return; }
+        if (!currentDoi) { renderErrorBox("Keine DOI im Feld gefunden."); return; }
         lastAutoFetchedDoi = currentDoi; 
         showLoadingBox();
         performFetch(currentDoi);
     });
-    doiInput.parentNode.appendChild(btn);
+
+    container.appendChild(btn);
+
+    doiInput.parentNode.appendChild(container);
+}
+
+async function handlePdfFile(file) {
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+        alert("Bitte eine PDF-Datei auswählen.");
+        return;
+    }
+
+    // Show loading state in the dropzone
+    const dropZone = document.querySelector('.dora-pdf-drop');
+    if (dropZone) {
+        dropZone.innerHTML = '⏳ Analysiere...';
+        dropZone.style.backgroundColor = '#fff3cd';
+    }
+
+    // Use 127.0.0.1 as requested
+    const API_URL = "http://127.0.0.1:7860/analyze";
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+        const response = await fetch(API_URL, {
+            method: "POST",
+            body: formData
+        });
+
+        if (!response.ok) {
+             throw new Error(`Server Fehler: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        if (data.status === "success") {
+            if (dropZone) {
+                dropZone.innerHTML = '📄 PDF hier ablegen'; // Reset
+                dropZone.style.backgroundColor = '#f9f9f9';
+            }
+            confirmAndFillPdfData(data);
+        } else {
+            throw new Error(data.message || "Unbekannter Fehler");
+        }
+
+    } catch (error) {
+        // Error handling: Show in dropzone only, no alert, no result box replacement
+        if (dropZone) {
+            dropZone.innerHTML = '❌ Fehler (Docker?)';
+            dropZone.title = error.message; // Show full error on hover
+            dropZone.style.backgroundColor = '#f8d7da';
+            dropZone.style.color = '#721c24';
+
+            setTimeout(() => {
+                dropZone.innerHTML = '📄 PDF hier ablegen';
+                dropZone.style.backgroundColor = '#f9f9f9';
+                dropZone.style.color = '#666';
+                dropZone.title = '';
+            }, 3000);
+        }
+        console.error("PDF Analyse fehlgeschlagen:", error);
+    }
+}
+
+async function handlePdfUrl(url) {
+    // For URL analysis, we usually show the loading box because there is no dropzone to update
+    // But user wants no error in result box.
+    // We will use a temporary toast or just console log if it fails?
+    // Or update the button text?
+
+    // Let's try to find the button that triggered this
+    const buttons = document.querySelectorAll('button');
+    let triggerBtn = null;
+    for (const btn of buttons) {
+        if (btn.innerText.includes('PDF von URL')) {
+            triggerBtn = btn;
+            break;
+        }
+    }
+
+    if (triggerBtn) {
+        const originalText = triggerBtn.innerHTML;
+        triggerBtn.innerHTML = '⏳ Lade...';
+        triggerBtn.disabled = true;
+
+        chrome.runtime.sendMessage({ action: "analyzePdfUrl", pdfUrl: url }, (response) => {
+            triggerBtn.disabled = false;
+            if (response && response.success) {
+                triggerBtn.innerHTML = originalText;
+                confirmAndFillPdfData(response.data);
+            } else {
+                triggerBtn.innerHTML = '❌ Fehler';
+                triggerBtn.title = response ? response.error : "Unbekannter Fehler";
+                setTimeout(() => {
+                    triggerBtn.innerHTML = originalText;
+                    triggerBtn.title = '';
+                }, 3000);
+                console.error("PDF URL Analyse fehlgeschlagen:", response ? response.error : "Unknown");
+            }
+        });
+    } else {
+        // Fallback if button not found (should not happen)
+        chrome.runtime.sendMessage({ action: "analyzePdfUrl", pdfUrl: url }, (response) => {
+            if (response && response.success) {
+                confirmAndFillPdfData(response.data);
+            } else {
+                console.error("PDF URL Analyse fehlgeschlagen:", response ? response.error : "Unknown");
+            }
+        });
+    }
+}
+
+function confirmAndFillPdfData(data) {
+    let message = "PDF Analyse erfolgreich.\n\nMöchten Sie folgende Daten übernehmen?\n\n";
+
+    let hasChanges = false;
+
+    // Check Page Count
+    if (data.page_count) {
+        message += `- Seitenanzahl: ${data.page_count}\n`;
+        hasChanges = true;
+    }
+
+    // Check Keywords
+    if (data.keywords && data.keywords.length > 0) {
+        message += `- ${data.keywords.length} Keywords gefunden: ${data.keywords.slice(0, 5).join(', ')}${data.keywords.length > 5 ? '...' : ''}\n`;
+        hasChanges = true;
+    }
+
+    if (!hasChanges) {
+        // alert("Keine relevanten Daten im PDF gefunden."); // User might not want this alert either?
+        // But this is a "success" case with no data.
+        console.log("Keine relevanten Daten im PDF gefunden.");
+        return;
+    }
+
+    if (confirm(message)) {
+        fillFormFromPdfData(data);
+    }
+}
+
+function fillFormFromPdfData(data) {
+    let msg = "Daten wurden übernommen.\n";
+
+    // 1. Page Count
+    if (data.page_count) {
+        const startPageEl = document.getElementById('edit-host-part-pages-start') || document.querySelector('input[name$="[pages][start]"]');
+        const endPageEl = document.getElementById('edit-host-part-pages-end') || document.querySelector('input[name$="[pages][end]"]');
+
+        if (startPageEl && endPageEl) {
+             const startVal = startPageEl.value.trim();
+             const endVal = endPageEl.value.trim();
+
+             // Only if End Page is empty
+             if (!endVal) {
+                 // Check if already has (XX pp.)
+                 if (!startVal.includes('(')) {
+                     const newVal = startVal ? `${startVal} (${data.page_count} pp.)` : `(${data.page_count} pp.)`;
+                     startPageEl.value = newVal;
+                     startPageEl.dispatchEvent(new Event('input', { bubbles: true }));
+                     msg += `- Start Page aktualisiert: ${newVal}\n`;
+                 }
+             }
+        }
+    }
+
+    // 2. Keywords
+    if (data.keywords && data.keywords.length > 0) {
+        // Add to Keyword Manager if available
+        const list = document.getElementById('dora-keyword-list');
+        if (list) {
+            data.keywords.forEach(kw => {
+                // Clean up newlines/spaces from PDF extraction
+                const cleanKw = kw.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+                // Check if already exists
+                const exists = Array.from(list.querySelectorAll('input')).some(i => i.value.toLowerCase() === cleanKw.toLowerCase());
+                if (!exists) {
+                    const li = createEl('li', 'dora-keyword-item');
+                    li.setAttribute('draggable', 'true');
+
+                    const inputField = createEl('input', 'dora-keyword-input');
+                    inputField.type = 'text';
+                    inputField.value = cleanKw;
+
+                    const handle = createEl('span', 'dora-drag-handle', '☰');
+
+                    li.appendChild(inputField);
+                    li.appendChild(handle);
+
+                    // Bind events
+                    const topicContainer = findKeywordContainer();
+                    if (topicContainer) bindItemEvents(li, topicContainer);
+
+                    list.appendChild(li);
+                }
+            });
+            // Sync back
+            const topicContainer = findKeywordContainer();
+            if (topicContainer) {
+                syncKeywordsBackToDora(topicContainer);
+                msg += `- ${data.keywords.length} Keywords hinzugefügt.\n`;
+            }
+        } else {
+             console.log("Keywords found but Manager not ready:", data.keywords);
+        }
+    }
+
+    // Optional: Show success message or just rely on visual update
+    // alert(msg);
 }
 
 function showLoadingBox() {
@@ -151,7 +366,6 @@ function renderResultBox(data) {
 
     // Title (Restored, smaller, stripped HTML)
     let titleText = meta.title ? meta.title[0] : 'Kein Titel';
-    // Strip HTML tags
     titleText = titleText.replace(/<[^>]*>?/gm, '');
 
     const title = createEl('div', 'dora-meta-title', titleText);
@@ -284,9 +498,18 @@ function renderResultBox(data) {
         importBtn.addEventListener('click', async () => {
             importBtn.disabled = true;
             importBtn.innerHTML = '<span>⏳</span> Import läuft...';
-            await fillBookChapterMetadata(meta);
-            importBtn.disabled = false;
-            importBtn.innerHTML = '<span style="margin-right:5px;">📚</span> Metadaten importieren';
+            try {
+                await fillBookChapterMetadata(meta);
+                importBtn.innerHTML = '✅ Importiert!';
+                setTimeout(() => {
+                    importBtn.disabled = false;
+                    importBtn.innerHTML = '<span style="margin-right:5px;">📚</span> Metadaten importieren';
+                }, 2000);
+            } catch (e) {
+                renderErrorBox(e.message);
+                importBtn.disabled = false;
+                importBtn.innerHTML = '<span style="margin-right:5px;">📚</span> Metadaten importieren';
+            }
         });
         btnContainer.appendChild(importBtn);
     }
@@ -330,6 +553,62 @@ function renderResultBox(data) {
     btnContainer.appendChild(doiLink);
 
     box.appendChild(btnContainer);
+
+    // 5b. Parallel: Deep Scan on Publisher Site (Zotero/Meta-Tags)
+    if (meta.DOI) {
+        findPublisherPdf(meta.DOI, btnContainer, pdfUrl);
+    }
+
+    // 6. PDF Drop Zone (Moved to bottom of result box)
+    const dropZone = createEl('div', 'dora-pdf-drop', '📄 PDF hier ablegen (Analyse)');
+    dropZone.style.cssText = 'border: 2px dashed #ccc; padding: 10px; border-radius: 4px; cursor: pointer; color: #666; font-size: 0.9em; background: #f9f9f9; margin-top: 15px; text-align: center;';
+
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.style.borderColor = '#0073e6';
+        dropZone.style.backgroundColor = '#e6f7ff';
+    });
+
+    dropZone.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        dropZone.style.borderColor = '#ccc';
+        dropZone.style.backgroundColor = '#f9f9f9';
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.style.borderColor = '#ccc';
+        dropZone.style.backgroundColor = '#f9f9f9';
+
+        if (e.dataTransfer.files.length > 0) {
+            handlePdfFile(e.dataTransfer.files[0]);
+        }
+    });
+
+    dropZone.addEventListener('click', () => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.pdf';
+        input.onchange = (e) => {
+            if (e.target.files.length > 0) handlePdfFile(e.target.files[0]);
+        };
+        input.click();
+    });
+
+    // Add PDF URL Button if available
+    function appendPdfUrlBtn(box) {
+        if (pdfUrl) {
+            const pdfUrlBtn = createEl('button', 'dora-box-btn btn-secondary');
+            pdfUrlBtn.innerHTML = '<span style="margin-right:5px;">⚡</span> PDF von URL analysieren';
+            pdfUrlBtn.style.marginTop = '10px';
+            pdfUrlBtn.style.width = '100%';
+            pdfUrlBtn.addEventListener('click', () => handlePdfUrl(pdfUrl));
+            box.appendChild(pdfUrlBtn);
+        }
+    }
+    appendPdfUrlBtn(box);
+
+    box.appendChild(dropZone);
 }
 
 async function addMissingRows(containerSelector, requiredCount) {
@@ -376,7 +655,7 @@ async function addMissingRows(containerSelector, requiredCount) {
 }
 
 async function fillBookChapterMetadata(meta) {
-    if (!meta) { alert("Keine Metadaten verfügbar."); return; }
+    if (!meta) throw new Error("Keine Metadaten verfügbar.");
 
     // 7. Authors - Add rows first
     if (meta.author && meta.author.length > 0) {
@@ -503,7 +782,7 @@ async function fillBookChapterMetadata(meta) {
         }
     }
 
-    alert("Metadaten für Buchkapitel wurden importiert.");
+    // Success is handled by the caller (button UI update)
 }
 
 function insertHybridTag() {
@@ -715,9 +994,166 @@ function loadExceptionsFromStorage(callback) {
 
 function formatKeyword(text) {
     if (!text) return "";
-    let out = text.toLowerCase().trim();
+    let out = text.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').toLowerCase().trim();
     cachedExceptions.forEach(ex => { out = out.replace(ex.regex, ex.replacement); });
     return out;
+}
+
+// --- PUBLISHER PAGE SCANNER (Zotero-style) ---
+function findPublisherPdf(doi, btnContainer, existingPdfUrl) {
+    const url = `https://doi.org/${doi}`;
+    
+    // Wir senden eine Nachricht an den Background-Worker, um HTML zu fetchen (CORS-Bypass)
+    // Hinweis: Ihr Background-Script muss auf { action: "fetchHtml", url: ... } reagieren
+    // und { success: true, data: "<html>..." } zurückgeben.
+    chrome.runtime.sendMessage({ action: "fetchHtml", url: url }, (response) => {
+        if (chrome.runtime.lastError || !response || !response.success) {
+            // Still fail silently, as this is an enhancement
+            return;
+        }
+
+        const htmlContent = response.data;
+        const finalUrl = response.finalUrl || url; // URL nach Redirects (wichtig für relative Links)
+        const foundPdfUrl = extractPdfFromHtml(htmlContent, finalUrl);
+
+        if (foundPdfUrl && foundPdfUrl !== existingPdfUrl) {
+            // Prüfen, ob Button schon existiert (vermeidet Duplikate bei schnellen Re-Renders)
+            if (document.getElementById('dora-publisher-pdf-btn')) return;
+
+            const pubPdfBtn = createEl('a', 'dora-box-btn btn-secondary');
+            pubPdfBtn.id = 'dora-publisher-pdf-btn';
+            pubPdfBtn.href = foundPdfUrl;
+            pubPdfBtn.target = '_blank';
+            pubPdfBtn.innerHTML = '<span style="margin-right:5px;">📄</span> PDF (Verlag)';
+            pubPdfBtn.title = "Gefunden via Meta-Tags auf der Verlagsseite";
+            pubPdfBtn.style.border = "1px solid #2b6cb0"; // Leicht anderes Blau zur Unterscheidung
+            pubPdfBtn.style.color = "#2b6cb0";
+
+            // Optional: Analyze Button für diesen neuen Link hinzufügen
+            const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary');
+            analyzeBtn.innerHTML = '⚡';
+            analyzeBtn.title = "Dieses Verlags-PDF analysieren";
+            analyzeBtn.style.marginLeft = '4px';
+            analyzeBtn.style.padding = '5px 8px';
+            analyzeBtn.onclick = () => handlePdfUrl(foundPdfUrl);
+
+            // Button an passender Stelle einfügen (vor dem DOI Link, nach dem Unpaywall PDF)
+            const doiLink = Array.from(btnContainer.children).find(el => el.innerText.includes('Zum Artikel'));
+            if (doiLink) {
+                btnContainer.insertBefore(pubPdfBtn, doiLink);
+                btnContainer.insertBefore(analyzeBtn, doiLink);
+            } else {
+                btnContainer.appendChild(pubPdfBtn);
+                btnContainer.appendChild(analyzeBtn);
+            }
+        }
+    });
+}
+
+function extractPdfFromHtml(html, baseUrl) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, "text/html");
+    
+    // Helper um relative URLs aufzulösen
+    const resolveUrl = (href) => {
+        try { return new URL(href, baseUrl).href; } catch (e) { return href; }
+    };
+
+    // --- STRATEGIE 1: Highwire Press Tags (Der "Gold Standard" für Zotero) ---
+    // Wird von fast allen großen Verlagen genutzt (Elsevier, Springer, Wiley, Taylor&Francis)
+    const citationPdf = doc.querySelector('meta[name="citation_pdf_url"]');
+    if (citationPdf && citationPdf.content) {
+        return resolveUrl(citationPdf.content);
+    }
+
+    // --- STRATEGIE 2: JSON-LD (Schema.org) ---
+    // Modernes Format, das oft versteckte PDF-Links in "encoding" oder "distribution" enthält
+    const jsonLdScripts = doc.querySelectorAll('script[type="application/ld+json"]');
+    for (const script of jsonLdScripts) {
+        try {
+            const json = JSON.parse(script.textContent);
+            // Wir suchen nach Objekten, die ScholarlyArticle sind oder encoding haben
+            const objects = Array.isArray(json) ? json : [json];
+            
+            for (const obj of objects) {
+                // Suche nach "encoding" (oft bei Springer/Nature)
+                if (obj.encoding) {
+                    const encodings = Array.isArray(obj.encoding) ? obj.encoding : [obj.encoding];
+                    for (const enc of encodings) {
+                        if (enc.encodingFormat === 'application/pdf' && enc.contentUrl) {
+                            return resolveUrl(enc.contentUrl);
+                        }
+                    }
+                }
+                // Suche nach "distribution"
+                if (obj.distribution) {
+                    const dists = Array.isArray(obj.distribution) ? obj.distribution : [obj.distribution];
+                    for (const dist of dists) {
+                        if ((dist.encodingFormat === 'application/pdf' || dist.fileFormat === 'application/pdf') && dist.contentUrl) {
+                            return resolveUrl(dist.contentUrl);
+                        }
+                    }
+                }
+            }
+        } catch (e) { /* Ignore JSON parse errors */ }
+    }
+
+    // --- STRATEGIE 3: Eprints & Bepress Tags (Repositories) ---
+    const eprintsPdf = doc.querySelector('meta[name="eprints.document_url"]');
+    if (eprintsPdf && eprintsPdf.content) {
+        return resolveUrl(eprintsPdf.content);
+    }
+
+    const bepressPdf = doc.querySelector('meta[name="bepress_citation_pdf_url"]');
+    if (bepressPdf && bepressPdf.content) {
+        return resolveUrl(bepressPdf.content);
+    }
+
+    // --- STRATEGIE 4: Dublin Core (Fallback) ---
+    const dcId = doc.querySelector('meta[name="DC.identifier"]');
+    if (dcId && dcId.content && dcId.content.toLowerCase().endsWith('.pdf')) {
+        return resolveUrl(dcId.content);
+    }
+
+    // --- STRATEGIE 5: COinS (ContextObjects in Spans) ---
+    // Zotero nutzt dies oft als Fallback. Wir suchen im title-Attribut nach rft_id, die auf pdf endet.
+    const coins = doc.querySelectorAll('span.Z3988');
+    for (const coin of coins) {
+        const title = coin.getAttribute('title');
+        if (title && title.includes('rft_id=')) {
+            const matches = title.match(/rft_id=([^&]+)/);
+            if (matches && matches[1]) {
+                const decoded = decodeURIComponent(matches[1]);
+                if (decoded.toLowerCase().endsWith('.pdf')) return resolveUrl(decoded);
+            }
+        }
+    }
+
+    // --- STRATEGIE 6: Heuristik (Intelligente Link-Suche) ---
+    // Wenn alles andere fehlschlägt, suchen wir nach echten Links im DOM
+    const anchorTags = Array.from(doc.querySelectorAll('a'));
+    for (const a of anchorTags) {
+        const href = a.getAttribute('href');
+        if (!href) continue;
+        
+        const hrefLower = href.toLowerCase();
+        const textLower = a.innerText.toLowerCase();
+        const titleLower = (a.getAttribute('title') || '').toLowerCase();
+        const classLower = (a.getAttribute('class') || '').toLowerCase();
+
+        // Muss auf .pdf enden ODER explizit "pdf" im Text/Klasse haben UND "download" oder "view" implizieren
+        const looksLikePdf = hrefLower.endsWith('.pdf') || hrefLower.includes('/pdf/');
+        const isPdfButton = textLower.includes('pdf') || classLower.includes('pdf') || titleLower.includes('pdf');
+        
+        // Filter: Vermeide "Help with PDF" oder "About PDF" Links
+        const isHelpLink = textLower.includes('help') || textLower.includes('reader');
+
+        if (looksLikePdf && isPdfButton && !isHelpLink) {
+            return resolveUrl(href);
+        }
+    }
+
+    return null;
 }
 
 // --- VALIDATION ---
@@ -958,7 +1394,6 @@ function validateAuthorRows(errors, pubYear) {
                 } else {
                     markError(nameInput, false);
                 }
-
                 // Rule 4b: Dependency (If name is present, at least Group or Lab should be present)
                 if (nameVal) {
                     const hasAffiliation = (groupInput && groupInput.value.trim()) || (labInput && labInput.value.trim());
@@ -1036,7 +1471,6 @@ function validateAuthorRows(errors, pubYear) {
                             if (!isNaN(pYear) && (currentYear - pYear >= 3)) {
                                 errors.push(`<b>Author ${idx + 1}</b>: Person "${lastname}, ${firstname}" nicht in den Stammdaten gefunden.`);
                             }
-
                             if (groupInput) markError(groupInput, false);
                             if (labInput) markError(labInput, false);
                             if (divisionInput) markError(divisionInput, false);
