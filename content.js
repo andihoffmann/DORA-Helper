@@ -431,7 +431,7 @@ function renderResultBox(data) {
 
     // 4. Badges Container
     const badgesDiv = createEl('div');
-    badgesDiv.style.marginBottom = '15px';
+    badgesDiv.style.marginBottom = '10px';
     
     const statusBadge = createEl('span', `dora-badge ${statusClass}`, statusText);
     badgesDiv.appendChild(statusBadge);
@@ -451,67 +451,9 @@ function renderResultBox(data) {
     }
     box.appendChild(badgesDiv);
 
-    // OpenAlex Check
-    if (openalex && openalex.authorships) {
-        const targetInstitutions = [
-            "Paul Scherrer Institute",
-            "Swiss Federal Institute of Aquatic Science and Technology",
-            "Swiss Federal Laboratories for Materials Science and Technology",
-            "Swiss Federal Institute for Forest, Snow and Landscape Research"
-        ];
-        const targetRORs = [
-            "https://ror.org/0207ad741", // PSI
-            "https://ror.org/02j624c96", // Eawag
-            "https://ror.org/0335b2t11", // Empa
-            "https://ror.org/02d765t03"  // WSL
-        ];
-        const targetAcronyms = ["PSI", "Eawag", "Empa", "WSL"];
-
-        let correspondingAuthorFound = false;
-        let isAffiliated = false;
-        let affiliatedInst = "";
-
-        for (const authorship of openalex.authorships) {
-            if (authorship.is_corresponding) {
-                correspondingAuthorFound = true;
-                for (const inst of authorship.institutions) {
-                    // Check Name
-                    let idx = targetInstitutions.indexOf(inst.display_name);
-
-                    // Check ROR if name match failed
-                    if (idx === -1 && inst.ror) {
-                        idx = targetRORs.indexOf(inst.ror);
-                    }
-
-                    if (idx !== -1) {
-                        isAffiliated = true;
-                        affiliatedInst = targetAcronyms[idx];
-                        break;
-                    }
-                }
-                if (isAffiliated) break;
-            }
-        }
-
-        if (correspondingAuthorFound) {
-            const oaBadge = createEl('div', 'dora-oa-check');
-            oaBadge.style.marginTop = '10px';
-            oaBadge.style.padding = '5px';
-            oaBadge.style.borderRadius = '4px';
-            oaBadge.style.fontSize = '0.9em';
-            oaBadge.title = "Vorschlag basierend auf OpenAlex-Daten. Bitte überprüfen."; // Tooltip
-
-            if (isAffiliated) {
-                oaBadge.style.backgroundColor = '#d4edda';
-                oaBadge.style.color = '#155724';
-                oaBadge.innerHTML = `✅ Corr. author <b>${affiliatedInst}</b> <span style="font-size:0.85em; opacity:0.7;">(OpenAlex)</span>`;
-            } else {
-                oaBadge.style.backgroundColor = '#f8d7da';
-                oaBadge.style.color = '#721c24';
-                oaBadge.innerHTML = `❌ Corr. author: <b>External</b> <span style="font-size:0.85em; opacity:0.7;">(OpenAlex)</span>`;
-            }
-            box.appendChild(oaBadge);
-        }
+    // 5c. Parallel: Scopus Affiliation Check (Corresponding Author) - MOVED UP
+    if (meta.DOI) {
+        checkScopusAffiliation(meta.DOI, box);
     }
 
     // 5. Buttons Container
@@ -1205,6 +1147,36 @@ function extractPdfFromHtml(html, baseUrl) {
     }
 
     return null;
+}
+
+function checkScopusAffiliation(doi, container) {
+    const statusDiv = createEl('div', 'dora-affiliation-status', '');
+    statusDiv.innerHTML = '<span style="font-size: 1.2em; margin-right: 4px;">✉️</span> ⏳ Scopus...';
+    statusDiv.style.cssText = 'margin-bottom: 10px; font-size: 0.8em; color: #666; padding: 3px 8px; background: #f8f9fa; border-radius: 4px; border: 1px solid #eee; width: fit-content; display: flex; align-items: center;';
+    container.appendChild(statusDiv);
+
+    chrome.runtime.sendMessage({ action: "checkScopus", doi: doi }, (response) => {
+        if (response && response.success) {
+            const data = response.data;
+            if (data.isLib4Ri) {
+                let displayAffil = data.affiliation;
+                if (displayAffil.length > 35) displayAffil = displayAffil.substring(0, 32) + '...';
+                statusDiv.innerHTML = `<span style="font-size: 1.2em; margin-right: 4px;">✉️</span> ✅ <b>Scopus:</b> ${displayAffil}`;
+                statusDiv.title = "Corresponding Author ist Lib4Ri affiliiert: " + data.affiliation;
+                statusDiv.style.backgroundColor = '#f0fff4';
+                statusDiv.style.borderColor = '#c6f6d5';
+                statusDiv.style.color = '#22543d';
+            } else {
+                statusDiv.innerHTML = `<span style="font-size: 1.2em; margin-right: 4px;">✉️</span><b>Scopus:</b> Extern`;
+                statusDiv.title = "Keine Lib4Ri-Affiliation gefunden. Gefunden: " + (data.affiliation || "Keine Daten");
+                statusDiv.style.backgroundColor = '#fffaf0';
+                statusDiv.style.borderColor = '#fbd38d';
+                statusDiv.style.color = '#9c4221';
+            }
+        } else {
+            statusDiv.style.display = 'none'; // Optional: Ausblenden bei Fehler
+        }
+    });
 }
 
 // --- LISTENERS ---

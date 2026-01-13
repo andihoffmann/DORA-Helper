@@ -22,9 +22,11 @@ zurich -> Zurich
 // 1. Optionen laden
 function restoreOptions() {
   chrome.storage.sync.get({
-    exceptionList: defaultExceptions
+    exceptionList: defaultExceptions,
+    scopusApiKey: ''
   }, function(items) {
-    document.getElementById('exceptions').value = items.exceptionList;
+    if (document.getElementById('exceptions')) document.getElementById('exceptions').value = items.exceptionList;
+    if (document.getElementById('scopusKey')) document.getElementById('scopusKey').value = items.scopusApiKey;
   });
 
   // Load PSI Data status
@@ -41,10 +43,12 @@ function restoreOptions() {
 
 // 2. Optionen speichern
 function saveOptions() {
-  const text = document.getElementById('exceptions').value;
+  const text = document.getElementById('exceptions') ? document.getElementById('exceptions').value : defaultExceptions;
+  const scopusKey = document.getElementById('scopusKey') ? document.getElementById('scopusKey').value : '';
   
   chrome.storage.sync.set({
-    exceptionList: text
+    exceptionList: text,
+    scopusApiKey: scopusKey
   }, function() {
     // Feedback zeigen
     const status = document.getElementById('status');

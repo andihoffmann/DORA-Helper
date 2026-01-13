@@ -50,7 +50,7 @@
     <li><strong>Smart Features</strong>:
         <ul>
             <li><strong>Publisher Scan</strong>: Scans the publisher's website in the background to find direct PDF links (using Zotero-compatible metadata).</li>
-            <li><strong>Affiliation Check</strong>: Verifies via OpenAlex if the corresponding author is affiliated with PSI, Eawag, Empa, or WSL.</li>
+            <li><strong>Affiliation Check</strong>: Verifies via <strong>Scopus API</strong> if the corresponding author is affiliated with PSI, Eawag, Empa, or WSL (requires API Key in Options).</li>
             <li><strong>Book Chapters</strong>: Special import button for book metadata (Editors, Book Title, ISBN).</li>
         </ul>
     </li>
@@ -135,19 +135,14 @@
 
 <hr />
 
-<h2>Configuration</h2>
+<h3>6. Configuration</h3>
+<p>You can configure the extension via the <strong>Options</strong> page (Right-click extension icon -> Options).</p>
 
-<p>You can customize the keyword formatting rules.</p>
-
-<ol>
-    <li>Open your browser's extension menu.</li>
-    <li>Click <strong>DORA Lib4ri Assistant</strong> &rarr; <strong>Options</strong>.</li>
-    <li>Edit the list of exceptions (Format: <code>lowercase -> Replacement</code>).
-        <ul>
-            <li><em>Example:</em> <code>dna -> DNA</code></li>
-        </ul>
-    </li>
-</ol>
+<ul>
+    <li><strong>Scopus API Key</strong>: Enter your personal API Key to enable the Affiliation Check.</li>
+    <li><strong>Keyword Exceptions</strong>: Manage custom replacement rules for keyword normalization.</li>
+    <li><strong>PSI Data</strong>: Upload a new <code>psi_data.js</code> file to update employee/unit data dynamically.</li>
+</ul>
 
 <blockquote>
     <p><strong>[Screenshot: Place a screenshot here of the Options page]</strong></p>

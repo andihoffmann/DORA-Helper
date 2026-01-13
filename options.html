@@ -12,9 +12,19 @@
     #status { margin-left: 10px; color: green; display: none; }
     .hint { font-size: 0.85em; color: #666; margin-bottom: 10px; }
     .section { margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 20px; }
+    input[type="text"] { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
   </style>
 </head>
 <body>
+  <div class="section">
+    <h2>Scopus API Key</h2>
+    <div class="hint">
+      Benötigt für den Affiliation-Check (Corresponding Author).
+      <a href="https://dev.elsevier.com/apikey/manage" target="_blank">Key hier generieren</a>.
+    </div>
+    <input type="text" id="scopusKey" placeholder="Hier API Key einfügen...">
+  </div>
+
   <div class="section">
     <h2>Keyword Ausnahmen</h2>
     <div class="hint">
@@ -23,7 +33,7 @@
     </div>
     <textarea id="exceptions"></textarea>
     <br>
-    <button id="save">Speichern</button>
+    <button id="save">Einstellungen Speichern</button>
     <span id="status">Gespeichert!</span>
   </div>
 

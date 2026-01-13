@@ -56,6 +56,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ success: true });
         return true;
     }
+
+    if (request.action === "checkScopus") {
+        checkScopusAffiliation(request.doi)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
 });
 
 // Monitor Tabs for PDF URLs (Passive Scan)
@@ -656,5 +663,70 @@ async function analyzePdfUrl(pdfUrl, localPath) {
         return await response.json();
     } catch (e) {
         throw new Error("Failed to analyze PDF URL: " + e.message);
+    }
+}
+
+async function checkScopusAffiliation(doi) {
+    // API Key sicher aus den Einstellungen laden
+    const storage = await chrome.storage.sync.get('scopusApiKey');
+    const apiKey = storage.scopusApiKey;
+
+    if (!apiKey) {
+        throw new Error("Scopus API Key fehlt. Bitte in den Erweiterungs-Einstellungen (Rechtsklick auf Icon -> Optionen) eintragen.");
+    }
+
+    const url = `https://api.elsevier.com/content/abstract/doi/${doi}?apiKey=${apiKey}&httpAccept=application/json`;
+    
+    const res = await fetch(url);
+
+    if (!res.ok) {
+        if (res.status === 404) throw new Error("DOI nicht in Scopus gefunden");
+        if (res.status === 401) throw new Error("API Key ungültig");
+        throw new Error(`Scopus API Fehler: ${res.status}`);
+    }
+
+    const data = await res.json();
+    
+    try {
+        // Pfad zu den Korrespondenz-Daten
+        const bib = data['abstracts-retrieval-response']?.item?.bibrecord?.head?.correspondence;
+        
+        if (!bib) return { isLib4Ri: false, text: "Keine Corresponding-Author Daten in Scopus" };
+
+        // Helper: Prüft auf Lib4Ri Institute
+        const isLib4Ri = (str) => {
+            if (!str) return false;
+            const s = str.toLowerCase();
+            return s.includes('paul scherrer') || s.includes('psi') || 
+                   s.includes('eawag') || s.includes('empa') || 
+                   s.includes('wsl') || s.includes('forest, snow and landscape');
+        };
+
+        let affilText = "";
+        const corrs = Array.isArray(bib) ? bib : [bib];
+        
+        for (const c of corrs) {
+            if (c.affiliation) {
+                const aff = c.affiliation;
+                // Organization kann Array oder String sein
+                let orgs = [];
+                if (Array.isArray(aff.organization)) {
+                    orgs = aff.organization.map(o => o['$'] || o);
+                } else if (aff.organization) {
+                    orgs = [aff.organization];
+                }
+                
+                const fullText = orgs.join(', ') + (aff.country ? `, ${aff.country}` : '');
+                if (isLib4Ri(fullText)) {
+                    return { isLib4Ri: true, affiliation: fullText };
+                }
+                affilText += fullText + "; ";
+            }
+        }
+        
+        return { isLib4Ri: false, affiliation: affilText.replace(/; $/, '') };
+    } catch (e) {
+        console.error(e);
+        throw new Error("Fehler beim Parsen der Scopus-Daten");
     }
 }
