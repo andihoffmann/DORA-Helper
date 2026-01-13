@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Dora Helper",
-  "version": "2.54",
-  "description": "Metadaten-Validator, Import-Tool und Smart Keyword Manager für DORA.",
-  "permissions": ["activeTab", "scripting", "storage"],
+  "version": "2.43",
+  "description": "Metadaten-Validierung, DOI- & Buchkapitel-Import, PDF-Analyse und Open-Access-Checks für DORA.",
+  "permissions": ["activeTab", "scripting", "storage", "downloads", "tabs"],
   "host_permissions": [
     "*://*.dora.lib4ri.ch/*",
     "https://api.unpaywall.org/*",
@@ -13,6 +13,10 @@
     "http://localhost:8080/*",
     "http://localhost:7860/*",
     "http://127.0.0.1:7860/*",
+    "<all_urls>",
+    "file:///*"
+  ],
+  "optional_host_permissions": [
     "*://*/*"
   ],
   

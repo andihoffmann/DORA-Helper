@@ -68,6 +68,7 @@
 <ul>
     <li><strong>Drag & Drop</strong>: Drop a PDF file into the designated zone at the bottom of the result box.</li>
     <li><strong>URL Analysis</strong>: Click the lightning bolt (⚡) icon next to a PDF link to analyze it directly via the backend.</li>
+    <li><strong>Passive Monitor</strong>: The assistant automatically detects PDFs opened in other tabs or downloaded. The drop zone turns green ("⚡ PDF Detected") - click it to import.</li>
 </ul>
 
 <hr />
@@ -107,6 +108,8 @@
         <ul>
             <li>Flags "Standardized Form of Name" if it contains "nomatch" or "4RI".</li>
             <li>Requires an Affiliation/Department if an Author Name is entered.</li>
+            <li><strong>Legacy Data</strong>: For publications before 2006, checks for "0000 PSI" in the Group field instead of requiring Lab/Division.</li>
+            <li><strong>Grace Period</strong>: Author validation is skipped for publications older than 2006 or newer than 3 years.</li>
         </ul>
     </li>
 </ul>

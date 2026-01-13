@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.57
+// Version: 2.43
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -119,7 +119,7 @@ function injectDOIButton(doiInput) {
 
 async function handlePdfFile(file) {
     if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-        alert("Bitte eine PDF-Datei auswählen.");
+        renderErrorBox("Bitte eine PDF-Datei auswählen.");
         return;
     }
 
@@ -152,79 +152,99 @@ async function handlePdfFile(file) {
                 dropZone.innerHTML = '📄 PDF hier ablegen'; // Reset
                 dropZone.style.backgroundColor = '#f9f9f9';
             }
-            confirmAndFillPdfData(data);
+            confirmAndFillPdfData(data, 'file');
         } else {
             throw new Error(data.message || "Unbekannter Fehler");
         }
 
     } catch (error) {
-        // Error handling: Show in dropzone only, no alert, no result box replacement
         if (dropZone) {
-            dropZone.innerHTML = '❌ Fehler (Docker?)';
-            dropZone.title = error.message; // Show full error on hover
-            dropZone.style.backgroundColor = '#f8d7da';
-            dropZone.style.color = '#721c24';
-
-            setTimeout(() => {
-                dropZone.innerHTML = '📄 PDF hier ablegen';
-                dropZone.style.backgroundColor = '#f9f9f9';
-                dropZone.style.color = '#666';
-                dropZone.title = '';
-            }, 3000);
+            dropZone.innerHTML = '📄 PDF hier ablegen';
+            dropZone.style.backgroundColor = '#f9f9f9';
         }
+        renderErrorBox("PDF Analyse fehlgeschlagen: " + error.message + "\n\n(Läuft der Docker Container auf Port 7860?)");
         console.error("PDF Analyse fehlgeschlagen:", error);
     }
 }
 
-async function handlePdfUrl(url) {
-    // For URL analysis, we usually show the loading box because there is no dropzone to update
-    // But user wants no error in result box.
-    // We will use a temporary toast or just console log if it fails?
-    // Or update the button text?
-
-    // Let's try to find the button that triggered this
-    const buttons = document.querySelectorAll('button');
-    let triggerBtn = null;
-    for (const btn of buttons) {
-        if (btn.innerText.includes('PDF von URL')) {
-            triggerBtn = btn;
-            break;
+async function handlePdfUrl(url, triggerBtn = null, localPath = null) {
+    // Fallback: Try to find the standard "PDF von URL" button if no button passed
+    if (!triggerBtn) {
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+            if (btn.innerText.includes('PDF von URL')) {
+                triggerBtn = btn;
+                break;
+            }
         }
     }
 
+    let originalText = '';
     if (triggerBtn) {
-        const originalText = triggerBtn.innerHTML;
+        originalText = triggerBtn.innerHTML;
         triggerBtn.innerHTML = '⏳ Lade...';
         triggerBtn.disabled = true;
+    }
 
-        chrome.runtime.sendMessage({ action: "analyzePdfUrl", pdfUrl: url }, (response) => {
+    try {
+        // Strategy: Use new tab-based method for all URLs (including blob:)
+        if (url && !localPath) {
+            console.log('Requesting background script to fetch PDF via tab:', url);
+
+            chrome.runtime.sendMessage({
+                action: "analyzePdfViaTab",
+                pdfUrl: url
+            }, (response) => {
+                if (triggerBtn) triggerBtn.disabled = false;
+                if (response && response.success) {
+                    if (triggerBtn) triggerBtn.innerHTML = originalText;
+                    confirmAndFillPdfData(response.data, url.startsWith('blob:') ? 'monitor' : 'url');
+                } else {
+                    if (triggerBtn) {
+                        triggerBtn.innerHTML = '❌ Fehler';
+                        triggerBtn.title = response ? response.error : "Unbekannter Fehler";
+                        setTimeout(() => {
+                            triggerBtn.innerHTML = originalText;
+                            triggerBtn.title = '';
+                        }, 3000);
+                    }
+                    renderErrorBox("PDF Analyse fehlgeschlagen: " + (response ? response.error : "Unbekannter Fehler"));
+                }
+            });
+            return;
+        }
+
+        // FALLBACK: Use old method only for localPath (downloaded files)
+        chrome.runtime.sendMessage({ action: "analyzePdfUrl", pdfUrl: url, localPath: localPath }, (response) => {
+            if (triggerBtn) triggerBtn.disabled = false;
+            if (response && response.success) {
+                if (triggerBtn) triggerBtn.innerHTML = originalText;
+                confirmAndFillPdfData(response.data, 'monitor');
+            } else {
+                if (triggerBtn) {
+                    triggerBtn.innerHTML = '❌ Fehler';
+                    triggerBtn.title = response ? response.error : "Unbekannter Fehler";
+                    setTimeout(() => {
+                        triggerBtn.innerHTML = originalText;
+                        triggerBtn.title = '';
+                    }, 3000);
+                }
+                renderErrorBox("PDF URL Analyse fehlgeschlagen: " + (response ? response.error : "Unbekannter Fehler"));
+            }
+        });
+    } catch (error) {
+        if (triggerBtn) {
             triggerBtn.disabled = false;
-            if (response && response.success) {
+            triggerBtn.innerHTML = '❌ Fehler';
+            setTimeout(() => {
                 triggerBtn.innerHTML = originalText;
-                confirmAndFillPdfData(response.data);
-            } else {
-                triggerBtn.innerHTML = '❌ Fehler';
-                triggerBtn.title = response ? response.error : "Unbekannter Fehler";
-                setTimeout(() => {
-                    triggerBtn.innerHTML = originalText;
-                    triggerBtn.title = '';
-                }, 3000);
-                console.error("PDF URL Analyse fehlgeschlagen:", response ? response.error : "Unknown");
-            }
-        });
-    } else {
-        // Fallback if button not found (should not happen)
-        chrome.runtime.sendMessage({ action: "analyzePdfUrl", pdfUrl: url }, (response) => {
-            if (response && response.success) {
-                confirmAndFillPdfData(response.data);
-            } else {
-                console.error("PDF URL Analyse fehlgeschlagen:", response ? response.error : "Unknown");
-            }
-        });
+            }, 3000);
+        }
+        renderErrorBox("PDF Analyse fehlgeschlagen: " + error.message);
     }
 }
 
-function confirmAndFillPdfData(data) {
+function confirmAndFillPdfData(data, sourceType = 'url') {
     let message = "PDF Analyse erfolgreich.\n\nMöchten Sie folgende Daten übernehmen?\n\n";
 
     let hasChanges = false;
@@ -242,9 +262,20 @@ function confirmAndFillPdfData(data) {
     }
 
     if (!hasChanges) {
-        // alert("Keine relevanten Daten im PDF gefunden."); // User might not want this alert either?
-        // But this is a "success" case with no data.
-        console.log("Keine relevanten Daten im PDF gefunden.");
+        let errorMsg = "Analyse lieferte keine Daten.\n\n";
+        
+        if (sourceType === 'file') {
+             errorMsg += "Ursache: Das PDF enthält keinen extrahierbaren Text (z.B. reiner Bild-Scan) oder ist leer.";
+        } else if (sourceType === 'monitor') {
+             errorMsg += "Ursache: Der Zugriff auf die heruntergeladene Datei ist fehlgeschlagen.\n";
+             errorMsg += "Mögliche Gründe:\n";
+             errorMsg += "1. 'Zugriff auf Datei-URLs zulassen' ist in den Erweiterungs-Einstellungen deaktiviert (Chrome).\n";
+             errorMsg += "2. Der Fallback-Download wurde durch Login/Redirect blockiert.";
+        } else {
+             errorMsg += "Ursache: Wahrscheinlich konnte das PDF nicht direkt abgerufen werden (Login/Redirect).";
+        }
+        errorMsg += "\n\nLösung: Bitte PDF manuell herunterladen und per Drag & Drop analysieren.";
+        renderErrorBox(errorMsg);
         return;
     }
 
@@ -341,7 +372,7 @@ function renderErrorBox(msgText) {
     closeBtn.addEventListener('click', () => box.remove());
     
     const msgDiv = createEl('div', '', `❌ Fehler: ${msgText}`);
-    msgDiv.style.cssText = 'color:#e53e3e; padding:10px; font-weight:bold; font-family:sans-serif;';
+    msgDiv.style.cssText = 'color:#e53e3e; padding:10px; font-weight:bold; font-family:sans-serif; white-space: pre-wrap;';
     
     box.appendChild(closeBtn);
     box.appendChild(msgDiv);
@@ -485,6 +516,9 @@ function renderResultBox(data) {
 
     // 5. Buttons Container
     const btnContainer = createEl('div', 'dora-btn-container');
+    btnContainer.style.display = 'flex';
+    btnContainer.style.flexDirection = 'column';
+    btnContainer.style.gap = '8px';
 
     // Check if it is a Book Chapter
     const pubTypeEl = document.getElementById('edit-publication-type');
@@ -524,15 +558,31 @@ function renderResultBox(data) {
         btnContainer.appendChild(hybridBtn);
     }
 
-    // PDF Button
+    // NEW: PDF Action Row (Zeile für PDF-Aktionen)
+    const pdfActionRow = createEl('div', '', '');
+    pdfActionRow.style.cssText = 'display:flex; gap:5px; align-items:center; flex-wrap:wrap;';
+
+    // PDF Button (Unpaywall)
     const pdfUrl = bestLoc.url_for_pdf;
     if (pdfUrl) {
         const pdfBtn = createEl('a', 'dora-box-btn btn-secondary');
+        pdfBtn.id = 'dora-main-pdf-btn';
         pdfBtn.href = pdfUrl;
         pdfBtn.target = '_blank';
-        pdfBtn.innerHTML = '<span style="margin-right:5px;">📄</span> PDF ansehen';
-        btnContainer.appendChild(pdfBtn);
+        pdfBtn.innerHTML = '<span style="margin-right:5px;">📄</span> PDF ansehen (Unpaywall)';
+        pdfBtn.style.flex = '1';
+        pdfActionRow.appendChild(pdfBtn);
+
+        const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary');
+        analyzeBtn.innerHTML = '⚡';
+        analyzeBtn.title = "Dieses PDF analysieren";
+        analyzeBtn.style.width = 'auto';
+        analyzeBtn.style.padding = '6px 10px';
+        analyzeBtn.onclick = () => handlePdfUrl(pdfUrl, analyzeBtn);
+        pdfActionRow.appendChild(analyzeBtn);
     }
+    
+    btnContainer.appendChild(pdfActionRow);
 
     // Policy Button
     const issn = meta.ISSN ? meta.ISSN[0] : null;
@@ -545,23 +595,26 @@ function renderResultBox(data) {
     }
 
     // DOI Link
-    const doiLink = createEl('a', 'dora-box-btn btn-secondary', '🌐 Zum Artikel');
+    const doiLink = createEl('a', 'dora-box-link', '🔗 Zum Artikel (Verlagsseite)');
     doiLink.href = `https://doi.org/${meta.DOI}`;
     doiLink.target = '_blank';
-    doiLink.style.fontSize = '0.85em';
-    doiLink.style.color = '#888';
+    doiLink.style.display = 'block';
+    doiLink.style.marginTop = '5px';
+    doiLink.style.textAlign = 'center';
+    doiLink.style.fontSize = '0.9em';
+    doiLink.style.color = '#666';
     btnContainer.appendChild(doiLink);
 
     box.appendChild(btnContainer);
 
     // 5b. Parallel: Deep Scan on Publisher Site (Zotero/Meta-Tags)
     if (meta.DOI) {
-        findPublisherPdf(meta.DOI, btnContainer, pdfUrl);
+        findPublisherPdf(meta.DOI, pdfActionRow, pdfUrl);
     }
 
     // 6. PDF Drop Zone (Moved to bottom of result box)
-    const dropZone = createEl('div', 'dora-pdf-drop', '📄 PDF hier ablegen (Analyse)');
-    dropZone.style.cssText = 'border: 2px dashed #ccc; padding: 10px; border-radius: 4px; cursor: pointer; color: #666; font-size: 0.9em; background: #f9f9f9; margin-top: 15px; text-align: center;';
+    const dropZone = createEl('div', 'dora-pdf-drop', '📄 PDF hier ablegen oder öffnen');
+    dropZone.style.cssText = 'border: 2px dashed #ccc; padding: 10px; border-radius: 4px; cursor: pointer; color: #666; font-size: 0.9em; background: #f9f9f9; margin-top: 10px; text-align: center; transition: all 0.2s;';
 
     dropZone.addEventListener('dragover', (e) => {
         e.preventDefault();
@@ -595,18 +648,8 @@ function renderResultBox(data) {
         input.click();
     });
 
-    // Add PDF URL Button if available
-    function appendPdfUrlBtn(box) {
-        if (pdfUrl) {
-            const pdfUrlBtn = createEl('button', 'dora-box-btn btn-secondary');
-            pdfUrlBtn.innerHTML = '<span style="margin-right:5px;">⚡</span> PDF von URL analysieren';
-            pdfUrlBtn.style.marginTop = '10px';
-            pdfUrlBtn.style.width = '100%';
-            pdfUrlBtn.addEventListener('click', () => handlePdfUrl(pdfUrl));
-            box.appendChild(pdfUrlBtn);
-        }
-    }
-    appendPdfUrlBtn(box);
+    // Register for passive monitoring
+    chrome.runtime.sendMessage({ action: "registerDoraTab" });
 
     box.appendChild(dropZone);
 }
@@ -1000,7 +1043,7 @@ function formatKeyword(text) {
 }
 
 // --- PUBLISHER PAGE SCANNER (Zotero-style) ---
-function findPublisherPdf(doi, btnContainer, existingPdfUrl) {
+function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
     const url = `https://doi.org/${doi}`;
     
     // Wir senden eine Nachricht an den Background-Worker, um HTML zu fetchen (CORS-Bypass)
@@ -1017,34 +1060,42 @@ function findPublisherPdf(doi, btnContainer, existingPdfUrl) {
         const foundPdfUrl = extractPdfFromHtml(htmlContent, finalUrl);
 
         if (foundPdfUrl && foundPdfUrl !== existingPdfUrl) {
-            // Prüfen, ob Button schon existiert (vermeidet Duplikate bei schnellen Re-Renders)
-            if (document.getElementById('dora-publisher-pdf-btn')) return;
-
-            const pubPdfBtn = createEl('a', 'dora-box-btn btn-secondary');
-            pubPdfBtn.id = 'dora-publisher-pdf-btn';
-            pubPdfBtn.href = foundPdfUrl;
-            pubPdfBtn.target = '_blank';
-            pubPdfBtn.innerHTML = '<span style="margin-right:5px;">📄</span> PDF (Verlag)';
-            pubPdfBtn.title = "Gefunden via Meta-Tags auf der Verlagsseite";
-            pubPdfBtn.style.border = "1px solid #2b6cb0"; // Leicht anderes Blau zur Unterscheidung
-            pubPdfBtn.style.color = "#2b6cb0";
-
-            // Optional: Analyze Button für diesen neuen Link hinzufügen
-            const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary');
-            analyzeBtn.innerHTML = '⚡';
-            analyzeBtn.title = "Dieses Verlags-PDF analysieren";
-            analyzeBtn.style.marginLeft = '4px';
-            analyzeBtn.style.padding = '5px 8px';
-            analyzeBtn.onclick = () => handlePdfUrl(foundPdfUrl);
-
-            // Button an passender Stelle einfügen (vor dem DOI Link, nach dem Unpaywall PDF)
-            const doiLink = Array.from(btnContainer.children).find(el => el.innerText.includes('Zum Artikel'));
-            if (doiLink) {
-                btnContainer.insertBefore(pubPdfBtn, doiLink);
-                btnContainer.insertBefore(analyzeBtn, doiLink);
+            // Wir haben einen besseren/anderen Link gefunden!
+            
+            // Prüfen ob wir schon einen Haupt-Button haben
+            const mainBtn = document.getElementById('dora-main-pdf-btn');
+            
+            if (mainBtn) {
+                // Update existing button
+                mainBtn.href = foundPdfUrl;
+                mainBtn.innerHTML = '<span style="margin-right:5px;">📄</span> PDF (Verlag)';
+                mainBtn.title = "Direkter Link via Verlags-Metadaten gefunden";
+                mainBtn.style.border = "1px solid #2b6cb0";
+                mainBtn.style.color = "#2b6cb0";
+                
+                // Update the analyze action next to it
+                const analyzeBtn = rowContainer.querySelector('button');
+                if (analyzeBtn) {
+                    analyzeBtn.onclick = () => handlePdfUrl(foundPdfUrl, analyzeBtn, null);
+                }
             } else {
-                btnContainer.appendChild(pubPdfBtn);
-                btnContainer.appendChild(analyzeBtn);
+                // Create new if none existed
+                const pubPdfBtn = createEl('a', 'dora-box-btn btn-secondary');
+                pubPdfBtn.id = 'dora-main-pdf-btn';
+                pubPdfBtn.href = foundPdfUrl;
+                pubPdfBtn.target = '_blank';
+                pubPdfBtn.innerHTML = '<span style="margin-right:5px;">📄</span> PDF (Verlag)';
+                pubPdfBtn.style.flex = '1';
+                
+                const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary');
+                analyzeBtn.innerHTML = '⚡';
+                analyzeBtn.title = "Dieses Verlags-PDF analysieren";
+                analyzeBtn.style.width = 'auto';
+                analyzeBtn.style.padding = '6px 10px';
+                analyzeBtn.onclick = () => handlePdfUrl(foundPdfUrl, analyzeBtn, null);
+
+                rowContainer.appendChild(pubPdfBtn);
+                rowContainer.appendChild(analyzeBtn);
             }
         }
     });
@@ -1155,6 +1206,27 @@ function extractPdfFromHtml(html, baseUrl) {
 
     return null;
 }
+
+// --- LISTENERS ---
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "pdfDetected") {
+        // Statt Button zu ändern, nutzen wir die Dropzone als Benachrichtigungsfläche
+        const dropZone = document.querySelector('.dora-pdf-drop');
+        if (dropZone) {
+            dropZone.innerHTML = `⚡ <b>PDF Erkannt!</b><br><small>${request.filename.substring(0, 25)}...</small>`;
+            dropZone.style.backgroundColor = '#e6fffa';
+            dropZone.style.borderColor = '#38b2ac';
+            dropZone.style.color = '#2c7a7b';
+            
+            // Klick auf Dropzone startet nun den Import dieses PDFs
+            dropZone.onclick = (e) => {
+                e.preventDefault(); // Kein File-Dialog
+                dropZone.innerHTML = '⏳ Analysiere...';
+                handlePdfUrl(request.url, null, request.localPath);
+            };
+        }
+    }
+});
 
 // --- VALIDATION ---
 function validateForm() {
@@ -1357,6 +1429,9 @@ function checkSentenceCase(el, label, errors) {
 }
 
 function validateAuthorRows(errors, pubYear) {
+    const pYearInt = parseInt(pubYear, 10);
+    const isOldPsiPub = !isNaN(pYearInt) && pYearInt < 2006;
+
     // 1. Specific Islandora Fieldpanel Logic
     const authorsContainer = document.querySelector('.form-item-authors');
     if (authorsContainer) {
@@ -1468,7 +1543,7 @@ function validateAuthorRows(errors, pubYear) {
                             const currentYear = new Date().getFullYear();
                             const pYear = parseInt(pubYear, 10);
 
-                            if (!isNaN(pYear) && (currentYear - pYear >= 3)) {
+                            if (!isNaN(pYear) && pYear >= 2006 && (currentYear - pYear >= 3)) {
                                 errors.push(`<b>Author ${idx + 1}</b>: Person "${lastname}, ${firstname}" nicht in den Stammdaten gefunden.`);
                             }
                             if (groupInput) markError(groupInput, false);
@@ -1483,13 +1558,21 @@ function validateAuthorRows(errors, pubYear) {
 
                     // Rule 4d: Completeness (If Group is set, Lab and Division should be set)
                     if (groupInput && groupInput.value.trim()) {
-                        if (labInput && !labInput.value.trim()) {
-                             markError(labInput, true, 'Laboratory sollte ausgefüllt sein, wenn Group vorhanden ist.');
-                             errors.push(`<b>Author ${idx + 1} (Lab)</b>: Laboratory fehlt (Group ist gesetzt).`);
-                        }
-                        if (divisionInput && !divisionInput.value.trim()) {
-                             markError(divisionInput, true, 'Division sollte ausgefüllt sein, wenn Group vorhanden ist.');
-                             errors.push(`<b>Author ${idx + 1} (Division)</b>: Division fehlt (Group ist gesetzt).`);
+                        if (isOldPsiPub) {
+                            const groupVal = groupInput.value.trim();
+                            if (!groupVal.includes('0000 PSI')) {
+                                markError(groupInput, true, 'Für Publikationen vor 2006 wird "0000 PSI" erwartet.');
+                                errors.push(`<b>Author ${idx + 1} (Group)</b>: Für Publikationen vor 2006 wird "0000 PSI" erwartet.`);
+                            }
+                        } else {
+                            if (labInput && !labInput.value.trim()) {
+                                 markError(labInput, true, 'Laboratory sollte ausgefüllt sein, wenn Group vorhanden ist.');
+                                 errors.push(`<b>Author ${idx + 1} (Lab)</b>: Laboratory fehlt (Group ist gesetzt).`);
+                            }
+                            if (divisionInput && !divisionInput.value.trim()) {
+                                 markError(divisionInput, true, 'Division sollte ausgefüllt sein, wenn Group vorhanden ist.');
+                                 errors.push(`<b>Author ${idx + 1} (Division)</b>: Division fehlt (Group ist gesetzt).`);
+                            }
                         }
                     }
                 } else {
