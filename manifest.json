@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Dora Helper",
-  "version": "2.44",
+  "version": "2.48",
   "description": "Metadaten-Validierung, DOI- & Buchkapitel-Import, PDF-Analyse und Open-Access-Checks für DORA.",
   "permissions": ["activeTab", "scripting", "storage", "downloads", "tabs"],
   "host_permissions": [
@@ -10,9 +10,7 @@
     "https://api.crossref.org/*",
     "https://api.openalex.org/*",
     "https://intranet.psi.ch/*",
-    "http://localhost:8080/*",
-    "http://localhost:7860/*",
-    "http://127.0.0.1:7860/*",
+    "https://andrehoffmann80-pdf-analyzer.hf.space/*",
     "<all_urls>",
     "file:///*"
   ],

@@ -161,8 +161,8 @@ async function analyzePdf(dataUrl) {
         const formData = new FormData();
         formData.append("file", blob, "upload.pdf");
 
-        // Use 127.0.0.1 to avoid some localhost resolution issues
-        const API_URL = "http://127.0.0.1:7860/analyze";
+        // Hugging Face Space
+        const API_URL = "https://andrehoffmann80-pdf-analyzer.hf.space/analyze";
 
         const response = await fetch(API_URL, {
             method: "POST",
@@ -411,7 +411,7 @@ async function analyzePdfViaTab(pdfUrl) {
         const formData = new FormData();
         formData.append("file", blob, "downloaded.pdf");
 
-        const API_URL = "http://127.0.0.1:7860/analyze";
+        const API_URL = "https://andrehoffmann80-pdf-analyzer.hf.space/analyze";
         const response = await fetch(API_URL, {
             method: "POST",
             body: formData
@@ -431,7 +431,7 @@ async function analyzePdfViaTab(pdfUrl) {
             const formData = new FormData();
             formData.append("pdf_url", pdfUrl);
 
-            const API_URL = "http://127.0.0.1:7860/analyze";
+            const API_URL = "https://andrehoffmann80-pdf-analyzer.hf.space/analyze";
             const response = await fetch(API_URL, {
                 method: "POST",
                 body: formData
@@ -649,7 +649,7 @@ async function analyzePdfUrl(pdfUrl, localPath) {
             formData.append("pdf_url", pdfUrl);
         }
 
-        const API_URL = "http://127.0.0.1:7860/analyze";
+        const API_URL = "https://andrehoffmann80-pdf-analyzer.hf.space/analyze";
 
         const response = await fetch(API_URL, {
             method: "POST",

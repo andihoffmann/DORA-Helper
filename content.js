@@ -1,11 +1,12 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.43
+// Version: 2.48
 
 let observerTimeout = null;
 let dragSrcEl = null;
 let lastAutoFetchedDoi = ""; 
 let cachedExceptions = []; 
 let isMouseOverHandle = false; 
+let isSummaryMinimized = false; // Status für das Fehler-Panel
 
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', startObserver);
@@ -45,6 +46,7 @@ function scanAndInject() {
     if (topicContainer && !document.getElementById('dora-keyword-manager')) {
         injectKeywordManager(topicContainer);
     }
+    injectTagButtons();
 
     validateForm();
 }
@@ -130,8 +132,8 @@ async function handlePdfFile(file) {
         dropZone.style.backgroundColor = '#fff3cd';
     }
 
-    // Use 127.0.0.1 as requested
-    const API_URL = "http://127.0.0.1:7860/analyze";
+    // Hugging Face Space
+    const API_URL = "https://andrehoffmann80-pdf-analyzer.hf.space/analyze";
     const formData = new FormData();
     formData.append("file", file);
 
@@ -397,9 +399,13 @@ function renderResultBox(data) {
 
     // Title (Restored, smaller, stripped HTML)
     let titleText = meta.title ? meta.title[0] : 'Kein Titel';
-    titleText = titleText.replace(/<[^>]*>?/gm, '');
+    
+    const title = createEl('div', 'dora-meta-title');
+    // Safe decoding of HTML entities without executing scripts
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(titleText, 'text/html');
+    title.textContent = doc.body.textContent || "";
 
-    const title = createEl('div', 'dora-meta-title', titleText);
     title.style.fontSize = '0.9em'; // Reduced by ~20-30% from 1.1em
     title.style.fontWeight = 'bold';
     title.style.marginBottom = '5px';
@@ -469,22 +475,31 @@ function renderResultBox(data) {
     if (isBookChapter) {
         const importBtn = createEl('button', 'dora-box-btn btn-hybrid-action');
         importBtn.id = 'dora-import-book-chapter';
-        importBtn.innerHTML = '<span style="margin-right:5px;">📚</span> Metadaten importieren';
+        
+        const icon = createEl('span', '', '📚');
+        icon.style.marginRight = '5px';
+        importBtn.appendChild(icon);
+        importBtn.appendChild(document.createTextNode(' Metadaten importieren'));
+        
         importBtn.title = "Importiert Titel, Buch-Titel, Seiten, Jahr, Verlag, Autoren, Editoren und Abstract aus Crossref";
         importBtn.addEventListener('click', async () => {
             importBtn.disabled = true;
-            importBtn.innerHTML = '<span>⏳</span> Import läuft...';
+            importBtn.textContent = '⏳ Import läuft...';
             try {
                 await fillBookChapterMetadata(meta);
-                importBtn.innerHTML = '✅ Importiert!';
+                importBtn.textContent = '✅ Importiert!';
                 setTimeout(() => {
                     importBtn.disabled = false;
-                    importBtn.innerHTML = '<span style="margin-right:5px;">📚</span> Metadaten importieren';
+                    importBtn.innerHTML = ''; // Clear
+                    importBtn.appendChild(icon.cloneNode(true));
+                    importBtn.appendChild(document.createTextNode(' Metadaten importieren'));
                 }, 2000);
             } catch (e) {
                 renderErrorBox(e.message);
                 importBtn.disabled = false;
-                importBtn.innerHTML = '<span style="margin-right:5px;">📚</span> Metadaten importieren';
+                importBtn.innerHTML = '';
+                importBtn.appendChild(icon.cloneNode(true));
+                importBtn.appendChild(document.createTextNode(' Metadaten importieren'));
             }
         });
         btnContainer.appendChild(importBtn);
@@ -495,7 +510,10 @@ function renderResultBox(data) {
         const hybridBtn = createEl('button', 'dora-box-btn btn-hybrid-action');
         hybridBtn.id = 'dora-add-hybrid-btn';
         hybridBtn.title = "Fügt #hybrid in Additional Information ein";
-        hybridBtn.innerHTML = '<span style="margin-right:5px;">📝</span> #hybrid setzen';
+        const icon = createEl('span', '', '📝');
+        icon.style.marginRight = '5px';
+        hybridBtn.appendChild(icon);
+        hybridBtn.appendChild(document.createTextNode(' #hybrid setzen'));
         hybridBtn.addEventListener('click', insertHybridTag);
         btnContainer.appendChild(hybridBtn);
     }
@@ -511,12 +529,15 @@ function renderResultBox(data) {
         pdfBtn.id = 'dora-main-pdf-btn';
         pdfBtn.href = pdfUrl;
         pdfBtn.target = '_blank';
-        pdfBtn.innerHTML = '<span style="margin-right:5px;">📄</span> PDF ansehen (Unpaywall)';
+        const icon = createEl('span', '', '📄');
+        icon.style.marginRight = '5px';
+        pdfBtn.appendChild(icon);
+        pdfBtn.appendChild(document.createTextNode(' PDF ansehen (Unpaywall)'));
         pdfBtn.style.flex = '1';
         pdfActionRow.appendChild(pdfBtn);
 
         const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary');
-        analyzeBtn.innerHTML = '⚡';
+        analyzeBtn.textContent = '⚡';
         analyzeBtn.title = "Dieses PDF analysieren";
         analyzeBtn.style.width = 'auto';
         analyzeBtn.style.padding = '6px 10px';
@@ -532,7 +553,10 @@ function renderResultBox(data) {
         const policyBtn = createEl('a', 'dora-box-btn btn-secondary');
         policyBtn.href = `https://openpolicyfinder.jisc.ac.uk/search?search=${issn}`;
         policyBtn.target = '_blank';
-        policyBtn.innerHTML = '<span style="margin-right:5px;">🛡️</span> Policy prüfen';
+        const icon = createEl('span', '', '🛡️');
+        icon.style.marginRight = '5px';
+        policyBtn.appendChild(icon);
+        policyBtn.appendChild(document.createTextNode(' Policy prüfen'));
         btnContainer.appendChild(policyBtn);
     }
 
@@ -822,7 +846,10 @@ function injectKeywordManager(topicContainer) {
     const hint = createEl('div', '', '');
     hint.id = 'dora-drag-hint';
     hint.style.cssText = "display:none; font-size:0.8em; color:#666; margin-top:5px;";
-    hint.innerHTML = '📝 Bearbeiten möglich. <b>☰ Griff ziehen</b> zum Sortieren.';
+    hint.appendChild(document.createTextNode('📝 Bearbeiten möglich. '));
+    const b = createEl('b', '', '☰ Griff ziehen');
+    hint.appendChild(b);
+    hint.appendChild(document.createTextNode(' zum Sortieren.'));
     toolHeader.appendChild(hint);
 
     const tagList = topicContainer.querySelector('.tag-list') || topicContainer.querySelector('.xml-form-elements-tags') || topicContainer.querySelector('div[class*="tags"]');
@@ -957,6 +984,90 @@ function syncKeywordsBackToDora(topicContainer) {
     }
 }
 
+// --- TAG BUTTONS FOR ADDITIONAL INFORMATION ---
+function injectTagButtons() {
+    // Suche nach dem Additional Information Textarea
+    let addInfoArea = document.querySelector('textarea[name*="additional_information"]');
+    
+    // Fallback: Suche über Label
+    if (!addInfoArea) {
+        const labels = Array.from(document.querySelectorAll('label'));
+        const targetLabel = labels.find(l => l.innerText.includes('Additional Information') || l.innerText.includes('Additional information'));
+        if (targetLabel) {
+            const id = targetLabel.getAttribute('for');
+            if (id) addInfoArea = document.getElementById(id);
+        }
+    }
+
+    if (!addInfoArea || addInfoArea.dataset.hasTagButtons) return;
+    addInfoArea.dataset.hasTagButtons = "true";
+
+    const container = createEl('div');
+    container.style.cssText = 'display:flex; gap:5px; flex-wrap:wrap; margin-top:5px;';
+
+    // Check context (WSL only for #CERC)
+    const isWSL = window.location.href.toLowerCase().includes('/wsl');
+
+    const tags = [
+        { label: '#other_journal_contribution', title: 'Editorials, Letters, Introductions, Commentary, Book Reviews, etc. (nur Journal Articles). Bei Unsicherheiten lieber taggen! Short communication nicht taggen.' },
+        { label: '#present_address', title: 'Keine 4RI-Affiliation, aber "Present address" vorhanden. Bitte mit Initialen und Nachnamen angeben.', prompt: true },
+        { label: '#corporate', title: 'Unter den Autoren befindet sich eine Körperschaft.' },
+        { label: '#green', title: 'Artikel darf gemäss Policy des Verlags in der Published Version Open Access gemacht werden; ggfs. ist ein Embargo einzuhalten; Tag wird nur von JHB verwendet.', customStyle: 'background-color: #f0fff4; border-color: #c6f6d5; color: #22543d;' },
+        { label: '#CERC', title: 'CERC-Publikationen (ab 2021). Journal Articles (ab 2022) nur wenn Affiliation auf Paper. Auch bei Meldung durch Autor/Admin (Notiz in Lib4RI-Notes).', show: isWSL }
+    ];
+
+    tags.forEach(tag => {
+        if (tag.hasOwnProperty('show') && !tag.show) return;
+
+        const btn = createEl('button', 'dora-box-btn btn-secondary');
+        btn.innerText = tag.label;
+        btn.title = tag.title;
+        let baseStyle = 'padding: 2px 8px; font-size: 0.85em; background: #e2e8f0; border: 1px solid #cbd5e0; border-radius: 3px; cursor: pointer; color: #2d3748; width: auto;';
+        if (tag.customStyle) baseStyle += tag.customStyle;
+        btn.style.cssText = baseStyle;
+        
+        btn.onclick = (e) => {
+            e.preventDefault();
+            let valueToInsert = tag.label;
+            
+            if (tag.prompt) {
+                const name = prompt('Bitte Initialen und Nachnamen eingeben (z.B. A.B. Dennis):');
+                if (!name) return;
+                valueToInsert = `${tag.label}: ${name}`;
+            }
+
+            insertAtCursor(addInfoArea, valueToInsert);
+            addInfoArea.dispatchEvent(new Event('input', { bubbles: true }));
+            addInfoArea.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        container.appendChild(btn);
+    });
+
+    addInfoArea.parentNode.appendChild(container);
+}
+
+function insertAtCursor(myField, myValue) {
+    if (myField.selectionStart || myField.selectionStart == '0') {
+        var startPos = myField.selectionStart;
+        var endPos = myField.selectionEnd;
+        
+        let prefix = "";
+        if (startPos > 0 && myField.value[startPos-1] !== ' ' && myField.value[startPos-1] !== '\n') {
+            prefix = " ";
+        }
+        
+        myField.value = myField.value.substring(0, startPos)
+            + prefix + myValue
+            + myField.value.substring(endPos, myField.value.length);
+            
+        myField.selectionStart = startPos + myValue.length + prefix.length;
+        myField.selectionEnd = startPos + myValue.length + prefix.length;
+        myField.focus();
+    } else {
+        myField.value += (myField.value.length > 0 ? " " : "") + myValue;
+    }
+}
+
 function loadExceptionsFromStorage(callback) {
     chrome.storage.sync.get({
         exceptionList: `x-ray -> X-ray\nx-rays -> X-rays\ndna -> DNA\nrna -> RNA\nph -> pH\nnmr -> NMR\nhplc -> HPLC\nuv -> UV\nir -> IR\npcr -> PCR\ntem -> TEM\nsem -> SEM\nafm -> AFM\nxps -> XPS\nswitzerland -> Switzerland\nzurich -> Zurich`
@@ -1010,7 +1121,11 @@ function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
             if (mainBtn) {
                 // Update existing button
                 mainBtn.href = foundPdfUrl;
-                mainBtn.innerHTML = '<span style="margin-right:5px;">📄</span> PDF (Verlag)';
+                mainBtn.innerHTML = '';
+                const icon = createEl('span', '', '📄');
+                icon.style.marginRight = '5px';
+                mainBtn.appendChild(icon);
+                mainBtn.appendChild(document.createTextNode(' PDF (Verlag)'));
                 mainBtn.title = "Direkter Link via Verlags-Metadaten gefunden";
                 mainBtn.style.border = "1px solid #2b6cb0";
                 mainBtn.style.color = "#2b6cb0";
@@ -1026,11 +1141,14 @@ function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
                 pubPdfBtn.id = 'dora-main-pdf-btn';
                 pubPdfBtn.href = foundPdfUrl;
                 pubPdfBtn.target = '_blank';
-                pubPdfBtn.innerHTML = '<span style="margin-right:5px;">📄</span> PDF (Verlag)';
+                const icon = createEl('span', '', '📄');
+                icon.style.marginRight = '5px';
+                pubPdfBtn.appendChild(icon);
+                pubPdfBtn.appendChild(document.createTextNode(' PDF (Verlag)'));
                 pubPdfBtn.style.flex = '1';
                 
                 const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary');
-                analyzeBtn.innerHTML = '⚡';
+                analyzeBtn.textContent = '⚡';
                 analyzeBtn.title = "Dieses Verlags-PDF analysieren";
                 analyzeBtn.style.width = 'auto';
                 analyzeBtn.style.padding = '6px 10px';
@@ -1151,7 +1269,10 @@ function extractPdfFromHtml(html, baseUrl) {
 
 function checkScopusAffiliation(doi, container) {
     const statusDiv = createEl('div', 'dora-affiliation-status', '');
-    statusDiv.innerHTML = '<span style="font-size: 1.2em; margin-right: 4px;">✉️</span> ⏳ Scopus...';
+    const icon = createEl('span', '', '✉️');
+    icon.style.cssText = 'font-size: 1.2em; margin-right: 4px;';
+    statusDiv.appendChild(icon);
+    statusDiv.appendChild(document.createTextNode(' ⏳ Scopus...'));
     statusDiv.style.cssText = 'margin-bottom: 10px; font-size: 0.8em; color: #666; padding: 3px 8px; background: #f8f9fa; border-radius: 4px; border: 1px solid #eee; width: fit-content; display: flex; align-items: center;';
     container.appendChild(statusDiv);
 
@@ -1161,13 +1282,22 @@ function checkScopusAffiliation(doi, container) {
             if (data.isLib4Ri) {
                 let displayAffil = data.affiliation;
                 if (displayAffil.length > 35) displayAffil = displayAffil.substring(0, 32) + '...';
-                statusDiv.innerHTML = `<span style="font-size: 1.2em; margin-right: 4px;">✉️</span> ✅ <b>Scopus:</b> ${displayAffil}`;
+                statusDiv.innerHTML = ''; // Clear
+                statusDiv.appendChild(icon.cloneNode(true));
+                statusDiv.appendChild(document.createTextNode(' ✅ '));
+                const b = createEl('b', '', 'Scopus: ');
+                statusDiv.appendChild(b);
+                statusDiv.appendChild(document.createTextNode(displayAffil));
                 statusDiv.title = "Corresponding Author ist Lib4Ri affiliiert: " + data.affiliation;
                 statusDiv.style.backgroundColor = '#f0fff4';
                 statusDiv.style.borderColor = '#c6f6d5';
                 statusDiv.style.color = '#22543d';
             } else {
-                statusDiv.innerHTML = `<span style="font-size: 1.2em; margin-right: 4px;">✉️</span><b>Scopus:</b> Extern`;
+                statusDiv.innerHTML = ''; // Clear
+                statusDiv.appendChild(icon.cloneNode(true));
+                const b = createEl('b', '', 'Scopus: ');
+                statusDiv.appendChild(b);
+                statusDiv.appendChild(document.createTextNode(' Extern'));
                 statusDiv.title = "Keine Lib4Ri-Affiliation gefunden. Gefunden: " + (data.affiliation || "Keine Daten");
                 statusDiv.style.backgroundColor = '#fffaf0';
                 statusDiv.style.borderColor = '#fbd38d';
@@ -1185,7 +1315,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // Statt Button zu ändern, nutzen wir die Dropzone als Benachrichtigungsfläche
         const dropZone = document.querySelector('.dora-pdf-drop');
         if (dropZone) {
-            dropZone.innerHTML = `⚡ <b>PDF Erkannt!</b><br><small>${request.filename.substring(0, 25)}...</small>`;
+            dropZone.innerHTML = '';
+            dropZone.appendChild(document.createTextNode('⚡ '));
+            const b = createEl('b', '', 'PDF Erkannt!');
+            dropZone.appendChild(b);
+            dropZone.appendChild(document.createElement('br'));
+            const small = createEl('small', '', request.filename.substring(0, 25) + '...');
+            dropZone.appendChild(small);
+            
             dropZone.style.backgroundColor = '#e6fffa';
             dropZone.style.borderColor = '#38b2ac';
             dropZone.style.color = '#2c7a7b';
@@ -1193,7 +1330,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             // Klick auf Dropzone startet nun den Import dieses PDFs
             dropZone.onclick = (e) => {
                 e.preventDefault(); // Kein File-Dialog
-                dropZone.innerHTML = '⏳ Analysiere...';
+                dropZone.textContent = '⏳ Analysiere...';
                 handlePdfUrl(request.url, null, request.localPath);
             };
         }
@@ -1537,7 +1674,11 @@ function validateAuthorRows(errors, pubYear) {
                                 errors.push(`<b>Author ${idx + 1} (Group)</b>: Für Publikationen vor 2006 wird "0000 PSI" erwartet.`);
                             }
                         } else {
-                            if (labInput && !labInput.value.trim()) {
+                            const groupVal = groupInput.value.trim();
+                            // Special Rule: Division Heads (e.g. 1000-9000) don't need a Lab
+                            const isSpecialGroup = /^[1-9]000/.test(groupVal);
+
+                            if (labInput && !labInput.value.trim() && !isSpecialGroup) {
                                  markError(labInput, true, 'Laboratory sollte ausgefüllt sein, wenn Group vorhanden ist.');
                                  errors.push(`<b>Author ${idx + 1} (Lab)</b>: Laboratory fehlt (Group ist gesetzt).`);
                             }
@@ -1612,57 +1753,113 @@ function validateAuthorRows(errors, pubYear) {
 }
 
 function renderErrorSummary(errors) {
-    let box = document.getElementById('dora-error-summary');
+    let panel = document.getElementById('dora-error-summary');
 
     if (errors.length === 0) {
-        if (box) box.style.display = 'none';
+        if (panel) panel.remove();
         return;
     }
 
-    if (!box) {
-        box = createEl('div', 'dora-error-summary');
-        box.id = 'dora-error-summary';
-        document.body.appendChild(box);
-        // Styles
-        Object.assign(box.style, {
-            position: 'fixed', bottom: '20px', right: '20px', width: '320px', zIndex: '9999',
-            backgroundColor: '#fff5f5', border: '1px solid #e53e3e', borderLeft: '5px solid #e53e3e',
-            borderRadius: '5px', padding: '15px', boxShadow: '0 5px 20px rgba(0,0,0,0.2)',
-            fontFamily: 'sans-serif', fontSize: '13px', color: '#2d3748'
-        });
+    if (!panel) {
+        panel = createEl('div', 'dora-error-summary');
+        panel.id = 'dora-error-summary';
+        // Basis-Styling (Position & Z-Index)
+        panel.style.cssText = 'position: fixed; bottom: 20px; right: 20px; z-index: 9999; font-family: sans-serif; font-size: 13px; color: #333; transition: all 0.2s ease; box-shadow: 0 0 10px rgba(0,0,0,0.1); border-radius: 5px; background: white; border: 1px solid #ccc;';
+        document.body.appendChild(panel);
     }
 
-    box.style.display = 'block';
-    box.innerHTML = '';
+    panel.innerHTML = '';
 
-    // Header
-    const header = createEl('div', '', '');
-    header.style.cssText = "display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;";
+    if (isSummaryMinimized) {
+        // --- MINIMIERTE ANSICHT ---
+        panel.style.width = 'auto';
+        panel.style.height = 'auto';
+        panel.style.padding = '8px 12px';
+        panel.style.cursor = 'pointer';
+        panel.style.backgroundColor = '#fff5f5';
+        panel.style.borderColor = '#fc8181';
+        panel.style.borderLeft = '1px solid #fc8181';
+        panel.title = "Klicken, um Fehlerdetails anzuzeigen";
+        
+        const icon = createEl('span', '', '⚠️');
+        icon.style.fontSize = '1.2em';
+        icon.style.marginRight = '5px';
+        panel.appendChild(icon);
+        const b = createEl('b', '', errors.length.toString());
+        panel.appendChild(b);
+        
+        panel.onclick = () => {
+            isSummaryMinimized = false;
+            renderErrorSummary(errors); // Neu rendern (maximiert)
+        };
 
-    const title = createEl('strong', '', `⚠️ ${errors.length} Probleme gefunden:`);
-    title.style.color = '#c53030';
+    } else {
+        // --- MAXIMIERTE ANSICHT ---
+        panel.style.width = '320px';
+        panel.style.maxHeight = '400px';
+        panel.style.padding = '15px';
+        panel.style.cursor = 'default';
+        panel.style.backgroundColor = '#fff5f5';
+        panel.style.borderColor = '#e53e3e';
+        panel.style.borderLeft = '5px solid #e53e3e';
+        panel.onclick = null;
 
-    const closeBtn = createEl('span', '', '×');
-    closeBtn.style.cssText = "cursor:pointer; font-size:18px; font-weight:bold; color:#c53030;";
-    closeBtn.onclick = () => { box.style.display = 'none'; };
+        const header = createEl('div');
+        header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #e53e3e; padding-bottom:5px;';
+        
+        const title = createEl('span');
+        const b = createEl('b', '', `${errors.length} Probleme gefunden:`);
+        b.style.color = '#c53030';
+        title.appendChild(b);
+        
+        const minBtn = createEl('span', '', '➖');
+        minBtn.title = "Minimieren";
+        minBtn.style.cssText = 'cursor:pointer; font-weight:bold; color:#c53030; padding: 0 5px; font-size: 1.2em;';
+        minBtn.onclick = (e) => {
+            e.stopPropagation();
+            isSummaryMinimized = true;
+            renderErrorSummary(errors); // Neu rendern (minimiert)
+        };
+        
+        header.appendChild(title);
+        header.appendChild(minBtn);
+        panel.appendChild(header);
 
-    header.appendChild(title);
-    header.appendChild(closeBtn);
-    box.appendChild(header);
+        const list = createEl('ul');
+        list.style.cssText = 'padding-left:20px; margin:0; overflow-y:auto; max-height:300px;';
+        
+        errors.forEach(err => {
+            const li = createEl('li');
+            li.style.marginBottom = '5px';
+            
+            // Safe rendering of error message (allows <b> and <br> but escapes user input)
+            // Error string format: "<b>Label</b>: Message" or similar
+            const parts = err.split(/(<br\s*\/?>|<b>|<\/b>)/i);
+            let isBold = false;
+            parts.forEach(part => {
+                if (part.toLowerCase() === '<b>') { isBold = true; return; }
+                if (part.toLowerCase() === '</b>') { isBold = false; return; }
+                if (part.toLowerCase().startsWith('<br')) { li.appendChild(document.createElement('br')); return; }
+                
+                if (part) {
+                    const node = isBold ? createEl('b', '', part) : document.createTextNode(part);
+                    li.appendChild(node);
+                }
+            });
+            
+            // Scroll-Logik
+            li.style.cursor = 'pointer';
+            li.title = "Klicken, um zum ersten Fehler zu springen";
+            li.onclick = () => {
+                 const firstError = document.querySelector('.dora-error');
+                 if (firstError) firstError.scrollIntoView({behavior: "smooth", block: "center"});
+            };
 
-    // List
-    const ul = createEl('ul');
-    ul.style.paddingLeft = '20px';
-    ul.style.margin = '0';
-
-    errors.forEach(err => {
-        const li = createEl('li', '', '');
-        li.innerHTML = err; // Allow bold tags
-        li.style.marginBottom = '5px';
-        ul.appendChild(li);
-    });
-
-    box.appendChild(ul);
+            list.appendChild(li);
+        });
+        
+        panel.appendChild(list);
+    }
 }
 
 function markError(el, isError, msg = '', isWarning = false) {
@@ -1674,6 +1871,7 @@ function markError(el, isError, msg = '', isWarning = false) {
     }
 
     if (isError) {
+        target.classList.add('dora-error');
         if (isWarning) {
             target.style.border = '2px dotted #e53e3e';
         } else {
@@ -1682,6 +1880,7 @@ function markError(el, isError, msg = '', isWarning = false) {
         if (target === el) target.style.backgroundColor = '#fff5f5'; // Only color bg if it's the input
         target.title = msg;
     } else {
+        target.classList.remove('dora-error');
         target.style.border = '';
         if (target === el) target.style.backgroundColor = '';
         target.title = '';
