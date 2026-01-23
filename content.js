@@ -371,6 +371,7 @@ function renderErrorBox(msgText) {
     
     const closeBtn = createEl('div', 'dora-close-btn', '×');
     closeBtn.id = 'dora-box-close';
+    closeBtn.style.cssText = 'position: absolute; top: 5px; right: 10px; cursor: pointer; font-size: 1.2em; color: #666;';
     closeBtn.addEventListener('click', () => box.remove());
     
     const msgDiv = createEl('div', '', `❌ Fehler: ${msgText}`);
@@ -391,11 +392,18 @@ function renderResultBox(data) {
     // 1. Close Button
     const closeBtn = createEl('div', 'dora-close-btn', '×');
     closeBtn.id = 'dora-box-close';
+    closeBtn.style.cssText = 'position: absolute; top: 5px; right: 10px; cursor: pointer; font-size: 1.2em; color: #666;';
     closeBtn.addEventListener('click', () => box.remove());
     box.appendChild(closeBtn);
 
     // 2. Header
     const header = createEl('div', 'dora-meta-header');
+
+    // Logo
+    const logo = createEl('img');
+    logo.src = chrome.runtime.getURL('icons/logo-48.png');
+    logo.style.cssText = 'float:left; width:32px; height:32px; margin-right:10px;';
+    header.appendChild(logo);
 
     // Title (Restored, smaller, stripped HTML)
     let titleText = meta.title ? meta.title[0] : 'Kein Titel';
