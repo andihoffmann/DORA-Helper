@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Dora Helper",
-  "version": "2.48",
+  "version": "2.49",
   "description": "Metadaten-Validierung, DOI- & Buchkapitel-Import, PDF-Analyse und Open-Access-Checks für DORA.",
   "permissions": ["activeTab", "scripting", "storage", "downloads", "tabs"],
   "host_permissions": [
@@ -59,6 +59,12 @@
         "content.js"
       ],
       "css": ["styles.css"]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/logo-128.png", "icons/logo-48.png"],
+      "matches": ["<all_urls>"]
     }
   ]
 }
