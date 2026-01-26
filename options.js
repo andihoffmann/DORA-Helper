@@ -584,113 +584,67 @@ Zoanthus -> Zoanthus
 Zurich -> Zurich
 `.trim();
 
-// 1. Optionen laden
-function restoreOptions() {
-  chrome.storage.sync.get({
-    exceptionList: defaultExceptions,
-    scopusApiKey: ''
-  }, function(items) {
-    if (document.getElementById('exceptions')) document.getElementById('exceptions').value = items.exceptionList;
-    if (document.getElementById('scopusKey')) document.getElementById('scopusKey').value = items.scopusApiKey;
-  });
+ // 1. Optionen laden
+ function restoreOptions() {
+   chrome.storage.local.get({
+     exceptionList: defaultExceptions,
+     scopusApiKey: '',
+     psiDataLastUpdated: ''
+   }, function(items) {
+     if (document.getElementById('exceptions')) document.getElementById('exceptions').value = items.exceptionList;
+     if (document.getElementById('scopusKey')) document.getElementById('scopusKey').value = items.scopusApiKey;
+     if (document.getElementById('lastUpdated') && items.psiDataLastUpdated) {
+         document.getElementById('lastUpdated').textContent = "Zuletzt aktualisiert: " + items.psiDataLastUpdated;
+     }
+   });
+ }
 
-  // Load PSI Data status
-  chrome.storage.local.get(['psiDataLastUpdated'], function(result) {
-      const lastUpdated = result.psiDataLastUpdated;
-      const statusDiv = document.getElementById('lastUpdated');
-      if (lastUpdated) {
-          statusDiv.textContent = 'Zuletzt aktualisiert: ' + new Date(lastUpdated).toLocaleString();
-      } else {
-          statusDiv.textContent = 'Noch keine benutzerdefinierten Daten geladen.';
-      }
-  });
-}
+ // 2. Speichern Scopus
+ function saveScopus() {
+   const scopusKey = document.getElementById('scopusKey') ? document.getElementById('scopusKey').value : '';
+   chrome.storage.local.set({ scopusApiKey: scopusKey }, function() {
+     showStatus('statusScopus');
+   });
+ }
 
-// 2. Optionen speichern
-function saveOptions() {
-  const text = document.getElementById('exceptions') ? document.getElementById('exceptions').value : defaultExceptions;
-  const scopusKey = document.getElementById('scopusKey') ? document.getElementById('scopusKey').value : '';
-  
-  chrome.storage.sync.set({
-    exceptionList: text,
-    scopusApiKey: scopusKey
-  }, function() {
-    // Feedback zeigen
-    const status = document.getElementById('status');
-    status.style.display = 'inline';
-    setTimeout(function() {
-      status.style.display = 'none';
-    }, 1500);
-  });
-}
+ // 3. Speichern Keywords
+ function saveKeywords() {
+   const text = document.getElementById('exceptions') ? document.getElementById('exceptions').value : defaultExceptions;
+   chrome.storage.local.set({ exceptionList: text }, function() {
+     showStatus('statusKeywords');
+   });
+ }
 
-// 3. PSI Data Upload
-function handlePsiDataUpload() {
-    const fileInput = document.getElementById('psiDataFile');
-    const statusSpan = document.getElementById('uploadStatus');
+ function showStatus(elementId) {
+     const status = document.getElementById(elementId);
+     if (!status) return;
+     status.style.opacity = '1';
+     setTimeout(() => { status.style.opacity = '0'; }, 2000);
+ }
 
-    if (fileInput.files.length === 0) {
-        statusSpan.textContent = 'Bitte wählen Sie eine Datei aus.';
-        statusSpan.style.color = 'red';
-        statusSpan.style.display = 'inline';
-        return;
-    }
+ // 4. PSI Data Upload
+ function handlePsiDataUpload() {
+     const fileInput = document.getElementById('psiDataFile');
+     const statusSpan = document.getElementById('uploadStatus');
 
-    const file = fileInput.files[0];
-    const reader = new FileReader();
+     if (!fileInput.files.length) return;
 
-    reader.onload = function(e) {
-        const content = e.target.result;
+     const file = fileInput.files[0];
+     const reader = new FileReader();
+     reader.onload = function(e) {
+         const content = e.target.result;
+         const timestamp = new Date().toLocaleString();
+         chrome.storage.local.set({ psiData: content, psiDataLastUpdated: timestamp }, () => {
+             if(statusSpan) { statusSpan.textContent = "Gespeichert!"; statusSpan.style.display = "inline"; statusSpan.style.color = "green"; setTimeout(() => { statusSpan.style.display = "none"; }, 2000); }
+             if(document.getElementById('lastUpdated')) document.getElementById('lastUpdated').textContent = "Zuletzt aktualisiert: " + timestamp;
+         });
+     };
+     reader.readAsText(file);
+ }
 
-        // Basic validation
-        if (!content.includes('const PSI_HISTORY = {')) {
-            statusSpan.textContent = 'Ungültiges Format. "const PSI_HISTORY = {" nicht gefunden.';
-            statusSpan.style.color = 'red';
-            statusSpan.style.display = 'inline';
-            return;
-        }
-
-        // Try to extract JSON part
-        const match = content.match(/const\s+PSI_HISTORY\s*=\s*(\{[\s\S]*\})/);
-        if (match && match[1]) {
-            // Validate if it is parseable JSON (requires quoted keys)
-            try {
-                // We try to parse it to ensure it's valid JSON.
-                // If the user's JS file uses unquoted keys (standard JS), JSON.parse will fail.
-                // We can try to be lenient or ask the user to provide JSON.
-                // For now, we just store the text and let the content script handle the parsing/regex.
-                // But to be safe, we should probably encourage JSON format.
-
-                // Let's just store the whole content for now.
-                chrome.storage.local.set({
-                    psiDataContent: content,
-                    psiDataLastUpdated: Date.now()
-                }, function() {
-                    if (chrome.runtime.lastError) {
-                        statusSpan.textContent = 'Fehler beim Speichern: ' + chrome.runtime.lastError.message;
-                        statusSpan.style.color = 'red';
-                    } else {
-                        statusSpan.textContent = 'Daten erfolgreich aktualisiert!';
-                        statusSpan.style.color = 'green';
-                        restoreOptions();
-                    }
-                    statusSpan.style.display = 'inline';
-                });
-            } catch (err) {
-                 statusSpan.textContent = 'Fehler: ' + err.message;
-                 statusSpan.style.color = 'red';
-                 statusSpan.style.display = 'inline';
-            }
-        } else {
-            statusSpan.textContent = 'Konnte Daten-Objekt nicht extrahieren.';
-            statusSpan.style.color = 'red';
-            statusSpan.style.display = 'inline';
-        }
-    };
-
-    reader.readAsText(file);
-}
-
-document.addEventListener('DOMContentLoaded', restoreOptions);
-document.getElementById('save').addEventListener('click', saveOptions);
-document.getElementById('uploadPsiData').addEventListener('click', handlePsiDataUpload);
+ document.addEventListener('DOMContentLoaded', () => {
+     restoreOptions();
+     if (document.getElementById('saveScopus')) document.getElementById('saveScopus').addEventListener('click', saveScopus);
+     if (document.getElementById('saveKeywords')) document.getElementById('saveKeywords').addEventListener('click', saveKeywords);
+     if (document.getElementById('uploadPsiData')) document.getElementById('uploadPsiData').addEventListener('click', handlePsiDataUpload);
+ });

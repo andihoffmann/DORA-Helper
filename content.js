@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.49
+// Version: 2.50 - internal: 2.62
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -47,6 +47,7 @@ function scanAndInject() {
         injectKeywordManager(topicContainer);
     }
     injectTagButtons();
+    injectDoraAutocompletes();
 
     validateForm();
 }
@@ -128,7 +129,7 @@ async function handlePdfFile(file) {
     // Show loading state in the dropzone
     const dropZone = document.querySelector('.dora-pdf-drop');
     if (dropZone) {
-        dropZone.innerHTML = '⏳ Analysiere...';
+        dropZone.textContent = '⏳ Analysiere...';
         dropZone.style.backgroundColor = '#fff3cd';
     }
 
@@ -151,7 +152,7 @@ async function handlePdfFile(file) {
 
         if (data.status === "success") {
             if (dropZone) {
-                dropZone.innerHTML = '📄 PDF hier ablegen'; // Reset
+                dropZone.textContent = '📄 PDF hier ablegen'; // Reset
                 dropZone.style.backgroundColor = '#f9f9f9';
             }
             confirmAndFillPdfData(data, 'file');
@@ -161,10 +162,10 @@ async function handlePdfFile(file) {
 
     } catch (error) {
         if (dropZone) {
-            dropZone.innerHTML = '📄 PDF hier ablegen';
+            dropZone.textContent = '📄 PDF hier ablegen';
             dropZone.style.backgroundColor = '#f9f9f9';
         }
-        renderErrorBox("PDF Analyse fehlgeschlagen: " + error.message + "\n\n(Läuft der Docker Container auf Port 7860?)");
+        renderErrorBox("PDF Analyse fehlgeschlagen: " + error.message + "\n\n(Hugging Face Space erreichbar?)");
         console.error("PDF Analyse fehlgeschlagen:", error);
     }
 }
@@ -183,8 +184,8 @@ async function handlePdfUrl(url, triggerBtn = null, localPath = null) {
 
     let originalText = '';
     if (triggerBtn) {
-        originalText = triggerBtn.innerHTML;
-        triggerBtn.innerHTML = '⏳ Lade...';
+        originalText = triggerBtn.textContent;
+        triggerBtn.textContent = '⏳ Lade...';
         triggerBtn.disabled = true;
     }
 
@@ -199,14 +200,14 @@ async function handlePdfUrl(url, triggerBtn = null, localPath = null) {
             }, (response) => {
                 if (triggerBtn) triggerBtn.disabled = false;
                 if (response && response.success) {
-                    if (triggerBtn) triggerBtn.innerHTML = originalText;
+                    if (triggerBtn) triggerBtn.textContent = originalText;
                     confirmAndFillPdfData(response.data, url.startsWith('blob:') ? 'monitor' : 'url');
                 } else {
                     if (triggerBtn) {
-                        triggerBtn.innerHTML = '❌ Fehler';
+                        triggerBtn.textContent = '❌ Fehler';
                         triggerBtn.title = response ? response.error : "Unbekannter Fehler";
                         setTimeout(() => {
-                            triggerBtn.innerHTML = originalText;
+                            triggerBtn.textContent = originalText;
                             triggerBtn.title = '';
                         }, 3000);
                     }
@@ -220,14 +221,14 @@ async function handlePdfUrl(url, triggerBtn = null, localPath = null) {
         chrome.runtime.sendMessage({ action: "analyzePdfUrl", pdfUrl: url, localPath: localPath }, (response) => {
             if (triggerBtn) triggerBtn.disabled = false;
             if (response && response.success) {
-                if (triggerBtn) triggerBtn.innerHTML = originalText;
+                if (triggerBtn) triggerBtn.textContent = originalText;
                 confirmAndFillPdfData(response.data, 'monitor');
             } else {
                 if (triggerBtn) {
-                    triggerBtn.innerHTML = '❌ Fehler';
+                    triggerBtn.textContent = '❌ Fehler';
                     triggerBtn.title = response ? response.error : "Unbekannter Fehler";
                     setTimeout(() => {
-                        triggerBtn.innerHTML = originalText;
+                        triggerBtn.textContent = originalText;
                         triggerBtn.title = '';
                     }, 3000);
                 }
@@ -237,9 +238,9 @@ async function handlePdfUrl(url, triggerBtn = null, localPath = null) {
     } catch (error) {
         if (triggerBtn) {
             triggerBtn.disabled = false;
-            triggerBtn.innerHTML = '❌ Fehler';
+            triggerBtn.textContent = '❌ Fehler';
             setTimeout(() => {
-                triggerBtn.innerHTML = originalText;
+                triggerBtn.textContent = originalText;
             }, 3000);
         }
         renderErrorBox("PDF Analyse fehlgeschlagen: " + error.message);
@@ -358,7 +359,7 @@ function fillFormFromPdfData(data) {
 
 function showLoadingBox() {
     let box = createFloatingBox();
-    box.innerHTML = ''; // Clear old content
+    box.replaceChildren(); // Clear old content
     const msg = createEl('div', '', '⏳ Metadaten werden abgerufen...');
     msg.style.cssText = 'text-align:center; color:#666; padding:20px; font-family:sans-serif;';
     box.appendChild(msg);
@@ -366,7 +367,7 @@ function showLoadingBox() {
 
 function renderErrorBox(msgText) {
     let box = createFloatingBox();
-    box.innerHTML = ''; 
+    box.replaceChildren();
     box.style.borderLeft = '5px solid #e53e3e'; 
     
     const closeBtn = createEl('div', 'dora-close-btn', '×');
@@ -385,9 +386,8 @@ function renderErrorBox(msgText) {
 function renderResultBox(data) {
     const oa = data.unpaywall;
     const meta = data.crossref;
-    const openalex = data.openalex;
     let box = createFloatingBox();
-    box.innerHTML = ''; // Reset
+    box.replaceChildren(); // Reset
 
     // 1. Close Button
     const closeBtn = createEl('div', 'dora-close-btn', '×');
@@ -478,9 +478,10 @@ function renderResultBox(data) {
 
     // Check if it is a Book Chapter
     const pubTypeEl = document.getElementById('edit-publication-type');
-    const isBookChapter = pubTypeEl && pubTypeEl.value.toLowerCase().includes('book chapter');
+    const pubTypeVal = pubTypeEl ? pubTypeEl.value.toLowerCase() : '';
+    const isHostType = pubTypeVal.includes('book chapter') || pubTypeVal.includes('proceedings paper') || pubTypeVal.includes('conference item');
 
-    if (isBookChapter) {
+    if (isHostType) {
         const importBtn = createEl('button', 'dora-box-btn btn-hybrid-action');
         importBtn.id = 'dora-import-book-chapter';
         
@@ -489,7 +490,7 @@ function renderResultBox(data) {
         importBtn.appendChild(icon);
         importBtn.appendChild(document.createTextNode(' Metadaten importieren'));
         
-        importBtn.title = "Importiert Titel, Buch-Titel, Seiten, Jahr, Verlag, Autoren, Editoren und Abstract aus Crossref";
+        importBtn.title = "Importiert Titel, Host-Titel (Buch/Proceedings), Seiten, Jahr, Verlag, Autoren, Editoren und Abstract";
         importBtn.addEventListener('click', async () => {
             importBtn.disabled = true;
             importBtn.textContent = '⏳ Import läuft...';
@@ -498,14 +499,14 @@ function renderResultBox(data) {
                 importBtn.textContent = '✅ Importiert!';
                 setTimeout(() => {
                     importBtn.disabled = false;
-                    importBtn.innerHTML = ''; // Clear
+                    importBtn.replaceChildren(); // Clear
                     importBtn.appendChild(icon.cloneNode(true));
                     importBtn.appendChild(document.createTextNode(' Metadaten importieren'));
                 }, 2000);
             } catch (e) {
                 renderErrorBox(e.message);
                 importBtn.disabled = false;
-                importBtn.innerHTML = '';
+                importBtn.replaceChildren();
                 importBtn.appendChild(icon.cloneNode(true));
                 importBtn.appendChild(document.createTextNode(' Metadaten importieren'));
             }
@@ -692,15 +693,15 @@ async function fillBookChapterMetadata(meta) {
         if (cke) {
              const iframe = cke.querySelector('iframe');
              if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
-                 iframe.contentDocument.body.innerHTML = meta.title[0];
+                 iframe.contentDocument.body.textContent = meta.title[0];
              }
         } else {
             titleEl.value = meta.title[0];
         }
     }
 
-    // 2. Host Title (Book Title)
-    const hostTitleEl = document.getElementById('edit-host-booktitle'); // Corrected ID from HTML
+    // 2. Host Title (Book Title or Proceedings Title)
+    const hostTitleEl = document.getElementById('edit-host-booktitle') || document.getElementById('edit-host-titleinfo-title');
     if (hostTitleEl && meta['container-title'] && meta['container-title'][0]) {
         hostTitleEl.value = meta['container-title'][0];
     }
@@ -792,7 +793,13 @@ async function fillBookChapterMetadata(meta) {
         if (cke) {
              const iframe = cke.querySelector('iframe');
              if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
-                 iframe.contentDocument.body.innerHTML = cleanAbstract.trim();
+                 // Use DOM manipulation for safe paragraph insertion
+                 const body = iframe.contentDocument.body;
+                 body.replaceChildren();
+                 cleanAbstract.trim().split(/\n\n+/).forEach((para, idx) => {
+                     if (idx > 0) body.appendChild(iframe.contentDocument.createElement('br'));
+                     body.appendChild(iframe.contentDocument.createTextNode(para));
+                 });
              }
         } else {
             abstractEl.value = cleanAbstract.trim();
@@ -869,7 +876,7 @@ function injectKeywordManager(topicContainer) {
 
 function loadKeywordsIntoManager(topicContainer) {
     const list = document.getElementById('dora-keyword-list');
-    list.innerHTML = ''; 
+    list.replaceChildren();
     const loading = createEl('li', '', 'Lade Einstellungen...');
     loading.style.cssText = 'padding:10px; color:#666;';
     list.appendChild(loading);
@@ -877,7 +884,7 @@ function loadKeywordsIntoManager(topicContainer) {
     document.getElementById('dora-drag-hint').style.display = 'block';
 
     loadExceptionsFromStorage(() => {
-        list.innerHTML = ''; 
+        list.replaceChildren();
         const hiddenInputs = topicContainer.querySelectorAll('input[type="hidden"].form-tag, input[name^="topics"].form-tag');
         
         hiddenInputs.forEach((input) => {
@@ -1076,6 +1083,228 @@ function insertAtCursor(myField, myValue) {
     }
 }
 
+// --- DORA AUTOCOMPLETE INJECTION (Direct Solr Access) ---
+function injectDoraAutocompletes() {
+    const fields = [
+        { id: 'edit-confinfo-confname', solrField: 'mods_name_conference_ms' },
+        { id: 'edit-host-titleinfo-title', solrField: 'mods_relatedItem_host_titleInfo_title_ms' },
+        { id: 'edit-host-series-titleinfo-title', solrField: 'mods_relatedItem_host_relatedItem_series_titleInfo_title_ms' }
+    ];
+
+    fields.forEach(field => {
+        const input = document.getElementById(field.id);
+        if (!input || input.dataset.doraAutocompleteAttached) return;
+
+        console.log('DORA Helper: Attaching autocomplete to', field.id, 'isTextarea:', input.tagName.toLowerCase() === 'textarea');
+        input.dataset.doraAutocompleteAttached = "true";
+        const isTextarea = input.tagName.toLowerCase() === 'textarea';
+
+        if (isTextarea) {
+            // Custom dropdown for textarea elements
+            attachTextareaAutocomplete(input, field);
+        } else {
+            // Native datalist for input elements
+            attachInputAutocomplete(input, field);
+        }
+    });
+}
+
+// Native datalist autocomplete for <input> elements
+function attachInputAutocomplete(input, field) {
+    const listId = `datalist-${field.id}`;
+    let dataList = document.getElementById(listId);
+    if (!dataList) {
+        dataList = createEl('datalist');
+        dataList.id = listId;
+        input.parentNode.appendChild(dataList);
+    }
+
+    input.setAttribute('list', listId);
+    input.setAttribute('autocomplete', 'off');
+
+    let debounceTimer;
+    input.addEventListener('input', () => {
+        const query = input.value.trim();
+        if (query.length < 3) {
+            dataList.replaceChildren();
+            return;
+        }
+
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+            fetchSolrSuggestions(field.solrField, query, (results) => {
+                dataList.replaceChildren();
+                results.forEach(name => {
+                    const option = document.createElement('option');
+                    option.value = name.trim();
+                    dataList.appendChild(option);
+                });
+                // UI Refresh Hack
+                input.removeAttribute('list');
+                input.setAttribute('list', listId);
+            });
+        }, 400);
+    });
+}
+
+// Custom dropdown autocomplete for <textarea> elements
+function attachTextareaAutocomplete(textarea, field) {
+    const wrapper = textarea.closest('.form-textarea-wrapper') || textarea.parentNode;
+    wrapper.style.position = 'relative';
+
+    const dropdownId = `dora-dropdown-${field.id}`;
+    let dropdown = document.getElementById(dropdownId);
+    if (!dropdown) {
+        dropdown = createEl('div', 'dora-autocomplete-dropdown');
+        dropdown.id = dropdownId;
+        Object.assign(dropdown.style, {
+            position: 'absolute',
+            top: '100%',
+            left: '0',
+            right: '0',
+            maxHeight: '200px',
+            overflowY: 'auto',
+            backgroundColor: '#fff',
+            border: '1px solid #ccc',
+            borderTop: 'none',
+            borderRadius: '0 0 4px 4px',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
+            zIndex: '9999',
+            display: 'none'
+        });
+        wrapper.appendChild(dropdown);
+    }
+
+    let debounceTimer;
+    let selectedIndex = -1;
+
+    textarea.addEventListener('input', () => {
+        const query = textarea.value.trim();
+        console.log('DORA Helper: Textarea input event', { fieldId: field.id, query, queryLength: query.length });
+        if (query.length < 3) {
+            dropdown.style.display = 'none';
+            dropdown.replaceChildren();
+            return;
+        }
+
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+            console.log('DORA Helper: Triggering fetch for', field.id);
+            fetchSolrSuggestions(field.solrField, query, (results) => {
+                console.log('DORA Helper: Got results for', field.id, ':', results.length, 'items');
+                dropdown.replaceChildren();
+                selectedIndex = -1;
+
+                if (results.length === 0) {
+                    dropdown.style.display = 'none';
+                    return;
+                }
+
+                results.forEach((name, idx) => {
+                    const item = createEl('div', 'dora-autocomplete-item', name.trim());
+                    Object.assign(item.style, {
+                        padding: '8px 12px',
+                        cursor: 'pointer',
+                        borderBottom: '1px solid #eee',
+                        fontSize: '13px'
+                    });
+                    item.addEventListener('mouseenter', () => {
+                        item.style.backgroundColor = '#f0f0f0';
+                    });
+                    item.addEventListener('mouseleave', () => {
+                        item.style.backgroundColor = '#fff';
+                    });
+                    item.addEventListener('click', () => {
+                        textarea.value = name.trim();
+                        dropdown.style.display = 'none';
+                        textarea.focus();
+                        textarea.dispatchEvent(new Event('change', { bubbles: true }));
+                    });
+                    dropdown.appendChild(item);
+                });
+
+                dropdown.style.display = 'block';
+            });
+        }, 400);
+    });
+
+    // Keyboard navigation
+    textarea.addEventListener('keydown', (e) => {
+        const items = dropdown.querySelectorAll('.dora-autocomplete-item');
+        if (items.length === 0 || dropdown.style.display === 'none') return;
+
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            selectedIndex = Math.min(selectedIndex + 1, items.length - 1);
+            updateSelection(items, selectedIndex);
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            selectedIndex = Math.max(selectedIndex - 1, 0);
+            updateSelection(items, selectedIndex);
+        } else if (e.key === 'Enter' && selectedIndex >= 0) {
+            e.preventDefault();
+            textarea.value = items[selectedIndex].textContent;
+            dropdown.style.display = 'none';
+            textarea.dispatchEvent(new Event('change', { bubbles: true }));
+        } else if (e.key === 'Escape') {
+            dropdown.style.display = 'none';
+        }
+    });
+
+    // Close on outside click
+    document.addEventListener('click', (e) => {
+        if (!wrapper.contains(e.target)) {
+            dropdown.style.display = 'none';
+        }
+    });
+}
+
+function updateSelection(items, index) {
+    items.forEach((item, i) => {
+        item.style.backgroundColor = i === index ? '#e6f3ff' : '#fff';
+    });
+    if (items[index]) {
+        items[index].scrollIntoView({ block: 'nearest' });
+    }
+}
+
+// Shared Solr fetch function
+function fetchSolrSuggestions(solrField, query, callback) {
+    const solrUrl = `http://lib-dora-prod1.emp-eaw.ch:8080/solr/collection1/select?q=*:*&rows=0&facet=true&facet.limit=15&wt=json&facet.field=${solrField}&facet.prefix=${encodeURIComponent(query)}&_=${Date.now()}`;
+
+    console.log('DORA Helper: Fetching Solr suggestions', { solrField, query, solrUrl });
+
+    chrome.runtime.sendMessage({
+        action: "searchAutocomplete",
+        url: solrUrl
+    }, (response) => {
+        console.log('DORA Helper: Solr response', response);
+        if (response && response.success && response.data) {
+            const facetFields = response.data.facet_counts?.facet_fields;
+            const facetData = facetFields ? facetFields[solrField] : null;
+            console.log('DORA Helper: facetData for', solrField, ':', facetData);
+
+            if (facetData && Array.isArray(facetData)) {
+                // Solr returns [Value1, Count1, Value2, Count2, ...]
+                const results = facetData.filter((_, i) => i % 2 === 0).filter(Boolean);
+                callback(results);
+                return;
+            }
+        }
+        callback([]);
+    });
+}
+
+function getDoraBaseUrl() {
+    const path = window.location.pathname;
+    const segments = path.split('/').filter(s => s.length > 0);
+    // Erkennt psi, eawag, empa oder wsl aus der URL
+    if (segments.length > 0 && ['psi', 'eawag', 'empa', 'wsl'].includes(segments[0].toLowerCase())) {
+        return `${window.location.origin}/${segments[0]}`;
+    }
+    return window.location.origin;
+}
+
 function loadExceptionsFromStorage(callback) {
     chrome.storage.sync.get({
         exceptionList: `x-ray -> X-ray\nx-rays -> X-rays\ndna -> DNA\nrna -> RNA\nph -> pH\nnmr -> NMR\nhplc -> HPLC\nuv -> UV\nir -> IR\npcr -> PCR\ntem -> TEM\nsem -> SEM\nafm -> AFM\nxps -> XPS\nswitzerland -> Switzerland\nzurich -> Zurich`
@@ -1129,7 +1358,7 @@ function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
             if (mainBtn) {
                 // Update existing button
                 mainBtn.href = foundPdfUrl;
-                mainBtn.innerHTML = '';
+                mainBtn.replaceChildren();
                 const icon = createEl('span', '', '📄');
                 icon.style.marginRight = '5px';
                 mainBtn.appendChild(icon);
@@ -1290,7 +1519,7 @@ function checkScopusAffiliation(doi, container) {
             if (data.isLib4Ri) {
                 let displayAffil = data.affiliation;
                 if (displayAffil.length > 35) displayAffil = displayAffil.substring(0, 32) + '...';
-                statusDiv.innerHTML = ''; // Clear
+                statusDiv.replaceChildren(); // Clear
                 statusDiv.appendChild(icon.cloneNode(true));
                 statusDiv.appendChild(document.createTextNode(' ✅ '));
                 const b = createEl('b', '', 'Scopus: ');
@@ -1301,7 +1530,7 @@ function checkScopusAffiliation(doi, container) {
                 statusDiv.style.borderColor = '#c6f6d5';
                 statusDiv.style.color = '#22543d';
             } else {
-                statusDiv.innerHTML = ''; // Clear
+                statusDiv.replaceChildren(); // Clear
                 statusDiv.appendChild(icon.cloneNode(true));
                 const b = createEl('b', '', 'Scopus: ');
                 statusDiv.appendChild(b);
@@ -1323,7 +1552,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // Statt Button zu ändern, nutzen wir die Dropzone als Benachrichtigungsfläche
         const dropZone = document.querySelector('.dora-pdf-drop');
         if (dropZone) {
-            dropZone.innerHTML = '';
+            dropZone.replaceChildren();
             dropZone.appendChild(document.createTextNode('⚡ '));
             const b = createEl('b', '', 'PDF Erkannt!');
             dropZone.appendChild(b);
@@ -1374,8 +1603,8 @@ function validateForm() {
     const startPageEl = getField('Start Page');
     const endPageEl = getField('End Page');
     const titleEl = getField('Article Title') || getField('Title');
-    const confNameEl = getField('Conference Name');
-    const procTitleEl = getField('Title of the Conference Proceedings');
+    const confNameEl = document.getElementById('edit-confinfo-confname') || document.getElementById('edit-conference-name') || getField('Conference Name');
+    const procTitleEl = document.getElementById('edit-host-titleinfo-title') || getField('Title of the Conference Proceedings');
     const seriesTitleEl = document.getElementById('edit-host-series-titleinfo-title');
     const pubTypeEl = document.getElementById('edit-publication-type');
     const bookTitleEl = document.getElementById('edit-host-booktitle'); // Book Title
@@ -1421,13 +1650,11 @@ function validateForm() {
 
     [statusEl, volumeEl, startPageEl, endPageEl, titleEl, confNameEl, procTitleEl, seriesTitleEl, bookTitleEl, pubYearEl].forEach(el => attachListener(el));
 
-    // Rule 1: Volume required if Published (BUT NOT for Book Chapter)
-    let isBookChapter = false;
-    if (pubTypeEl && pubTypeEl.value.toLowerCase().includes('book chapter')) {
-        isBookChapter = true;
-    }
+    // Rule 1: Volume required if Published (BUT NOT for Book Chapter or Conference Item)
+    const pubTypeVal = pubTypeEl ? pubTypeEl.value.toLowerCase() : '';
+    const isVolumeOptional = pubTypeVal.includes('book chapter') || pubTypeVal.includes('conference item');
 
-    if (statusEl && volumeEl && !isBookChapter) {
+    if (statusEl && volumeEl && !isVolumeOptional) {
         let statusText = statusEl.value;
         if (statusEl.tagName === 'SELECT') {
              statusText = statusEl.options[statusEl.selectedIndex]?.text || '';
@@ -1776,7 +2003,7 @@ function renderErrorSummary(errors) {
         document.body.appendChild(panel);
     }
 
-    panel.innerHTML = '';
+    panel.replaceChildren();
 
     if (isSummaryMinimized) {
         // --- MINIMIERTE ANSICHT ---

@@ -1,16 +1,16 @@
 {
   "manifest_version": 3,
   "name": "Dora Helper",
-  "version": "2.49",
+  "version": "2.50",
   "description": "Metadaten-Validierung, DOI- & Buchkapitel-Import, PDF-Analyse und Open-Access-Checks für DORA.",
   "permissions": ["activeTab", "scripting", "storage", "downloads", "tabs"],
   "host_permissions": [
     "*://*.dora.lib4ri.ch/*",
     "https://api.unpaywall.org/*",
     "https://api.crossref.org/*",
-    "https://api.openalex.org/*",
     "https://intranet.psi.ch/*",
     "https://andrehoffmann80-pdf-analyzer.hf.space/*",
+    "http://lib-dora-prod1.emp-eaw.ch:8080/*",
     "<all_urls>",
     "file:///*"
   ],
@@ -18,6 +18,10 @@
     "*://*/*"
   ],
   
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' http://lib-dora-prod1.emp-eaw.ch:8080 https://*;"
+  },
+
   "browser_specific_settings": {
     "gecko": {
       "id": "dora@lib4ri.ch",

@@ -23,9 +23,12 @@
     <h2>Scopus API Key</h2>
     <div class="hint">
       Benötigt für den Affiliation-Check (Corresponding Author).
-      <a href="https://dev.elsevier.com/apikey/manage" target="_blank">Key hier generieren</a>.
     </div>
     <input type="text" id="scopusKey" placeholder="Hier API Key einfügen...">
+    <div style="margin-top: 10px;">
+      <button id="saveScopus">Key Speichern</button>
+      <span id="statusScopus" style="opacity:0; color:green; margin-left:10px; font-weight:bold;">Gespeichert!</span>
+    </div>
   </div>
 
   <div class="section">
@@ -36,8 +39,8 @@
     </div>
     <textarea id="exceptions"></textarea>
     <br>
-    <button id="save">Einstellungen Speichern</button>
-    <span id="status">Gespeichert!</span>
+    <button id="saveKeywords">Keywords Speichern</button>
+    <span id="statusKeywords" style="opacity:0; color:green; margin-left:10px; font-weight:bold;">Gespeichert!</span>
   </div>
 
   <div class="section">

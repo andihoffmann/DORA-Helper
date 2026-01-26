@@ -4,6 +4,9 @@ let activeDoraTabId = null;
 let pdfReferrerMap = new Map(); // Speichert Referrer zu PDF-URLs
 let pdfTabMap = new Map(); // Speichert Tab-IDs zu PDF-URLs (wichtig für Blobs)
 
+// Zentrale Konfiguration für den PDF-Analyzer
+const ANALYZER_API_URL = "https://andrehoffmann80-pdf-analyzer.hf.space/analyze";
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "fetchData") {
         fetchMetadata(request.doi)
@@ -27,7 +30,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.action === "analyzePdfUrl") {
-        analyzePdfUrl(request.pdfUrl, request.localPath)
+        analyzePdfUrl(request.pdfUrl)
             .then(data => sendResponse({ success: true, data: data }))
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
@@ -59,6 +62,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.action === "checkScopus") {
         checkScopusAffiliation(request.doi)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
+    if (request.action === "searchAutocomplete") {
+        fetchDoraAutocomplete(request.url)
             .then(data => sendResponse({ success: true, data: data }))
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
@@ -99,8 +109,7 @@ chrome.downloads.onChanged.addListener((delta) => {
                     chrome.tabs.sendMessage(activeDoraTabId, {
                         action: "pdfDetected",
                         url: item.url,
-                        filename: item.filename.split(/[/\\]/).pop(),
-                        localPath: item.filename
+                        filename: item.filename.split(/[/\\]/).pop()
                     }).catch(() => { /* Tab closed */ });
                 }
             }
@@ -113,10 +122,9 @@ async function fetchMetadata(doi) {
     const email = "dora@lib4ri.ch"; 
     
     try {
-        const [unpaywallRes, crossrefRes, openalexRes] = await Promise.all([
+        const [unpaywallRes, crossrefRes] = await Promise.all([
             fetch(`https://api.unpaywall.org/v2/${doi}?email=${email}`),
-            fetch(`https://api.crossref.org/works/${doi}`),
-            fetch(`https://api.openalex.org/works/doi:${doi}`)
+            fetch(`https://api.crossref.org/works/${doi}`)
         ]);
 
         const unpaywallData = unpaywallRes.ok ? await unpaywallRes.json() : { is_oa: false };
@@ -127,15 +135,9 @@ async function fetchMetadata(doi) {
             crossrefData = json.message || {};
         }
 
-        let openalexData = {};
-        if (openalexRes.ok) {
-            openalexData = await openalexRes.json();
-        }
-
         return {
             unpaywall: unpaywallData,
-            crossref: crossrefData,
-            openalex: openalexData
+            crossref: crossrefData
         };
     } catch (error) {
         throw new Error("Netzwerkfehler oder ungültige DOI");
@@ -161,10 +163,7 @@ async function analyzePdf(dataUrl) {
         const formData = new FormData();
         formData.append("file", blob, "upload.pdf");
 
-        // Hugging Face Space
-        const API_URL = "https://andrehoffmann80-pdf-analyzer.hf.space/analyze";
-
-        const response = await fetch(API_URL, {
+        const response = await fetch(ANALYZER_API_URL, {
             method: "POST",
             body: formData
         });
@@ -184,43 +183,6 @@ async function analyzePdfViaTab(pdfUrl) {
 
     try {
         const isBlob = pdfUrl.startsWith('blob:');
-
-        // Skip permission check for blob URLs (they don't have a requestable origin)
-        if (!isBlob) {
-            // Extract origin from PDF URL for permission request
-            const urlObj = new URL(pdfUrl);
-            const origin = urlObj.origin;
-            const permissionPattern = `${urlObj.protocol}//${urlObj.hostname}/*`;
-
-            console.log('Checking permissions for:', permissionPattern);
-
-            // Check and request permissions if needed
-            try {
-                const hasPermission = await chrome.permissions.contains({
-                    origins: [permissionPattern]
-                });
-
-                if (!hasPermission) {
-                    console.log('Requesting permission for:', permissionPattern);
-                    // Note: This will show a permission prompt to the user
-                    const granted = await chrome.permissions.request({
-                        origins: [permissionPattern]
-                    });
-
-                    if (!granted) {
-                        throw new Error('User denied permission for ' + origin);
-                    }
-                    console.log('Permission granted for:', permissionPattern);
-                } else {
-                    console.log('Permission already granted for:', permissionPattern);
-                }
-            } catch (permError) {
-                console.error('Permission check/request failed:', permError);
-                // Continue anyway - the wildcard permission might still work
-            }
-        } else {
-            console.log('Blob URL detected - skipping permission check');
-        }
 
         // Check if there's already a tab with this URL
         const existingTabs = await chrome.tabs.query({});
@@ -292,7 +254,7 @@ async function analyzePdfViaTab(pdfUrl) {
         // For blob URLs, we need access to PDFViewerApplication (MAIN world)
         // For regular URLs, ISOLATED world is sufficient
         const results = await chrome.scripting.executeScript({
-            target: { tabId: targetTab.id },
+            target: { tabId: targetTab.id, allFrames: true },
             world: isBlob ? 'MAIN' : undefined, // MAIN world for blob URLs to access PDFViewerApplication
             func: async (isBlobUrl) => {
                 try {
@@ -411,8 +373,7 @@ async function analyzePdfViaTab(pdfUrl) {
         const formData = new FormData();
         formData.append("file", blob, "downloaded.pdf");
 
-        const API_URL = "https://andrehoffmann80-pdf-analyzer.hf.space/analyze";
-        const response = await fetch(API_URL, {
+        const response = await fetch(ANALYZER_API_URL, {
             method: "POST",
             body: formData
         });
@@ -431,8 +392,7 @@ async function analyzePdfViaTab(pdfUrl) {
             const formData = new FormData();
             formData.append("pdf_url", pdfUrl);
 
-            const API_URL = "https://andrehoffmann80-pdf-analyzer.hf.space/analyze";
-            const response = await fetch(API_URL, {
+            const response = await fetch(ANALYZER_API_URL, {
                 method: "POST",
                 body: formData
             });
@@ -448,30 +408,10 @@ async function analyzePdfViaTab(pdfUrl) {
     }
 }
 
-async function analyzePdfUrl(pdfUrl, localPath) {
+async function analyzePdfUrl(pdfUrl) {
     try {
         let blob = null;
         let usePythonDownload = false;
-
-        // 1. Versuch: Lokale Datei laden (Cache/Download)
-        // Erfordert "Zugriff auf Datei-URLs zulassen" in den Extension-Settings
-        if (localPath) {
-            try {
-                // Pfad zu file-URL konvertieren
-                let normalizedPath = localPath.replace(/\\/g, '/');
-                if (!normalizedPath.startsWith('/')) normalizedPath = '/' + normalizedPath;
-                // Sicherstellen, dass Sonderzeichen (Leerzeichen!) korrekt kodiert sind
-                const fileUrl = new URL('file://' + normalizedPath).href;
-                
-                const res = await fetch(fileUrl);
-                if (res.ok) {
-                    blob = await res.blob();
-                    console.log("PDF erfolgreich von lokaler Datei geladen:", fileUrl);
-                }
-            } catch (e) {
-                console.warn("Lokaler Dateizugriff fehlgeschlagen (Fehlt 'Allow access to file URLs'?):", e);
-            }
-        }
 
         // 2. Versuch: Aus offenem Tab laden (Browser Cache / Session)
         // Dies umgeht Login-Probleme, da wir den Inhalt direkt aus dem Tab holen
@@ -511,7 +451,7 @@ async function analyzePdfUrl(pdfUrl, localPath) {
                 
                 if (targetTab && targetTab.id) {
                     const results = await chrome.scripting.executeScript({
-                        target: { tabId: targetTab.id, allFrames: false },
+                        target: { tabId: targetTab.id, allFrames: true },
                         world: 'MAIN', // WICHTIG: Zugriff auf window.PDFViewerApplication der Seite
                         args: [pdfUrl],
                         func: async (targetUrl) => {
@@ -583,6 +523,11 @@ async function analyzePdfUrl(pdfUrl, localPath) {
                     });
                     
                     const validResult = results.find(r => r.result);
+
+                    if (validResult && validResult.result && validResult.result.error) {
+                        throw new Error(validResult.result.error);
+                    }
+
                     if (validResult) {
                         const res = await fetch(validResult.result);
                         blob = await res.blob();
@@ -643,15 +588,10 @@ async function analyzePdfUrl(pdfUrl, localPath) {
             if (pdfUrl && pdfUrl.startsWith('blob:')) {
                 throw new Error("Zugriff auf PDF-Tab fehlgeschlagen (Blob-URL) und lokaler Dateizugriff nicht möglich.");
             }
-            if (localPath) {
-                throw new Error("Automatischer Download-Zugriff blockiert (Firefox?). Bitte Datei manuell per Drag & Drop importieren.");
-            }
             formData.append("pdf_url", pdfUrl);
         }
 
-        const API_URL = "https://andrehoffmann80-pdf-analyzer.hf.space/analyze";
-
-        const response = await fetch(API_URL, {
+        const response = await fetch(ANALYZER_API_URL, {
             method: "POST",
             body: formData
         });
@@ -666,9 +606,41 @@ async function analyzePdfUrl(pdfUrl, localPath) {
     }
 }
 
+/**
+ * Proxy-Funktion für DORA Autocomplete-Anfragen.
+ * Gibt das rohe JSON zurück, damit die content.js (v2.59+) 
+ * flexibel zwischen Solr- und Authority-Daten unterscheiden kann.
+ */
+async function fetchDoraAutocomplete(url) {
+    try {
+        console.log('Fetching DORA Autocomplete from:', url);
+        const res = await fetch(url, {
+            credentials: 'include',
+            mode: 'cors',
+            cache: 'no-cache'
+        });
+        if (!res.ok) {
+            console.error(`DORA Error: ${res.status} ${res.statusText}`);
+            throw new Error(`DORA Error: ${res.status} ${res.statusText}`);
+        }
+        const data = await res.json();
+        console.log('Autocomplete fetch successful');
+        return data;
+    } catch (e) {
+        console.error("Autocomplete fetch error:", e);
+        console.error("URL was:", url);
+        console.error("Error details:", {
+            message: e.message,
+            name: e.name,
+            stack: e.stack
+        });
+        return [];
+    }
+}
+
 async function checkScopusAffiliation(doi) {
     // API Key sicher aus den Einstellungen laden
-    const storage = await chrome.storage.sync.get('scopusApiKey');
+    const storage = await chrome.storage.local.get('scopusApiKey');
     const apiKey = storage.scopusApiKey;
 
     if (!apiKey) {
