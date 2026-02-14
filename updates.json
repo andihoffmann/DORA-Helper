@@ -3,11 +3,10 @@
     "dora@lib4ri.ch": {
       "updates": [
         {
-          "version": "2.50",
+          "version": "2.51",
           "update_link": "https://github.com/andihoffmann/DORA-Helper/releases/latest/download/dora-helper-signed.xpi"
         }
       ]
     }
   }
-
 }

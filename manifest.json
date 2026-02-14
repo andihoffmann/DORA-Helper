@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Dora Helper",
-  "version": "2.50",
+  "version": "2.51",
   "description": "Metadaten-Validierung, DOI- & Buchkapitel-Import, PDF-Analyse und Open-Access-Checks für DORA.",
   "permissions": [
     "activeTab",
