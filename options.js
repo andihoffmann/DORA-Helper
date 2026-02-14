@@ -584,67 +584,127 @@ Zoanthus -> Zoanthus
 Zurich -> Zurich
 `.trim();
 
- // 1. Optionen laden
- function restoreOptions() {
-   chrome.storage.local.get({
-     exceptionList: defaultExceptions,
-     scopusApiKey: '',
-     psiDataLastUpdated: ''
-   }, function(items) {
-     if (document.getElementById('exceptions')) document.getElementById('exceptions').value = items.exceptionList;
-     if (document.getElementById('scopusKey')) document.getElementById('scopusKey').value = items.scopusApiKey;
-     if (document.getElementById('lastUpdated') && items.psiDataLastUpdated) {
-         document.getElementById('lastUpdated').textContent = "Zuletzt aktualisiert: " + items.psiDataLastUpdated;
-     }
-   });
- }
+// 1. Optionen laden
+function restoreOptions() {
+  chrome.storage.local.get({
+    exceptionList: defaultExceptions,
+    scopusApiKey: '',
+    psiDataLastUpdated: ''
+  }, function (items) {
+    if (document.getElementById('exceptions')) document.getElementById('exceptions').value = items.exceptionList;
+    if (document.getElementById('scopusKey')) document.getElementById('scopusKey').value = items.scopusApiKey;
+    if (document.getElementById('lastUpdated') && items.psiDataLastUpdated) {
+      document.getElementById('lastUpdated').textContent = "Zuletzt aktualisiert: " + items.psiDataLastUpdated;
+    }
+  });
+}
 
- // 2. Speichern Scopus
- function saveScopus() {
-   const scopusKey = document.getElementById('scopusKey') ? document.getElementById('scopusKey').value : '';
-   chrome.storage.local.set({ scopusApiKey: scopusKey }, function() {
-     showStatus('statusScopus');
-   });
- }
+// 2. Speichern Scopus
+function saveScopus() {
+  const scopusKey = document.getElementById('scopusKey') ? document.getElementById('scopusKey').value : '';
+  chrome.storage.local.set({ scopusApiKey: scopusKey }, function () {
+    showStatus('statusScopus');
+  });
+}
 
- // 3. Speichern Keywords
- function saveKeywords() {
-   const text = document.getElementById('exceptions') ? document.getElementById('exceptions').value : defaultExceptions;
-   chrome.storage.local.set({ exceptionList: text }, function() {
-     showStatus('statusKeywords');
-   });
- }
+// 3. Speichern Keywords
+function saveKeywords() {
+  const text = document.getElementById('exceptions') ? document.getElementById('exceptions').value : defaultExceptions;
+  chrome.storage.local.set({ exceptionList: text }, function () {
+    showStatus('statusKeywords');
+  });
+}
 
- function showStatus(elementId) {
-     const status = document.getElementById(elementId);
-     if (!status) return;
-     status.style.opacity = '1';
-     setTimeout(() => { status.style.opacity = '0'; }, 2000);
- }
+function showStatus(elementId) {
+  const status = document.getElementById(elementId);
+  if (!status) return;
+  status.style.opacity = '1';
+  setTimeout(() => { status.style.opacity = '0'; }, 2000);
+}
 
- // 4. PSI Data Upload
- function handlePsiDataUpload() {
-     const fileInput = document.getElementById('psiDataFile');
-     const statusSpan = document.getElementById('uploadStatus');
+// 4. PSI Data Upload (Chunked)
+function handlePsiDataUpload() {
+  const fileInput = document.getElementById('psiDataFile');
+  const statusSpan = document.getElementById('uploadStatus');
 
-     if (!fileInput.files.length) return;
+  if (!fileInput.files.length) return;
 
-     const file = fileInput.files[0];
-     const reader = new FileReader();
-     reader.onload = function(e) {
-         const content = e.target.result;
-         const timestamp = new Date().toLocaleString();
-         chrome.storage.local.set({ psiData: content, psiDataLastUpdated: timestamp }, () => {
-             if(statusSpan) { statusSpan.textContent = "Gespeichert!"; statusSpan.style.display = "inline"; statusSpan.style.color = "green"; setTimeout(() => { statusSpan.style.display = "none"; }, 2000); }
-             if(document.getElementById('lastUpdated')) document.getElementById('lastUpdated').textContent = "Zuletzt aktualisiert: " + timestamp;
-         });
-     };
-     reader.readAsText(file);
- }
+  const file = fileInput.files[0];
+  const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
 
- document.addEventListener('DOMContentLoaded', () => {
-     restoreOptions();
-     if (document.getElementById('saveScopus')) document.getElementById('saveScopus').addEventListener('click', saveScopus);
-     if (document.getElementById('saveKeywords')) document.getElementById('saveKeywords').addEventListener('click', saveKeywords);
-     if (document.getElementById('uploadPsiData')) document.getElementById('uploadPsiData').addEventListener('click', handlePsiDataUpload);
- });
+  if (statusSpan) {
+    statusSpan.textContent = "Lese Datei...";
+    statusSpan.style.display = "inline";
+    statusSpan.style.color = "blue";
+  }
+
+  const reader = new FileReader();
+  reader.onload = async function (e) {
+    const content = e.target.result;
+    const timestamp = new Date().toLocaleString();
+
+    try {
+      // 1. Clear old data first to avoid quota errors during overwrite
+      await chrome.storage.local.remove(['psiData', 'psiDataContent']); // Remove legacy keys
+      // We also need to remove old chunks, but we don't know how many there were.
+      // Best effort: remove metadata first.
+
+      // 2. Save Chunks
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = start + CHUNK_SIZE;
+        const chunk = content.substring(start, end);
+        const key = `psiData_chunk_${i}`;
+
+        if (statusSpan) statusSpan.textContent = `Speichere Teil ${i + 1}/${totalChunks}...`;
+
+        await new Promise((resolve, reject) => {
+          chrome.storage.local.set({ [key]: chunk }, () => {
+            if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
+            else resolve();
+          });
+        });
+      }
+
+      // 3. Save Metadata
+      await new Promise((resolve, reject) => {
+        chrome.storage.local.set({
+          psiData_meta: {
+            totalChunks: totalChunks,
+            timestamp: timestamp,
+            fileName: file.name
+          },
+          psiDataLastUpdated: timestamp
+        }, () => {
+          if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
+          else resolve();
+        });
+      });
+
+      if (statusSpan) {
+        statusSpan.textContent = "Gespeichert!";
+        statusSpan.style.color = "green";
+        setTimeout(() => { statusSpan.style.display = "none"; }, 3000);
+      }
+      if (document.getElementById('lastUpdated')) {
+        document.getElementById('lastUpdated').textContent = "Zuletzt aktualisiert: " + timestamp;
+      }
+
+    } catch (error) {
+      console.error("Upload failed:", error);
+      if (statusSpan) {
+        statusSpan.textContent = "Fehler: " + (error.message || "Speicherlimit?");
+        statusSpan.style.color = "red";
+      }
+    }
+  };
+  reader.readAsText(file);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  restoreOptions();
+  if (document.getElementById('saveScopus')) document.getElementById('saveScopus').addEventListener('click', saveScopus);
+  if (document.getElementById('saveKeywords')) document.getElementById('saveKeywords').addEventListener('click', saveKeywords);
+  if (document.getElementById('uploadPsiData')) document.getElementById('uploadPsiData').addEventListener('click', handlePsiDataUpload);
+});

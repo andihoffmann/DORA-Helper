@@ -60,12 +60,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
-    if (request.action === "checkScopus") {
-        checkScopusAffiliation(request.doi)
-            .then(data => sendResponse({ success: true, data: data }))
-            .catch(err => sendResponse({ success: false, error: err.message }));
-        return true;
-    }
 
     if (request.action === "searchAutocomplete") {
         fetchDoraAutocomplete(request.url)
@@ -119,29 +113,105 @@ chrome.downloads.onChanged.addListener((delta) => {
 
 async function fetchMetadata(doi) {
     // BITTE E-MAIL EINTRAGEN (Pflicht für Unpaywall):
-    const email = "dora@lib4ri.ch"; 
-    
+    const email = "dora@lib4ri.ch";
+
     try {
-        const [unpaywallRes, crossrefRes] = await Promise.all([
+        // Get Scopus Key first
+        const storage = await new Promise(resolve => chrome.storage.local.get('scopusApiKey', resolve));
+        const scopusKey = storage.scopusApiKey;
+
+        // 1. Initial Fetch: Unpaywall + Crossref + Scopus
+        const promises = [
             fetch(`https://api.unpaywall.org/v2/${doi}?email=${email}`),
             fetch(`https://api.crossref.org/works/${doi}`)
-        ]);
+        ];
+
+        if (scopusKey) {
+            promises.push(fetchScopusMetadata(doi, scopusKey));
+        }
+
+        const results = await Promise.all(promises);
+
+        const unpaywallRes = results[0];
+        const crossrefRes = results[1];
+        const scopusData = scopusKey && results[2] ? results[2] : null;
 
         const unpaywallData = unpaywallRes.ok ? await unpaywallRes.json() : { is_oa: false };
-        
+
         let crossrefData = {};
         if (crossrefRes.ok) {
             const json = await crossrefRes.json();
             crossrefData = json.message || {};
         }
 
+        // 2. Extract ISSNs for DOAJ Check
+        let issns = [];
+        if (crossrefData.ISSN && Array.isArray(crossrefData.ISSN)) {
+            issns = crossrefData.ISSN;
+        } else if (unpaywallData.journal_issns) {
+            issns = unpaywallData.journal_issns.split(',');
+        }
+
+        // 3. Fetch DOAJ (if ISSNs found)
+        let doajData = null;
+        if (issns.length > 0) {
+            doajData = await fetchDoajMetadata(issns);
+        }
+
+        // 4. Extract Crossref License
+        // Crossref licenses are in message.license [ { URL: "...", start: ... } ]
+        // We usually want the most recent one or the one that indicates OA
+        let crossrefLicense = null;
+        if (crossrefData.license && Array.isArray(crossrefData.license)) {
+            // Sort by start date descending (if available) or just take the first with a valid URL
+            // Simply taking the first one is often enough, but let's try to find a creative commons one
+            const licenses = crossrefData.license;
+            const ccLicense = licenses.find(l => l.URL && l.URL.includes('creativecommons.org'));
+            crossrefLicense = ccLicense ? ccLicense.URL : (licenses[0] ? licenses[0].URL : null);
+        }
+
         return {
             unpaywall: unpaywallData,
-            crossref: crossrefData
+            crossref: crossrefData,
+            scopus: scopusData,
+            doaj: doajData,
+            crossrefLicense: crossrefLicense
         };
     } catch (error) {
         throw new Error("Netzwerkfehler oder ungültige DOI");
     }
+}
+
+async function fetchDoajMetadata(issns) {
+    if (!issns || issns.length === 0) return null;
+
+    // Check availability of each ISSN until one matches or all fail
+    // API: https://doaj.org/api/search/journals/issn:{issn}
+    // Note: DOAJ API allows searching by ISSN. We can just check the first one that returns a hit.
+
+    for (const issn of issns) {
+        try {
+            const cleanIssn = issn.trim();
+            const res = await fetch(`https://doaj.org/api/search/journals/issn:${cleanIssn}`);
+            if (res.ok) {
+                const data = await res.json();
+                if (data.total > 0 && data.results && data.results.length > 0) {
+                    // Found in DOAJ
+                    const journal = data.results[0].bibjson;
+                    return {
+                        in_doaj: true,
+                        title: journal.title,
+                        license: journal.license ? journal.license.map(l => l.type).join(', ') : null,
+                        oa_start: journal.oa_start ? journal.oa_start.year : null
+                    };
+                }
+            }
+        } catch (e) {
+            console.warn(`DOAJ fetch failed for ${issn}:`, e);
+        }
+    }
+
+    return { in_doaj: false };
 }
 
 async function fetchPsiAffiliations(url) {
@@ -442,13 +512,13 @@ async function analyzePdfUrl(pdfUrl) {
                     targetTab = tabs.find(t => t.url && t.url.startsWith('blob:') && t.url.startsWith(blobOrigin));
                     if (targetTab) console.log(`Found tab via blob origin match: ${targetTab.id}`);
                 }
-                
+
                 // 3. Versuch: Suche über den Referrer (Wichtig für Elsevier/ScienceDirect)
                 if (!targetTab && pdfReferrerMap.has(pdfUrl)) {
                     const referrer = pdfReferrerMap.get(pdfUrl);
                     targetTab = tabs.find(t => t.url === referrer);
                 }
-                
+
                 if (targetTab && targetTab.id) {
                     const results = await chrome.scripting.executeScript({
                         target: { tabId: targetTab.id, allFrames: true },
@@ -498,20 +568,20 @@ async function analyzePdfUrl(pdfUrl) {
                                                 return await readBlob(blob);
                                             }
                                         }
-                                    } catch(e) {
+                                    } catch (e) {
                                         console.warn('Blob fetch failed:', e);
                                     }
                                 }
 
                                 // 3. Fallback: Fetch window.location.href (falls der Tab das PDF direkt anzeigt)
                                 if (window.location.href && window.location.href.startsWith('blob:')) {
-                                     const res = await fetch(window.location.href);
-                                     if (res.ok) {
-                                         const blob = await res.blob();
-                                         if (blob.type === 'application/pdf' || blob.size > 1000) {
-                                             return await readBlob(blob);
-                                         }
-                                     }
+                                    const res = await fetch(window.location.href);
+                                    if (res.ok) {
+                                        const blob = await res.blob();
+                                        if (blob.type === 'application/pdf' || blob.size > 1000) {
+                                            return await readBlob(blob);
+                                        }
+                                    }
                                 }
 
                                 return null;
@@ -521,7 +591,7 @@ async function analyzePdfUrl(pdfUrl) {
                             }
                         }
                     });
-                    
+
                     const validResult = results.find(r => r.result);
 
                     if (validResult && validResult.result && validResult.result.error) {
@@ -559,21 +629,21 @@ async function analyzePdfUrl(pdfUrl) {
                 }
 
                 if (!usePythonDownload && (!pdfRes || !pdfRes.ok)) {
-                     usePythonDownload = true;
+                    usePythonDownload = true;
                 } else if (!usePythonDownload) {
-                     // Check Content-Type (vermeide HTML Login-Seiten)
-                     const cType = pdfRes.headers.get('Content-Type');
-                     if (cType && !cType.toLowerCase().includes('pdf') && !cType.toLowerCase().includes('octet-stream')) {
-                         console.warn("Background Fetch returned non-PDF (likely HTML):", cType);
-                         usePythonDownload = true;
-                     } else {
-                         blob = await pdfRes.blob();
-                         if (blob.size < 2000) { // < 2KB ist verdächtig klein
-                             console.warn("Blob too small, delegating to Python.");
-                             blob = null;
-                             usePythonDownload = true;
-                         }
-                     }
+                    // Check Content-Type (vermeide HTML Login-Seiten)
+                    const cType = pdfRes.headers.get('Content-Type');
+                    if (cType && !cType.toLowerCase().includes('pdf') && !cType.toLowerCase().includes('octet-stream')) {
+                        console.warn("Background Fetch returned non-PDF (likely HTML):", cType);
+                        usePythonDownload = true;
+                    } else {
+                        blob = await pdfRes.blob();
+                        if (blob.size < 2000) { // < 2KB ist verdächtig klein
+                            console.warn("Blob too small, delegating to Python.");
+                            blob = null;
+                            usePythonDownload = true;
+                        }
+                    }
                 }
             }
         }
@@ -638,67 +708,75 @@ async function fetchDoraAutocomplete(url) {
     }
 }
 
-async function checkScopusAffiliation(doi) {
-    // API Key sicher aus den Einstellungen laden
-    const storage = await chrome.storage.local.get('scopusApiKey');
-    const apiKey = storage.scopusApiKey;
-
-    if (!apiKey) {
-        throw new Error("Scopus API Key fehlt. Bitte in den Erweiterungs-Einstellungen (Rechtsklick auf Icon -> Optionen) eintragen.");
-    }
+async function fetchScopusMetadata(doi, apiKey) {
+    if (!apiKey) return null;
 
     const url = `https://api.elsevier.com/content/abstract/doi/${doi}?apiKey=${apiKey}&httpAccept=application/json`;
-    
-    const res = await fetch(url);
 
-    if (!res.ok) {
-        if (res.status === 404) throw new Error("DOI nicht in Scopus gefunden");
-        if (res.status === 401) throw new Error("API Key ungültig");
-        throw new Error(`Scopus API Fehler: ${res.status}`);
-    }
-
-    const data = await res.json();
-    
     try {
-        // Pfad zu den Korrespondenz-Daten
-        const bib = data['abstracts-retrieval-response']?.item?.bibrecord?.head?.correspondence;
-        
-        if (!bib) return { isLib4Ri: false, text: "Keine Corresponding-Author Daten in Scopus" };
+        const res = await fetch(url);
 
-        // Helper: Prüft auf Lib4Ri Institute
-        const isLib4Ri = (str) => {
+        if (!res.ok) {
+            console.warn(`Scopus API Error: ${res.status}`);
+            return { error: `HTTP ${res.status}` };
+        }
+
+        const data = await res.json();
+        const core = data['abstracts-retrieval-response']?.coredata;
+        const bib = data['abstracts-retrieval-response']?.item?.bibrecord?.head?.correspondence;
+
+        // 1. OA Status & License
+        const oaFlag = core?.['openaccessFlag'] === 'true';
+        const oaType = core?.['openaccessType']; // e.g. "Gold", "Hybrid Gold", "Green"
+        const oaStatus = core?.['openaccess']; // Int flag
+
+        // 2. Affiliation (Lib4Ri Check)
+        let isLib4Ri = false;
+        let affilText = "Keine Corresponding-Author Daten";
+
+        const isLib4RiCheck = (str) => {
             if (!str) return false;
             const s = str.toLowerCase();
-            return s.includes('paul scherrer') || s.includes('psi') || 
-                   s.includes('eawag') || s.includes('empa') || 
-                   s.includes('wsl') || s.includes('forest, snow and landscape');
+            return s.includes('paul scherrer') || s.includes('psi') ||
+                s.includes('eawag') || s.includes('empa') ||
+                s.includes('wsl') || s.includes('forest, snow and landscape');
         };
 
-        let affilText = "";
-        const corrs = Array.isArray(bib) ? bib : [bib];
-        
-        for (const c of corrs) {
-            if (c.affiliation) {
-                const aff = c.affiliation;
-                // Organization kann Array oder String sein
-                let orgs = [];
-                if (Array.isArray(aff.organization)) {
-                    orgs = aff.organization.map(o => o['$'] || o);
-                } else if (aff.organization) {
-                    orgs = [aff.organization];
+        if (bib) {
+            affilText = "";
+            const corrs = Array.isArray(bib) ? bib : [bib];
+
+            for (const c of corrs) {
+                if (c.affiliation) {
+                    const aff = c.affiliation;
+                    let orgs = [];
+                    if (Array.isArray(aff.organization)) {
+                        orgs = aff.organization.map(o => o['$'] || o);
+                    } else if (aff.organization) {
+                        orgs = [aff.organization];
+                    }
+
+                    const fullText = orgs.join(', ') + (aff.country ? `, ${aff.country}` : '');
+                    if (isLib4RiCheck(fullText)) {
+                        isLib4Ri = true;
+                    }
+                    affilText += fullText + "; ";
                 }
-                
-                const fullText = orgs.join(', ') + (aff.country ? `, ${aff.country}` : '');
-                if (isLib4Ri(fullText)) {
-                    return { isLib4Ri: true, affiliation: fullText };
-                }
-                affilText += fullText + "; ";
             }
+            affilText = affilText.replace(/; $/, '');
         }
-        
-        return { isLib4Ri: false, affiliation: affilText.replace(/; $/, '') };
+
+        return {
+            oaFlag: oaFlag,
+            oaType: oaType,
+            oaStatus: oaStatus, // Raw value given by Scopus
+            isLib4Ri: isLib4Ri,
+            affiliation: affilText,
+            raw: core // Keep raw for debug if needed
+        };
+
     } catch (e) {
-        console.error(e);
-        throw new Error("Fehler beim Parsen der Scopus-Daten");
+        console.error("Scopus Fetch Error:", e);
+        return { error: e.message };
     }
 }

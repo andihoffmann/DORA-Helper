@@ -13,10 +13,10 @@ function findPersonAffiliation(lastname, firstname, year, fullName) {
     if (fullName) {
         const lowerFull = fullName.toLowerCase();
         if (lowerFull.includes(normLast)) {
-             let temp = lowerFull.replace(normLast, '').replace(/,/g, '').trim();
-             if (temp.length > normFirst.length) {
-                 normFirst = temp.replace(/\./g, '');
-             }
+            let temp = lowerFull.replace(normLast, '').replace(/,/g, '').trim();
+            if (temp.length > normFirst.length) {
+                normFirst = temp.replace(/\./g, '');
+            }
         }
     }
 
@@ -41,7 +41,7 @@ function findPersonAffiliation(lastname, firstname, year, fullName) {
         let isMatch = true;
 
         if (inFirstParts.length === 0 && dbFirstParts.length > 0) {
-             continue;
+            continue;
         }
 
         for (let i = 0; i < inFirstParts.length; i++) {
@@ -71,35 +71,37 @@ function findPersonAffiliation(lastname, firstname, year, fullName) {
 
     if (matchKey) {
         const records = PSI_HISTORY[matchKey];
-        // Find record for the specific year
-        const yearRecord = records.find(r => r.year === targetYear);
+        // records is now an array of arrays: [year, group, section, lab, division]
+
+        // Find record for the specific year (index 0)
+        const yearRecord = records.find(r => r[0] === targetYear);
 
         if (yearRecord) {
             return {
                 found: true,
                 name: matchKey,
                 year: targetYear,
-                units: [yearRecord.group, yearRecord.section, yearRecord.lab, yearRecord.division].filter(u => u),
-                primaryUnit: yearRecord.group || yearRecord.section || yearRecord.lab || yearRecord.division,
+                units: [yearRecord[1], yearRecord[2], yearRecord[3], yearRecord[4]].filter(u => u),
+                primaryUnit: yearRecord[1] || yearRecord[2] || yearRecord[3] || yearRecord[4],
                 // Return specific fields for validation messages
-                expectedGroup: yearRecord.group,
-                expectedSection: yearRecord.section,
-                expectedLab: yearRecord.lab,
-                expectedDivision: yearRecord.division
+                expectedGroup: yearRecord[1],
+                expectedSection: yearRecord[2],
+                expectedLab: yearRecord[3],
+                expectedDivision: yearRecord[4]
             };
         } else {
-            const sorted = records.sort((a, b) => b.year - a.year);
+            const sorted = records.sort((a, b) => b[0] - a[0]); // Sort by year (index 0)
             const recent = sorted[0]; // Most recent (descending sort)
             return {
                 found: true,
                 name: matchKey,
                 year: null,
-                availableYears: records.map(r => r.year),
-                recentUnit: recent.group || recent.section || recent.lab || recent.division,
-                expectedGroup: recent.group,
-                expectedSection: recent.section,
-                expectedLab: recent.lab,
-                expectedDivision: recent.division
+                availableYears: records.map(r => r[0]),
+                recentUnit: recent[1] || recent[2] || recent[3] || recent[4],
+                expectedGroup: recent[1],
+                expectedSection: recent[2],
+                expectedLab: recent[3],
+                expectedDivision: recent[4]
             };
         }
     }

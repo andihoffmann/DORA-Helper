@@ -3,9 +3,9 @@
 
 let observerTimeout = null;
 let dragSrcEl = null;
-let lastAutoFetchedDoi = ""; 
-let cachedExceptions = []; 
-let isMouseOverHandle = false; 
+let lastAutoFetchedDoi = "";
+let cachedExceptions = [];
+let isMouseOverHandle = false;
 let isSummaryMinimized = false; // Status für das Fehler-Panel
 
 if (document.readyState === 'loading') {
@@ -32,12 +32,15 @@ function startObserver() {
 }
 
 function scanAndInject() {
+    // SECURITY / PERFORMANCE: Only run on Edit or Ingest Forms
+    if (!isEditPage()) return;
+
     const doiInput = document.getElementById('edit-identifiers-doi');
     if (doiInput) {
         if (!document.getElementById('dora-helper-btn')) injectDOIButton(doiInput);
         const currentDoi = doiInput.value.trim();
         if (currentDoi && currentDoi !== lastAutoFetchedDoi) {
-            lastAutoFetchedDoi = currentDoi; 
+            lastAutoFetchedDoi = currentDoi;
             showLoadingBox();
             performFetch(currentDoi);
         }
@@ -110,7 +113,7 @@ function injectDOIButton(doiInput) {
     btn.addEventListener('click', () => {
         const currentDoi = doiInput.value.trim();
         if (!currentDoi) { renderErrorBox("Keine DOI im Feld gefunden."); return; }
-        lastAutoFetchedDoi = currentDoi; 
+        lastAutoFetchedDoi = currentDoi;
         showLoadingBox();
         performFetch(currentDoi);
     });
@@ -145,7 +148,7 @@ async function handlePdfFile(file) {
         });
 
         if (!response.ok) {
-             throw new Error(`Server Fehler: ${response.status}`);
+            throw new Error(`Server Fehler: ${response.status}`);
         }
 
         const data = await response.json();
@@ -266,16 +269,16 @@ function confirmAndFillPdfData(data, sourceType = 'url') {
 
     if (!hasChanges) {
         let errorMsg = "Analyse lieferte keine Daten.\n\n";
-        
+
         if (sourceType === 'file') {
-             errorMsg += "Ursache: Das PDF enthält keinen extrahierbaren Text (z.B. reiner Bild-Scan) oder ist leer.";
+            errorMsg += "Ursache: Das PDF enthält keinen extrahierbaren Text (z.B. reiner Bild-Scan) oder ist leer.";
         } else if (sourceType === 'monitor') {
-             errorMsg += "Ursache: Der Zugriff auf die heruntergeladene Datei ist fehlgeschlagen.\n";
-             errorMsg += "Mögliche Gründe:\n";
-             errorMsg += "1. 'Zugriff auf Datei-URLs zulassen' ist in den Erweiterungs-Einstellungen deaktiviert (Chrome).\n";
-             errorMsg += "2. Der Fallback-Download wurde durch Login/Redirect blockiert.";
+            errorMsg += "Ursache: Der Zugriff auf die heruntergeladene Datei ist fehlgeschlagen.\n";
+            errorMsg += "Mögliche Gründe:\n";
+            errorMsg += "1. 'Zugriff auf Datei-URLs zulassen' ist in den Erweiterungs-Einstellungen deaktiviert (Chrome).\n";
+            errorMsg += "2. Der Fallback-Download wurde durch Login/Redirect blockiert.";
         } else {
-             errorMsg += "Ursache: Wahrscheinlich konnte das PDF nicht direkt abgerufen werden (Login/Redirect).";
+            errorMsg += "Ursache: Wahrscheinlich konnte das PDF nicht direkt abgerufen werden (Login/Redirect).";
         }
         errorMsg += "\n\nLösung: Bitte PDF manuell herunterladen und per Drag & Drop analysieren.";
         renderErrorBox(errorMsg);
@@ -296,19 +299,19 @@ function fillFormFromPdfData(data) {
         const endPageEl = document.getElementById('edit-host-part-pages-end') || document.querySelector('input[name$="[pages][end]"]');
 
         if (startPageEl && endPageEl) {
-             const startVal = startPageEl.value.trim();
-             const endVal = endPageEl.value.trim();
+            const startVal = startPageEl.value.trim();
+            const endVal = endPageEl.value.trim();
 
-             // Only if End Page is empty
-             if (!endVal) {
-                 // Check if already has (XX pp.)
-                 if (!startVal.includes('(')) {
-                     const newVal = startVal ? `${startVal} (${data.page_count} pp.)` : `(${data.page_count} pp.)`;
-                     startPageEl.value = newVal;
-                     startPageEl.dispatchEvent(new Event('input', { bubbles: true }));
-                     msg += `- Start Page aktualisiert: ${newVal}\n`;
-                 }
-             }
+            // Only if End Page is empty
+            if (!endVal) {
+                // Check if already has (XX pp.)
+                if (!startVal.includes('(')) {
+                    const newVal = startVal ? `${startVal} (${data.page_count} pp.)` : `(${data.page_count} pp.)`;
+                    startPageEl.value = newVal;
+                    startPageEl.dispatchEvent(new Event('input', { bubbles: true }));
+                    msg += `- Start Page aktualisiert: ${newVal}\n`;
+                }
+            }
         }
     }
 
@@ -349,7 +352,7 @@ function fillFormFromPdfData(data) {
                 msg += `- ${data.keywords.length} Keywords hinzugefügt.\n`;
             }
         } else {
-             console.log("Keywords found but Manager not ready:", data.keywords);
+            console.log("Keywords found but Manager not ready:", data.keywords);
         }
     }
 
@@ -368,16 +371,16 @@ function showLoadingBox() {
 function renderErrorBox(msgText) {
     let box = createFloatingBox();
     box.replaceChildren();
-    box.style.borderLeft = '5px solid #e53e3e'; 
-    
+    box.style.borderLeft = '5px solid #e53e3e';
+
     const closeBtn = createEl('div', 'dora-close-btn', '×');
     closeBtn.id = 'dora-box-close';
     closeBtn.style.cssText = 'position: absolute; top: 5px; right: 10px; cursor: pointer; font-size: 1.2em; color: #666;';
     closeBtn.addEventListener('click', () => box.remove());
-    
+
     const msgDiv = createEl('div', '', `❌ Fehler: ${msgText}`);
     msgDiv.style.cssText = 'color:#e53e3e; padding:10px; font-weight:bold; font-family:sans-serif; white-space: pre-wrap;';
-    
+
     box.appendChild(closeBtn);
     box.appendChild(msgDiv);
 }
@@ -407,7 +410,7 @@ function renderResultBox(data) {
 
     // Title (Restored, smaller, stripped HTML)
     let titleText = meta.title ? meta.title[0] : 'Kein Titel';
-    
+
     const title = createEl('div', 'dora-meta-title');
     // Safe decoding of HTML entities without executing scripts
     const parser = new DOMParser();
@@ -431,8 +434,8 @@ function renderResultBox(data) {
     // 3. Status Logic
     let statusText = 'Closed Access';
     let statusClass = 'badge-red';
-    let isHybrid = false; 
-    
+    let isHybrid = false;
+
     if (oa.is_oa) {
         switch (oa.oa_status) {
             case 'hybrid': statusText = 'Hybrid OA'; statusClass = 'badge-hybrid'; isHybrid = true; break;
@@ -446,7 +449,7 @@ function renderResultBox(data) {
     // 4. Badges Container
     const badgesDiv = createEl('div');
     badgesDiv.style.marginBottom = '10px';
-    
+
     const statusBadge = createEl('span', `dora-badge ${statusClass}`, statusText);
     badgesDiv.appendChild(statusBadge);
 
@@ -465,9 +468,157 @@ function renderResultBox(data) {
     }
     box.appendChild(badgesDiv);
 
-    // 5c. Parallel: Scopus Affiliation Check (Corresponding Author) - MOVED UP
-    if (meta.DOI) {
-        checkScopusAffiliation(meta.DOI, box);
+    // 5c. Data Quality Checker (Scopus / DOAJ / Crossref)
+    if (data.scopus || data.doaj || data.crossrefLicense) {
+        const checkerDiv = createEl('div', 'dora-checker-box');
+        checkerDiv.style.cssText = 'margin-top:10px; padding:8px; background:#f8f9fa; border:1px solid #dee2e6; border-radius:4px; font-size:0.9em;';
+
+        const headerRow = createEl('div', '', '🔍 Data Cross-Check');
+        headerRow.style.fontWeight = 'bold';
+        headerRow.style.marginBottom = '5px';
+        headerRow.style.color = '#495057';
+        checkerDiv.appendChild(headerRow);
+
+        // --- SCOPUS CHECK ---
+        if (data.scopus) {
+            const scopus = data.scopus;
+            if (scopus.error) {
+                const err = createEl('div', '', `Scopus: Fehler (${scopus.error})`);
+                err.style.color = '#e53e3e';
+                checkerDiv.appendChild(err);
+            } else {
+                // A. Affiliation Check
+                const affRow = createEl('div', '', '');
+                const affInd = createEl('span', '', scopus.isLib4Ri ? '✅ ' : '⚠️ ');
+                const affText = createEl('span', '', scopus.isLib4Ri ? 'Corr. Author: Lib4Ri' : 'Corr. Author: Extern/Möglicherweise nicht gefunden');
+                if (!scopus.isLib4Ri) affText.title = scopus.affiliation || "Keine Info";
+                affRow.appendChild(affInd);
+                affRow.appendChild(affText);
+                checkerDiv.appendChild(affRow);
+
+                // B. OA Status Check (Refined)
+                const oaRow = createEl('div', '', '');
+                const scpIsHyrbid = scopus.oaType && scopus.oaType.toLowerCase().includes('hybrid');
+                const scpIsOA = scopus.oaFlag === true; // OA=1
+
+                // Conflict if: Unpaywall=Hybrid, Scopus=Closed (NOT OA)
+                // Conflict if: Unpaywall=Closed, Scopus=OA
+                // Note: Unpaywall=Hybrid & Scopus=OA is MATCH (Hybrid is a type of OA)
+
+                let oaIcon = '✅ ';
+                let oaMsg = `Scopus: ${scopus.oaType || (scpIsOA ? 'OA' : 'Closed')}`;
+                let oaColor = '#28a745'; // Green
+
+                if (isHybrid && !scpIsOA) { // Hybrid but Scopus says Closed
+                    oaIcon = '⚠️ ';
+                    oaMsg += ' (Unpaywall: Hybrid)';
+                    oaColor = '#d69e2e'; // Orange
+                } else if (!isHybrid && !oa.is_oa && scpIsOA) { // Closed but Scopus says OA
+                    oaIcon = '⚠️ ';
+                    oaMsg += ' (Unpaywall: Closed)';
+                    oaColor = '#d69e2e';
+                }
+
+                const oaInd = createEl('span', '', oaIcon);
+                const oaSpan = createEl('span', '', oaMsg);
+                oaSpan.style.color = oaColor;
+
+                oaRow.appendChild(oaInd);
+                oaRow.appendChild(oaSpan);
+                checkerDiv.appendChild(oaRow);
+            }
+        }
+
+        // --- DOAJ CHECK ---
+        if (data.doaj) {
+            const doajRow = createEl('div', '', '');
+            const inDoaj = data.doaj.in_doaj;
+
+            // Logic:
+            // Gold OA + Not in DOAJ -> Warning (Quality? New journal?)
+            // Hybrid + In DOAJ -> Conflict (DOAJ journals are usually full OA, not Hybrid)
+
+            let doajIcon = inDoaj ? '✅ ' : 'ℹ️ '; // Info icon for not in DOAJ (neutral usually)
+            let doajMsg = inDoaj ? 'DOAJ: Gelistet' : 'DOAJ: Nicht gelistet';
+            let doajColor = inDoaj ? '#28a745' : '#6c757d';
+
+            if (oa.oa_status === 'gold' && !inDoaj) {
+                doajIcon = '⚠️ ';
+                doajMsg += ' (Gold OA aber nicht in DOAJ)';
+                doajColor = '#d69e2e';
+            } else if (isHybrid && inDoaj) {
+                doajIcon = '⚠️ ';
+                doajMsg += ' (Hybrid aber in DOAJ?)';
+                doajColor = '#d69e2e';
+            }
+
+            const doajInd = createEl('span', '', doajIcon);
+            const doajSpan = createEl('span', '', doajMsg);
+            doajSpan.style.color = doajColor;
+            doajRow.appendChild(doajInd);
+            doajRow.appendChild(doajSpan);
+            checkerDiv.appendChild(doajRow);
+        }
+
+        // --- LICENSE CHECK (Crossref) ---
+        if (data.crossrefLicense) {
+            const licRow = createEl('div', '', '');
+            // Simple helper to clean URL to short code like "CC-BY"
+            const getLicCode = (url) => {
+                if (!url) return '';
+                const parts = url.split('/');
+                // e.g. creativecommons.org/licenses/by/4.0/ -> by 4.0
+                if (url.includes('creativecommons.org')) {
+                    const idx = parts.indexOf('licenses');
+                    if (idx > -1 && parts[idx + 1]) return 'CC-' + parts[idx + 1].toUpperCase();
+                }
+                return 'License';
+            };
+
+            const crLic = getLicCode(data.crossrefLicense);
+            const upLic = bestLoc.license ? bestLoc.license.toUpperCase() : null;
+
+            let licIcon = '✅ ';
+            let licMsg = `Crossref Lic: ${crLic}`;
+            let licColor = '#28a745';
+
+            // Conflict if Unpaywall has license but Crossref doesn't? Or types differ?
+            // Usually Crossref is master.
+            // If Unpaywall says CC-BY but Crossref has nothing -> Warning?
+            // If Crossref says CC-BY but Unpaywall says CC-BY-NC -> Warning.
+
+            if (upLic && crLic !== 'License' && !crLic.includes(upLic.replace('CC-', '').replace('-4.0', ''))) {
+                // Very rough check. 'CC-BY' vs 'CC-BY-NC'. 
+                // Allow partial match?
+                if (upLic !== crLic) {
+                    licIcon = '⚠️ ';
+                    licMsg += ` (Unpaywall: ${upLic})`;
+                    licColor = '#d69e2e';
+                }
+            }
+
+            const licInd = createEl('span', '', licIcon);
+
+            // Generate Link instead of Span
+            const licSpan = createEl('a', '', licMsg);
+            licSpan.href = data.crossrefLicense;
+            licSpan.target = '_blank';
+            licSpan.style.color = licColor;
+            licSpan.style.textDecoration = 'none'; // Optional: keep it looking clean or add underline
+            licSpan.style.borderBottom = '1px dotted ' + licColor; // Dotted underline to indicate interaction
+            licSpan.title = data.crossrefLicense; // Tooltip with full URL
+
+            licRow.appendChild(licInd);
+            licRow.appendChild(licSpan);
+            checkerDiv.appendChild(licRow);
+        }
+
+        box.appendChild(checkerDiv);
+    } else {
+        // Optional: Hint if Scopus Key missing
+        // const hint = createEl('div', '', 'Scopus Check inaktiv (Kein API Key)');
+        // hint.style.fontSize = '0.8em'; hint.style.color='#999';
+        // box.appendChild(hint);
     }
 
     // 5. Buttons Container
@@ -484,12 +635,12 @@ function renderResultBox(data) {
     if (isHostType) {
         const importBtn = createEl('button', 'dora-box-btn btn-hybrid-action');
         importBtn.id = 'dora-import-book-chapter';
-        
+
         const icon = createEl('span', '', '📚');
         icon.style.marginRight = '5px';
         importBtn.appendChild(icon);
         importBtn.appendChild(document.createTextNode(' Metadaten importieren'));
-        
+
         importBtn.title = "Importiert Titel, Host-Titel (Buch/Proceedings), Seiten, Jahr, Verlag, Autoren, Editoren und Abstract";
         importBtn.addEventListener('click', async () => {
             importBtn.disabled = true;
@@ -553,7 +704,7 @@ function renderResultBox(data) {
         analyzeBtn.onclick = () => handlePdfUrl(pdfUrl, analyzeBtn);
         pdfActionRow.appendChild(analyzeBtn);
     }
-    
+
     btnContainer.appendChild(pdfActionRow);
 
     // Policy Button
@@ -630,45 +781,64 @@ function renderResultBox(data) {
 }
 
 async function addMissingRows(containerSelector, requiredCount) {
-    const container = document.querySelector(containerSelector + ' .islandora-form-fieldpanel-panel');
-    if (!container) return;
+    // Loop to ensure we reach the required count
+    // We use a safe limit (requiredCount + 2) to prevent infinite loops if something breaks
+    let safetyLimit = requiredCount + 5;
 
-    const addButton = container.querySelector('.fieldpanel-add.form-submit');
-    if (!addButton) {
-        console.warn('DORA Helper: Could not find the "Add" button in ' + containerSelector);
-        return;
-    }
+    while (safetyLimit > 0) {
+        safetyLimit--;
 
-    let existingRows = container.querySelectorAll('.islandora-form-fieldpanel-pane').length;
-    const rowsToAdd = requiredCount - existingRows;
+        // 1. FRESH QUERY: Always re-query the container because Drupal AJAX replaces it
+        const container = document.querySelector(containerSelector + ' .islandora-form-fieldpanel-panel');
+        if (!container) {
+            console.warn('DORA Helper: Container not found ' + containerSelector);
+            return;
+        }
 
-    if (rowsToAdd <= 0) {
-        return; // No rows needed
-    }
+        // 2. CHECK COUNT
+        const currentRows = container.querySelectorAll('.islandora-form-fieldpanel-pane').length;
+        if (currentRows >= requiredCount) {
+            console.log("DORA Helper: All rows present (" + currentRows + ")");
+            return; // Done!
+        }
 
-    for (let i = 0; i < rowsToAdd; i++) {
-        existingRows = container.querySelectorAll('.islandora-form-fieldpanel-pane').length; // update count
+        // 3. FIND BUTTON
+        const addButton = container.querySelector('.fieldpanel-add.form-submit');
+        if (!addButton) {
+            console.warn('DORA Helper: "Add" button missing in ' + containerSelector);
+            return;
+        }
 
-        // Trigger mousedown instead of click, as Drupal AJAX often binds to mousedown
+        console.log(`DORA Helper: Adding row... (${currentRows} -> ${requiredCount})`);
+
+        // 4. CLICK (Mousedown for Drupal)
         addButton.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
 
-        // Wait for the new row to be added
+        // 5. WAIT FOR AJAX
         await new Promise(resolve => {
             const observer = new MutationObserver((mutations, obs) => {
-                const newRowCount = container.querySelectorAll('.islandora-form-fieldpanel-pane').length;
-                if (newRowCount > existingRows) {
-                    obs.disconnect(); // Clean up the observer
+                const newCount = document.querySelectorAll(containerSelector + ' .islandora-form-fieldpanel-pane').length;
+                if (newCount > currentRows) {
+                    obs.disconnect();
                     resolve();
                 }
             });
-            observer.observe(container, { childList: true });
+            // Observer on the specific container (which might be replaced, but we observe the parent if possible or the container itself)
+            // Ideally we'd observe the parent of the container, but the container itself usually mutates children.
+            // If the container ITSELF is replaced, the observer might die. 
+            // Better: Observe the wrapper if possible, or just accept the timeout fallback.
+            observer.observe(container, { childList: true, subtree: true });
 
-            // Add a timeout to prevent infinite waiting
+            // Timeout: 2.5 seconds (AJAX should be faster)
+            // If timeout occurs, loop continues and re-checks count.
             setTimeout(() => {
                 observer.disconnect();
-                resolve(); // Resolve anyway to avoid getting stuck
-            }, 3000); // 3-second timeout
+                resolve();
+            }, 2500);
         });
+
+        // Small delay to let JS event handlers finish binding to new elements
+        await new Promise(r => setTimeout(r, 100));
     }
 }
 
@@ -691,10 +861,10 @@ async function fillBookChapterMetadata(meta) {
         // Check if CKEditor is active
         const cke = document.getElementById('cke_edit-titleinfo-title-text-format-value');
         if (cke) {
-             const iframe = cke.querySelector('iframe');
-             if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
-                 iframe.contentDocument.body.textContent = meta.title[0];
-             }
+            const iframe = cke.querySelector('iframe');
+            if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
+                iframe.contentDocument.body.textContent = meta.title[0];
+            }
         } else {
             titleEl.value = meta.title[0];
         }
@@ -776,8 +946,8 @@ async function fillBookChapterMetadata(meta) {
     // 9. Series Title
     const seriesTitleEl = document.getElementById('edit-host-series-titleinfo-title');
     if (seriesTitleEl && meta['container-title'] && meta['container-title'].length > 1) {
-         // Assume the second one is the series title if available
-         seriesTitleEl.value = meta['container-title'][1];
+        // Assume the second one is the series title if available
+        seriesTitleEl.value = meta['container-title'][1];
     }
 
     // 10. Abstract
@@ -791,16 +961,16 @@ async function fillBookChapterMetadata(meta) {
         // Check if CKEditor is active
         const cke = document.getElementById('cke_edit-abstract0-abstract-text-format-value');
         if (cke) {
-             const iframe = cke.querySelector('iframe');
-             if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
-                 // Use DOM manipulation for safe paragraph insertion
-                 const body = iframe.contentDocument.body;
-                 body.replaceChildren();
-                 cleanAbstract.trim().split(/\n\n+/).forEach((para, idx) => {
-                     if (idx > 0) body.appendChild(iframe.contentDocument.createElement('br'));
-                     body.appendChild(iframe.contentDocument.createTextNode(para));
-                 });
-             }
+            const iframe = cke.querySelector('iframe');
+            if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
+                // Use DOM manipulation for safe paragraph insertion
+                const body = iframe.contentDocument.body;
+                body.replaceChildren();
+                cleanAbstract.trim().split(/\n\n+/).forEach((para, idx) => {
+                    if (idx > 0) body.appendChild(iframe.contentDocument.createElement('br'));
+                    body.appendChild(iframe.contentDocument.createTextNode(para));
+                });
+            }
         } else {
             abstractEl.value = cleanAbstract.trim();
         }
@@ -837,17 +1007,17 @@ function insertHybridTag() {
 function injectKeywordManager(topicContainer) {
     const toolHeader = createEl('div');
     toolHeader.id = 'dora-keyword-manager';
-    
+
     // Header Row
     const headRow = createEl('div');
     headRow.style.cssText = "display:flex; justify-content:space-between; align-items:center;";
-    
+
     const title = createEl('strong', '', '⚡ Keyword Manager');
     const sortBtn = createEl('button', 'dora-helper-button', 'Edit & Sort');
     sortBtn.id = 'dora-enable-sort';
     sortBtn.type = 'button';
     sortBtn.style.cssText = "padding:2px 8px; font-size:0.8em;";
-    
+
     headRow.appendChild(title);
     headRow.appendChild(sortBtn);
     toolHeader.appendChild(headRow);
@@ -870,7 +1040,7 @@ function injectKeywordManager(topicContainer) {
     const tagList = topicContainer.querySelector('.tag-list') || topicContainer.querySelector('.xml-form-elements-tags') || topicContainer.querySelector('div[class*="tags"]');
     if (tagList) tagList.insertAdjacentElement('beforebegin', toolHeader);
     else topicContainer.appendChild(toolHeader);
-        
+
     sortBtn.addEventListener('click', () => loadKeywordsIntoManager(topicContainer));
 }
 
@@ -880,31 +1050,31 @@ function loadKeywordsIntoManager(topicContainer) {
     const loading = createEl('li', '', 'Lade Einstellungen...');
     loading.style.cssText = 'padding:10px; color:#666;';
     list.appendChild(loading);
-    
+
     document.getElementById('dora-drag-hint').style.display = 'block';
 
     loadExceptionsFromStorage(() => {
         list.replaceChildren();
         const hiddenInputs = topicContainer.querySelectorAll('input[type="hidden"].form-tag, input[name^="topics"].form-tag');
-        
+
         hiddenInputs.forEach((input) => {
-            if(!input.value) return;
+            if (!input.value) return;
             const formattedValue = formatKeyword(input.value);
             const li = createEl('li', 'dora-keyword-item');
-            li.setAttribute('draggable', 'true'); 
-            
+            li.setAttribute('draggable', 'true');
+
             // Input
             const inputField = createEl('input', 'dora-keyword-input');
             inputField.type = 'text';
             inputField.value = formattedValue;
-            
+
             // Handle
             const handle = createEl('span', 'dora-drag-handle', '☰');
             handle.title = "Ziehen zum Sortieren";
-            
+
             li.appendChild(inputField);
             li.appendChild(handle);
-            
+
             bindItemEvents(li, topicContainer);
             list.appendChild(li);
         });
@@ -923,31 +1093,31 @@ function bindItemEvents(liItem, topicContainer) {
     input.addEventListener('input', () => syncKeywordsBackToDora(topicContainer));
     input.addEventListener('mousedown', (e) => e.stopPropagation());
 
-    liItem.addEventListener('dragstart', function(e) {
+    liItem.addEventListener('dragstart', function (e) {
         if (!isMouseOverHandle) { e.preventDefault(); return false; }
         dragSrcEl = this;
         e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', ''); 
-        this.classList.add('is-dragging'); 
+        e.dataTransfer.setData('text/plain', '');
+        this.classList.add('is-dragging');
     });
 
-    liItem.addEventListener('dragend', function() {
+    liItem.addEventListener('dragend', function () {
         this.classList.remove('is-dragging');
         document.querySelectorAll('.dora-keyword-item').forEach(col => {
             col.classList.remove('drop-target-top', 'drop-target-bottom');
         });
     });
 
-    liItem.addEventListener('dragover', function(e) {
+    liItem.addEventListener('dragover', function (e) {
         if (e.preventDefault) e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
-        if (this === dragSrcEl) return; 
+        if (this === dragSrcEl) return;
 
         const rect = this.getBoundingClientRect();
         const relY = (e.clientY - rect.top) / rect.height;
 
         document.querySelectorAll('.dora-keyword-item').forEach(el => {
-            if(el !== this) el.classList.remove('drop-target-top', 'drop-target-bottom');
+            if (el !== this) el.classList.remove('drop-target-top', 'drop-target-bottom');
         });
 
         if (relY < 0.5) {
@@ -960,12 +1130,12 @@ function bindItemEvents(liItem, topicContainer) {
         return false;
     });
 
-    liItem.addEventListener('dragleave', function(e) {
+    liItem.addEventListener('dragleave', function (e) {
         if (this.contains(e.relatedTarget)) return;
         this.classList.remove('drop-target-top', 'drop-target-bottom');
     });
 
-    liItem.addEventListener('drop', function(e) {
+    liItem.addEventListener('drop', function (e) {
         if (e.stopPropagation) e.stopPropagation();
         this.classList.remove('drop-target-top', 'drop-target-bottom');
 
@@ -1003,7 +1173,7 @@ function syncKeywordsBackToDora(topicContainer) {
 function injectTagButtons() {
     // Suche nach dem Additional Information Textarea
     let addInfoArea = document.querySelector('textarea[name*="additional_information"]');
-    
+
     // Fallback: Suche über Label
     if (!addInfoArea) {
         const labels = Array.from(document.querySelectorAll('label'));
@@ -1040,11 +1210,11 @@ function injectTagButtons() {
         let baseStyle = 'padding: 2px 8px; font-size: 0.85em; background: #e2e8f0; border: 1px solid #cbd5e0; border-radius: 3px; cursor: pointer; color: #2d3748; width: auto;';
         if (tag.customStyle) baseStyle += tag.customStyle;
         btn.style.cssText = baseStyle;
-        
+
         btn.onclick = (e) => {
             e.preventDefault();
             let valueToInsert = tag.label;
-            
+
             if (tag.prompt) {
                 const name = prompt('Bitte Initialen und Nachnamen eingeben (z.B. A.B. Dennis):');
                 if (!name) return;
@@ -1065,16 +1235,16 @@ function insertAtCursor(myField, myValue) {
     if (myField.selectionStart || myField.selectionStart == '0') {
         var startPos = myField.selectionStart;
         var endPos = myField.selectionEnd;
-        
+
         let prefix = "";
-        if (startPos > 0 && myField.value[startPos-1] !== ' ' && myField.value[startPos-1] !== '\n') {
+        if (startPos > 0 && myField.value[startPos - 1] !== ' ' && myField.value[startPos - 1] !== '\n') {
             prefix = " ";
         }
-        
+
         myField.value = myField.value.substring(0, startPos)
             + prefix + myValue
             + myField.value.substring(endPos, myField.value.length);
-            
+
         myField.selectionStart = startPos + myValue.length + prefix.length;
         myField.selectionEnd = startPos + myValue.length + prefix.length;
         myField.focus();
@@ -1123,11 +1293,44 @@ function attachInputAutocomplete(input, field) {
     input.setAttribute('autocomplete', 'off');
 
     let debounceTimer;
-    input.addEventListener('input', () => {
+    let matchTimer; // Timer for exact match delay
+
+    // Ensure we track last processed query on the element itself to persist across re-attachments (if any)
+    if (typeof input.dataset.doraLastAutoQuery === 'undefined') {
+        input.dataset.doraLastAutoQuery = '';
+    }
+
+    // Pass event 'e' to check inputType
+    input.addEventListener('input', (e) => {
         const query = input.value.trim();
         if (query.length < 3) {
             dataList.replaceChildren();
             return;
+        }
+
+        // Check for immediate match ONLY if it looks like a specific selection (not normal typing)
+        // 'insertReplacementText' is used by Chrome when selecting from a datalist
+        // We also check !e.inputType for compatibility (some browsers or paste operations)
+        const isSelection = !e.inputType || e.inputType === 'insertReplacementText';
+
+        if (field.id === 'edit-confinfo-confname' && isSelection) {
+            const options = Array.from(dataList.options).map(o => o.value);
+            if (options.includes(query)) {
+                // Exact match found via SELECTION!
+                if (matchTimer) clearTimeout(matchTimer);
+
+                // We can use a shorter delay here because the user explicitly selected it
+                console.log("DORA Helper: List selection detected. Triggering in 200ms...", query);
+                matchTimer = setTimeout(() => {
+                    if (query !== input.dataset.doraLastAutoQuery) {
+                        fetchConferenceDetails(query);
+                        input.dataset.doraLastAutoQuery = query;
+                    }
+                    matchTimer = null;
+                }, 200);
+
+                return;
+            }
         }
 
         clearTimeout(debounceTimer);
@@ -1142,8 +1345,31 @@ function attachInputAutocomplete(input, field) {
                 // UI Refresh Hack
                 input.removeAttribute('list');
                 input.setAttribute('list', listId);
+
+                // REMOVED: Do not check for exact match in async results. 
+                // This prevents the modal from popping up while typing just because a prefix matched.
+                // The user must select from the list or hit enter/tab (change event).
             });
         }, 400);
+    });
+
+    // Keep change event as fallback (Enter key or Blur)
+    input.addEventListener('change', () => {
+        const val = input.value.trim();
+        if (val.length > 3) {
+            // Check if it's the conference field
+            if (field.id === 'edit-confinfo-confname') {
+                // Rely on deduplication in showConferenceConfirmation to handle overlaps
+                // AND check dataset to avoid re-opening on blur if already handled
+                if (!matchTimer && val !== input.dataset.doraLastAutoQuery) {
+                    console.log("DORA Helper: Change event triggering fetch for:", val);
+                    fetchConferenceDetails(val);
+                    input.dataset.doraLastAutoQuery = val;
+                } else {
+                    console.log("DORA Helper: Change event skipped (timer active or already processed):", val);
+                }
+            }
+        }
     });
 }
 
@@ -1219,6 +1445,11 @@ function attachTextareaAutocomplete(textarea, field) {
                         dropdown.style.display = 'none';
                         textarea.focus();
                         textarea.dispatchEvent(new Event('change', { bubbles: true }));
+
+                        // Trigger fetching if this is the conference field
+                        if (field.id === 'edit-confinfo-confname') {
+                            fetchConferenceDetails(name.trim());
+                        }
                     });
                     dropdown.appendChild(item);
                 });
@@ -1308,7 +1539,7 @@ function getDoraBaseUrl() {
 function loadExceptionsFromStorage(callback) {
     chrome.storage.sync.get({
         exceptionList: `x-ray -> X-ray\nx-rays -> X-rays\ndna -> DNA\nrna -> RNA\nph -> pH\nnmr -> NMR\nhplc -> HPLC\nuv -> UV\nir -> IR\npcr -> PCR\ntem -> TEM\nsem -> SEM\nafm -> AFM\nxps -> XPS\nswitzerland -> Switzerland\nzurich -> Zurich`
-    }, function(items) {
+    }, function (items) {
         cachedExceptions = [];
         const lines = items.exceptionList.split('\n');
         lines.forEach(line => {
@@ -1335,7 +1566,7 @@ function formatKeyword(text) {
 // --- PUBLISHER PAGE SCANNER (Zotero-style) ---
 function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
     const url = `https://doi.org/${doi}`;
-    
+
     // Wir senden eine Nachricht an den Background-Worker, um HTML zu fetchen (CORS-Bypass)
     // Hinweis: Ihr Background-Script muss auf { action: "fetchHtml", url: ... } reagieren
     // und { success: true, data: "<html>..." } zurückgeben.
@@ -1351,10 +1582,10 @@ function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
 
         if (foundPdfUrl && foundPdfUrl !== existingPdfUrl) {
             // Wir haben einen besseren/anderen Link gefunden!
-            
+
             // Prüfen ob wir schon einen Haupt-Button haben
             const mainBtn = document.getElementById('dora-main-pdf-btn');
-            
+
             if (mainBtn) {
                 // Update existing button
                 mainBtn.href = foundPdfUrl;
@@ -1366,7 +1597,7 @@ function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
                 mainBtn.title = "Direkter Link via Verlags-Metadaten gefunden";
                 mainBtn.style.border = "1px solid #2b6cb0";
                 mainBtn.style.color = "#2b6cb0";
-                
+
                 // Update the analyze action next to it
                 const analyzeBtn = rowContainer.querySelector('button');
                 if (analyzeBtn) {
@@ -1383,7 +1614,7 @@ function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
                 pubPdfBtn.appendChild(icon);
                 pubPdfBtn.appendChild(document.createTextNode(' PDF (Verlag)'));
                 pubPdfBtn.style.flex = '1';
-                
+
                 const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary');
                 analyzeBtn.textContent = '⚡';
                 analyzeBtn.title = "Dieses Verlags-PDF analysieren";
@@ -1401,7 +1632,7 @@ function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
 function extractPdfFromHtml(html, baseUrl) {
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, "text/html");
-    
+
     // Helper um relative URLs aufzulösen
     const resolveUrl = (href) => {
         try { return new URL(href, baseUrl).href; } catch (e) { return href; }
@@ -1422,7 +1653,7 @@ function extractPdfFromHtml(html, baseUrl) {
             const json = JSON.parse(script.textContent);
             // Wir suchen nach Objekten, die ScholarlyArticle sind oder encoding haben
             const objects = Array.isArray(json) ? json : [json];
-            
+
             for (const obj of objects) {
                 // Suche nach "encoding" (oft bei Springer/Nature)
                 if (obj.encoding) {
@@ -1483,7 +1714,7 @@ function extractPdfFromHtml(html, baseUrl) {
     for (const a of anchorTags) {
         const href = a.getAttribute('href');
         if (!href) continue;
-        
+
         const hrefLower = href.toLowerCase();
         const textLower = a.innerText.toLowerCase();
         const titleLower = (a.getAttribute('title') || '').toLowerCase();
@@ -1492,7 +1723,7 @@ function extractPdfFromHtml(html, baseUrl) {
         // Muss auf .pdf enden ODER explizit "pdf" im Text/Klasse haben UND "download" oder "view" implizieren
         const looksLikePdf = hrefLower.endsWith('.pdf') || hrefLower.includes('/pdf/');
         const isPdfButton = textLower.includes('pdf') || classLower.includes('pdf') || titleLower.includes('pdf');
-        
+
         // Filter: Vermeide "Help with PDF" oder "About PDF" Links
         const isHelpLink = textLower.includes('help') || textLower.includes('reader');
 
@@ -1559,11 +1790,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             dropZone.appendChild(document.createElement('br'));
             const small = createEl('small', '', request.filename.substring(0, 25) + '...');
             dropZone.appendChild(small);
-            
+
             dropZone.style.backgroundColor = '#e6fffa';
             dropZone.style.borderColor = '#38b2ac';
             dropZone.style.color = '#2c7a7b';
-            
+
             // Klick auf Dropzone startet nun den Import dieses PDFs
             dropZone.onclick = (e) => {
                 e.preventDefault(); // Kein File-Dialog
@@ -1611,12 +1842,12 @@ function validateForm() {
 
     // Improved Year Selector: Try multiple IDs
     let pubYearEl = document.getElementById('edit-origininfodate-0-dateissued') ||
-                      document.getElementById('edit-dateissued');
+        document.getElementById('edit-dateissued');
     if (!pubYearEl) {
-         pubYearEl = document.querySelector('input[name*="dateIssued"]');
+        pubYearEl = document.querySelector('input[name*="dateIssued"]');
     }
     if (!pubYearEl) {
-         pubYearEl = getField('Publication Year');
+        pubYearEl = getField('Publication Year');
     }
 
     // Attach listeners for real-time validation
@@ -1657,7 +1888,7 @@ function validateForm() {
     if (statusEl && volumeEl && !isVolumeOptional) {
         let statusText = statusEl.value;
         if (statusEl.tagName === 'SELECT') {
-             statusText = statusEl.options[statusEl.selectedIndex]?.text || '';
+            statusText = statusEl.options[statusEl.selectedIndex]?.text || '';
         }
 
         if (statusText.toLowerCase().includes('published')) {
@@ -1682,13 +1913,13 @@ function validateForm() {
 
         // 1. Required if Published
         if (statusEl) {
-             let statusText = statusEl.value;
-             if (statusEl.tagName === 'SELECT') statusText = statusEl.options[statusEl.selectedIndex]?.text || '';
+            let statusText = statusEl.value;
+            if (statusEl.tagName === 'SELECT') statusText = statusEl.options[statusEl.selectedIndex]?.text || '';
 
-             if (statusText.toLowerCase().includes('published') && !startVal) {
-                 startPageError = 'Start Page ist bei Status "Published" Pflicht.';
-                 errors.push('<b>Start Page</b>: Pflichtfeld bei Status "Published".');
-             }
+            if (statusText.toLowerCase().includes('published') && !startVal) {
+                startPageError = 'Start Page ist bei Status "Published" Pflicht.';
+                errors.push('<b>Start Page</b>: Pflichtfeld bei Status "Published".');
+            }
         }
 
         // 2. Format check if End Page is empty
@@ -1728,37 +1959,51 @@ function checkSentenceCase(el, label, errors) {
 
     // CKEditor handling
     if (el.classList.contains('ckeditor-processed')) {
-         const cke = document.getElementById('cke_' + el.id);
-         if (cke) {
-             const iframe = cke.querySelector('iframe');
-             if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
-                 const editorText = iframe.contentDocument.body.innerText.trim();
-                 if (editorText) val = editorText;
-             }
-         }
+        const cke = document.getElementById('cke_' + el.id);
+        if (cke) {
+            const iframe = cke.querySelector('iframe');
+            if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
+                const editorText = iframe.contentDocument.body.innerText.trim();
+                if (editorText) val = editorText;
+            }
+        }
     }
 
     if (val) {
         const words = val.split(/\s+/);
         if (words.length > 1) {
-            const stopWords = ['And', 'Or', 'But', 'The', 'A', 'An', 'In', 'On', 'Of', 'For', 'To', 'At', 'By', 'With'];
+            // Enhanced Stop Words (English + German)
+            const stopWords = [
+                'And', 'Or', 'But', 'The', 'A', 'An', 'In', 'On', 'Of', 'For', 'To', 'At', 'By', 'With', // EN
+                'Und', 'Oder', 'Der', 'Die', 'Das', 'Ein', 'Eine', 'Auf', 'Aus', 'Von', 'Zu', 'Mit', 'Für', 'Im', 'Am' // DE (Capitalized = potential error)
+            ];
+
             // Check middle words (exclude first)
             const middleWords = words.slice(1);
 
+            // 0. Detect German Context
+            // Look for special chars (ä, ö, ü, ß) OR common lowercase German particles
+            const hasGermanChars = /[äöüßÄÖÜ]/.test(val);
+            const germanParticles = ['und', 'oder', 'der', 'die', 'das', 'auf', 'aus', 'von', 'zu', 'mit', 'für', 'im', 'am'];
+            const hasGermanParticles = middleWords.some(w => germanParticles.includes(w.toLowerCase().replace(/[^\w]/g, '')));
+
+            const isGerman = hasGermanChars || hasGermanParticles;
+
             // 1. Check for capitalized stop words (strong indicator of Title Case)
             const hasCapStopWord = middleWords.some(w => {
-                const cleanW = w.replace(/[^\w]/g, ''); // remove punctuation
+                const cleanW = w.replace(/[^\wäöüß]/g, ''); // remove punctuation
                 return stopWords.includes(cleanW);
             });
 
             // 2. Check ratio of capitalized words (excluding ALL CAPS acronyms)
-            const mixedCaseCapWords = middleWords.filter(w => /^[A-Z][a-z]+/.test(w));
+            // SKIPPED if isGerman is true (because German Nouns are always capitalized)
+            const mixedCaseCapWords = middleWords.filter(w => /^[A-ZÄÖÜ][a-zäöüß]+/.test(w));
             const ratio = mixedCaseCapWords.length / middleWords.length;
 
             if (hasCapStopWord) {
-                markError(el, true, `${label} enthält großgeschriebene Stoppwörter (bitte Sentence case verwenden).`);
-                errors.push(`<b>${label}</b>: Enthält großgeschriebene Stoppwörter (Sentence case verwenden).`);
-            } else if (mixedCaseCapWords.length > 1 && ratio > 0.6) {
+                markError(el, true, `${label} enthält grossgeschriebene Stoppwörter (bitte Sentence case verwenden).`);
+                errors.push(`<b>${label}</b>: Enthält grossgeschriebene Stoppwörter (Sentence case verwenden).`);
+            } else if (!isGerman && mixedCaseCapWords.length > 1 && ratio > 0.6) {
                 markError(el, true, `${label} scheint Title Case zu sein (bitte Sentence case verwenden).`);
                 errors.push(`<b>${label}</b>: Scheint Title Case zu sein (Sentence case verwenden).`);
             } else {
@@ -1774,7 +2019,9 @@ function checkSentenceCase(el, label, errors) {
 
 function validateAuthorRows(errors, pubYear) {
     const pYearInt = parseInt(pubYear, 10);
-    const isOldPsiPub = !isNaN(pYearInt) && pYearInt < 2006;
+    // Check if we are in PSI context (URL contains /psi/)
+    const isPsiContext = window.location.href.includes('/psi/');
+    const isOldPsiPub = isPsiContext && !isNaN(pYearInt) && pYearInt < 2006;
 
     // 1. Specific Islandora Fieldpanel Logic
     const authorsContainer = document.querySelector('.form-item-authors');
@@ -1844,10 +2091,10 @@ function validateAuthorRows(errors, pubYear) {
                                 if (groupInput) {
                                     const groupVal = groupInput.value.trim();
                                     if (groupVal && !personData.units.some(u => groupVal.includes(u) || u.includes(groupVal))) {
-                                         markError(groupInput, true, `Warnung: "${groupVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein.`);
-                                         errors.push(`<b>Author ${idx + 1} (Group)</b>: "${groupVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein. <br>Erwartet: ${personData.expectedGroup || 'N/A'}`);
+                                        markError(groupInput, true, `Warnung: "${groupVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein.`);
+                                        errors.push(`<b>Author ${idx + 1} (Group)</b>: "${groupVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein. <br>Erwartet: ${personData.expectedGroup || 'N/A'}`);
                                     } else {
-                                         markError(groupInput, false);
+                                        markError(groupInput, false);
                                     }
                                 }
 
@@ -1855,21 +2102,25 @@ function validateAuthorRows(errors, pubYear) {
                                 if (labInput) {
                                     const labVal = labInput.value.trim();
                                     if (labVal && !personData.units.some(u => labVal.includes(u) || u.includes(labVal))) {
-                                         markError(labInput, true, `Warnung: "${labVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein.`);
-                                         errors.push(`<b>Author ${idx + 1} (Lab)</b>: "${labVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein. <br>Erwartet: ${personData.expectedLab || 'N/A'}`);
+                                        markError(labInput, true, `Warnung: "${labVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein.`);
+                                        errors.push(`<b>Author ${idx + 1} (Lab)</b>: "${labVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein. <br>Erwartet: ${personData.expectedLab || 'N/A'}`);
                                     } else {
-                                         markError(labInput, false);
+                                        markError(labInput, false);
                                     }
                                 }
 
                                 // Check Division
                                 if (divisionInput) {
                                     const divVal = divisionInput.value.trim();
-                                    if (divVal && !personData.units.some(u => divVal.includes(u) || u.includes(divVal))) {
-                                         markError(divisionInput, true, `Warnung: "${divVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein.`, true);
-                                         errors.push(`<b>Author ${idx + 1} (Division)</b>: Die Division wurde wahrscheinlich mitllerweile angepasst, hat aber Gültigkeit für den Eintrag.`);
+
+                                    // Special Exception: If Group is "0000 PSI", do not flag Division errors
+                                    const is0000PSI = groupInput && groupInput.value.includes('0000 PSI');
+
+                                    if (!is0000PSI && divVal && !personData.units.some(u => divVal.includes(u) || u.includes(divVal))) {
+                                        markError(divisionInput, true, `Warnung: "${divVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein.`, true);
+                                        errors.push(`<b>Author ${idx + 1} (Division)</b>: Die Division wurde mittlerweile umbenannt, hat aber Gültigkeit für den Eintrag.`);
                                     } else {
-                                         markError(divisionInput, false);
+                                        markError(divisionInput, false);
                                     }
                                 }
 
@@ -1910,16 +2161,17 @@ function validateAuthorRows(errors, pubYear) {
                             }
                         } else {
                             const groupVal = groupInput.value.trim();
-                            // Special Rule: Division Heads (e.g. 1000-9000) don't need a Lab
-                            const isSpecialGroup = /^[1-9]000/.test(groupVal);
+                            // Special Rule: Division Heads (e.g. 1000-9000) or '0000 PSI' don't need a Lab
+                            const isSpecialGroup = /^[1-9]000/.test(groupVal) || groupVal.includes('0000 PSI');
 
                             if (labInput && !labInput.value.trim() && !isSpecialGroup) {
-                                 markError(labInput, true, 'Laboratory sollte ausgefüllt sein, wenn Group vorhanden ist.');
-                                 errors.push(`<b>Author ${idx + 1} (Lab)</b>: Laboratory fehlt (Group ist gesetzt).`);
+                                markError(labInput, true, 'Laboratory sollte ausgefüllt sein, wenn Group vorhanden ist.');
+                                errors.push(`<b>Author ${idx + 1} (Lab)</b>: Laboratory fehlt (Group ist gesetzt).`);
                             }
-                            if (divisionInput && !divisionInput.value.trim()) {
-                                 markError(divisionInput, true, 'Division sollte ausgefüllt sein, wenn Group vorhanden ist.');
-                                 errors.push(`<b>Author ${idx + 1} (Division)</b>: Division fehlt (Group ist gesetzt).`);
+                            // FIXED: Also apply isSpecialGroup exception to Division
+                            if (divisionInput && !divisionInput.value.trim() && !isSpecialGroup) {
+                                markError(divisionInput, true, 'Division sollte ausgefüllt sein, wenn Group vorhanden ist.');
+                                errors.push(`<b>Author ${idx + 1} (Division)</b>: Division fehlt (Group ist gesetzt).`);
                             }
                         }
                     }
@@ -1950,7 +2202,7 @@ function validateAuthorRows(errors, pubYear) {
                     const deptInput = cells[deptIdx].querySelector('input, select');
 
                     if (nameInput && deptInput && !nameInput.dataset.doraValidatorAttached) {
-                         if (!nameInput.dataset.doraValidatorAttached) {
+                        if (!nameInput.dataset.doraValidatorAttached) {
                             nameInput.addEventListener('input', validateForm);
                             nameInput.dataset.doraValidatorAttached = "true";
                         }
@@ -2015,14 +2267,14 @@ function renderErrorSummary(errors) {
         panel.style.borderColor = '#fc8181';
         panel.style.borderLeft = '1px solid #fc8181';
         panel.title = "Klicken, um Fehlerdetails anzuzeigen";
-        
+
         const icon = createEl('span', '', '⚠️');
         icon.style.fontSize = '1.2em';
         icon.style.marginRight = '5px';
         panel.appendChild(icon);
         const b = createEl('b', '', errors.length.toString());
         panel.appendChild(b);
-        
+
         panel.onclick = () => {
             isSummaryMinimized = false;
             renderErrorSummary(errors); // Neu rendern (maximiert)
@@ -2041,12 +2293,12 @@ function renderErrorSummary(errors) {
 
         const header = createEl('div');
         header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #e53e3e; padding-bottom:5px;';
-        
+
         const title = createEl('span');
         const b = createEl('b', '', `${errors.length} Probleme gefunden:`);
         b.style.color = '#c53030';
         title.appendChild(b);
-        
+
         const minBtn = createEl('span', '', '➖');
         minBtn.title = "Minimieren";
         minBtn.style.cssText = 'cursor:pointer; font-weight:bold; color:#c53030; padding: 0 5px; font-size: 1.2em;';
@@ -2055,18 +2307,18 @@ function renderErrorSummary(errors) {
             isSummaryMinimized = true;
             renderErrorSummary(errors); // Neu rendern (minimiert)
         };
-        
+
         header.appendChild(title);
         header.appendChild(minBtn);
         panel.appendChild(header);
 
         const list = createEl('ul');
         list.style.cssText = 'padding-left:20px; margin:0; overflow-y:auto; max-height:300px;';
-        
+
         errors.forEach(err => {
             const li = createEl('li');
             li.style.marginBottom = '5px';
-            
+
             // Safe rendering of error message (allows <b> and <br> but escapes user input)
             // Error string format: "<b>Label</b>: Message" or similar
             const parts = err.split(/(<br\s*\/?>|<b>|<\/b>)/i);
@@ -2075,24 +2327,24 @@ function renderErrorSummary(errors) {
                 if (part.toLowerCase() === '<b>') { isBold = true; return; }
                 if (part.toLowerCase() === '</b>') { isBold = false; return; }
                 if (part.toLowerCase().startsWith('<br')) { li.appendChild(document.createElement('br')); return; }
-                
+
                 if (part) {
                     const node = isBold ? createEl('b', '', part) : document.createTextNode(part);
                     li.appendChild(node);
                 }
             });
-            
+
             // Scroll-Logik
             li.style.cursor = 'pointer';
             li.title = "Klicken, um zum ersten Fehler zu springen";
             li.onclick = () => {
-                 const firstError = document.querySelector('.dora-error');
-                 if (firstError) firstError.scrollIntoView({behavior: "smooth", block: "center"});
+                const firstError = document.querySelector('.dora-error');
+                if (firstError) firstError.scrollIntoView({ behavior: "smooth", block: "center" });
             };
 
             list.appendChild(li);
         });
-        
+
         panel.appendChild(list);
     }
 }
@@ -2120,4 +2372,441 @@ function markError(el, isError, msg = '', isWarning = false) {
         if (target === el) target.style.backgroundColor = '';
         target.title = '';
     }
+}
+
+// --- CONFERENCE AUTO-FILL ---
+// --- CONFERENCE AUTO-FILL ---
+function fetchConferenceDetails(confName) {
+    console.log("DORA Helper: Fetching details for conference:", confName);
+    // Escape quotes in Solr query
+    const safeName = confName.replace(/"/g, '\\"');
+
+    // Optimisation: Limit to only necessary fields (fl)
+    // We request title, series, editors, PLACE, and DATE
+    const fl = [
+        'mods_relatedItem_host_titleInfo_title_ms',
+        'mods_relatedItem_host_relatedItem_series_titleInfo_title_ms',
+        'mods_relatedItem_host_name_personal_namePart_family_ms', // Editor Family Name (Specific)
+        'mods_relatedItem_host_name_personal_namePart_given_ms',  // Editor Given Name (Specific)
+        'mods_name_personal_editor_ms',
+        'mods_name_personal_editor_mt',
+        'mods_name_editor_ms',
+        'mods_relatedItem_host_name_personal_editor_ms',
+        '*editor*',
+        'mods_originInfo_place_placeTerm_text_ms', // Place
+        'mods_originInfo_dateOther_ms',            // Conference Date
+        '*place*',                                 // Fuzzy fallback
+        '*date*'                                   // Fuzzy fallback
+    ].join(',');
+
+    const solrUrl = `http://lib-dora-prod1.emp-eaw.ch:8080/solr/collection1/select?q=mods_name_conference_ms:"${encodeURIComponent(safeName)}"&fl=${encodeURIComponent(fl)}&rows=1&wt=json&_=${Date.now()}`;
+
+    chrome.runtime.sendMessage({
+        action: "searchAutocomplete",
+        url: solrUrl
+    }, (response) => {
+        if (response && response.success && response.data) {
+            const docs = response.data.response?.docs;
+            if (docs && docs.length > 0) {
+                const preparedData = prepareConferenceData(docs[0]);
+                // Check if any data was found
+                const hasData = Object.values(preparedData).some(v => v !== null && (Array.isArray(v) ? v.length > 0 : true));
+
+                if (hasData) {
+                    showConferenceConfirmation(preparedData, (selectedData) => {
+                        applyConferenceData(selectedData);
+                    });
+                } else {
+                    console.log("DORA Helper: No usable data found in conference doc.");
+                }
+            } else {
+                console.log("DORA Helper: No conference details found for", confName);
+            }
+        }
+    });
+}
+
+function prepareConferenceData(doc) {
+    const data = {
+        procTitle: null,
+        seriesTitle: null,
+        editors: [],
+        place: null,
+        date: null
+    };
+
+    // 1. Proceedings Title
+    if (doc.mods_relatedItem_host_titleInfo_title_ms && doc.mods_relatedItem_host_titleInfo_title_ms[0]) {
+        data.procTitle = doc.mods_relatedItem_host_titleInfo_title_ms[0];
+    }
+
+    // 2. Series Title
+    if (doc.mods_relatedItem_host_relatedItem_series_titleInfo_title_ms && doc.mods_relatedItem_host_relatedItem_series_titleInfo_title_ms[0]) {
+        data.seriesTitle = doc.mods_relatedItem_host_relatedItem_series_titleInfo_title_ms[0];
+    }
+
+    // 3. Editors
+    // 3. Editors
+    // Priority: Specific Family/Given fields
+    if (doc.mods_relatedItem_host_name_personal_namePart_family_ms &&
+        doc.mods_relatedItem_host_name_personal_namePart_given_ms) {
+
+        const families = doc.mods_relatedItem_host_name_personal_namePart_family_ms;
+        const givens = doc.mods_relatedItem_host_name_personal_namePart_given_ms;
+
+        // Pair them up if lengths match (assumption: Solr maintains order)
+        if (families.length === givens.length) {
+            data.editors = families.map((fam, idx) => ({
+                family: fam,
+                given: givens[idx]
+            }));
+        } else {
+            // Fallback: If lengths mismatch, try to use just family names or fallback to other fields
+            // For now, let's treat them as individual components if possible, or fallback
+            console.warn("DORA Helper: Editor Family/Given count mismatch. Falling back to simple fields.");
+        }
+    }
+
+    if (data.editors.length === 0) {
+        // Fallback to previous logic
+        const allKeys = Object.keys(doc);
+        let editorField = null;
+        const candidates = [
+            'mods_name_personal_editor_ms',
+            'mods_name_personal_editor_mt',
+            'mods_name_editor_ms',
+            'mods_relatedItem_host_name_personal_editor_ms'
+        ];
+
+        for (const c of candidates) {
+            if (doc[c]) { editorField = c; break; }
+        }
+        if (!editorField) {
+            const fuzzy = allKeys.find(k => k.includes('editor') && Array.isArray(doc[k]) && k !== 'score');
+            if (fuzzy) editorField = fuzzy;
+        }
+
+        if (editorField && doc[editorField]) {
+            data.editors = doc[editorField].map(name => {
+                if (name.includes(',')) {
+                    const parts = name.split(',');
+                    if (parts.length >= 2) {
+                        return { family: parts[0].trim(), given: parts.slice(1).join(',').trim() };
+                    }
+                }
+                return { family: name, given: '' };
+            });
+        }
+    }
+
+    // 4. Place
+    let place = doc.mods_originInfo_place_placeTerm_text_ms ? doc.mods_originInfo_place_placeTerm_text_ms[0] : null;
+    if (!place) {
+        const placeKey = allKeys.find(k => k.includes('place') && k.includes('Term') && Array.isArray(doc[k]));
+        if (placeKey) place = doc[placeKey][0];
+    }
+    data.place = place;
+
+    // 5. Conference Date
+    let confDate = doc.mods_originInfo_dateOther_ms ? doc.mods_originInfo_dateOther_ms[0] : null;
+    if (!confDate) {
+        const dateKey = allKeys.find(k => k.includes('dateOther') && Array.isArray(doc[k]));
+        if (dateKey) confDate = doc[dateKey][0];
+    }
+    data.date = confDate;
+
+    return data;
+}
+
+async function applyConferenceData(data) {
+    console.log("DORA Helper: Applying conference data", data);
+    let msg = "Konferenz-Daten übernommen:\n";
+    let hasChanges = false;
+
+    // 1. Proceedings Title
+    if (data.procTitle) {
+        const procTitleEl = document.getElementById('edit-host-titleinfo-title') || findField('Conference Proceedings') || findField('Proceedings Title');
+        if (procTitleEl) {
+            procTitleEl.value = data.procTitle;
+            procTitleEl.dispatchEvent(new Event('input', { bubbles: true }));
+            msg += "- Proceedings Title\n";
+            hasChanges = true;
+        }
+    }
+
+    // 2. Series Title
+    if (data.seriesTitle) {
+        const seriesTitleEl = document.getElementById('edit-host-series-titleinfo-title') || findField('Series Title');
+        if (seriesTitleEl) {
+            seriesTitleEl.value = data.seriesTitle;
+            seriesTitleEl.dispatchEvent(new Event('input', { bubbles: true }));
+            msg += "- Series Title\n";
+            hasChanges = true;
+        }
+    }
+
+    // 3. Editors
+    if (data.editors && data.editors.length > 0) {
+        await addMissingRows('.form-item-host-editor', data.editors.length);
+
+        const editorContainer = document.querySelector('.form-item-host-editor .islandora-form-fieldpanel-panel');
+        if (editorContainer) {
+            const editorPanes = editorContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
+            let filledCount = 0;
+
+            data.editors.forEach((ed, idx) => {
+                if (editorPanes[idx]) {
+                    const pane = editorPanes[idx];
+                    // Robust selector for Family Name (could be [family], [familyEditor], etc.)
+                    const familyEl = pane.querySelector('input[name*="family" i]');
+                    // Robust selector for Given Name
+                    const givenEl = pane.querySelector('input[name*="given" i]');
+
+                    let rowFilled = false;
+                    if (familyEl) {
+                        familyEl.value = ed.family;
+                        familyEl.dispatchEvent(new Event('input', { bubbles: true }));
+                        rowFilled = true;
+                    }
+                    if (givenEl && ed.given) {
+                        givenEl.value = ed.given;
+                        givenEl.dispatchEvent(new Event('input', { bubbles: true }));
+                        rowFilled = true;
+                    }
+                    if (rowFilled) filledCount++;
+                }
+            });
+            if (filledCount > 0) {
+                msg += `- ${filledCount} Editor(s)\n`;
+                hasChanges = true;
+            }
+        }
+    }
+
+    // 4. Place
+    if (data.place) {
+        const placeEl = document.getElementById('edit-confinfo-place') || document.getElementById('edit-origin-info-place') || findField('Place');
+        if (placeEl) {
+            placeEl.value = data.place;
+            placeEl.dispatchEvent(new Event('input', { bubbles: true }));
+            msg += `- Ort: ${data.place}\n`;
+            hasChanges = true;
+        }
+    }
+
+    // 5. Date
+    if (data.date) {
+        const dateEl = document.getElementById('edit-confinfo-dates') || document.getElementById('edit-origin-info-date-other') || findField('Date');
+        if (dateEl) {
+            dateEl.value = data.date;
+            dateEl.dispatchEvent(new Event('input', { bubbles: true }));
+            msg += `- Datum: ${data.date}\n`;
+            hasChanges = true;
+        }
+    }
+
+    if (hasChanges) {
+        const toast = createEl('div', '', '✓ Daten eingefügt');
+        toast.style.cssText = 'position:fixed; bottom:20px; right:20px; background:#48bb78; color:white; padding:10px 20px; border-radius:4px; z-index:10000; box-shadow:0 2px 5px rgba(0,0,0,0.2); animation: fadeOut 3s forwards; pointer-events:none;';
+
+        if (!document.getElementById('dora-toast-style')) {
+            const style = document.createElement('style');
+            style.id = 'dora-toast-style';
+            style.textContent = '@keyframes fadeOut { 0% { opacity: 1; } 70% { opacity: 1; } 100% { opacity: 0; } }';
+            document.head.appendChild(style);
+        }
+
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 3000);
+    }
+}
+
+
+
+
+// --- UTILS ---
+function findField(labelPart) {
+    const labels = document.querySelectorAll('label');
+    for (const l of labels) {
+        if (l.innerText.toLowerCase().includes(labelPart.toLowerCase())) {
+            const id = l.getAttribute('for');
+            if (id) {
+                const el = document.getElementById(id);
+                if (el) return el;
+            }
+            // Try finding input in the same form-item container
+            const container = l.closest('.form-item') || l.parentNode;
+            if (container) {
+                const input = container.querySelector('input:not([type="hidden"]), select, textarea');
+                if (input) return input; // Return the input element, not container
+            }
+        }
+    }
+    return null;
+}
+
+// --- CONFERENCE CONFIRMATION DIALOG ---
+function showConferenceConfirmation(data, onConfirm) {
+    // 0. Deduplication: Check if modal already exists
+    if (document.querySelector('.dora-modal-overlay')) {
+        console.log("DORA Helper: Modal already open, skipping.");
+        return;
+    }
+
+    // 1. Create Overlay
+    const overlay = createEl('div', 'dora-modal-overlay');
+    overlay.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:10001; display:flex; justify-content:center; align-items:center;';
+
+    // 2. Create Modal Box on top of overlay
+    const box = createEl('div', 'dora-modal-box');
+    box.style.cssText = 'background:white; padding:20px; border-radius:8px; width:500px; max-width:90%; box-shadow:0 4px 6px rgba(0,0,0,0.1); display:flex; flex-direction:column; gap:15px; animation: popIn 0.3s ease-out;';
+
+    // Animation for pop-in
+    if (!document.getElementById('dora-modal-anim')) {
+        const style = createEl('style', '', '@keyframes popIn { 0% { opacity: 0; transform: scale(0.9); } 100% { opacity: 1; transform: scale(1); } }');
+        style.id = 'dora-modal-anim';
+        document.head.appendChild(style);
+    }
+
+    // Header
+    const header = createEl('div', '', '📋 Konferenz-Daten übernehmen?');
+    header.style.cssText = 'font-weight:bold; font-size:1.2em; border-bottom:1px solid #eee; padding-bottom:10px; color:#2d3748;';
+    box.appendChild(header);
+
+    // Form Content
+    const form = createEl('div');
+    form.style.cssText = 'display:flex; flex-direction:column; gap:10px; max-height:60vh; overflow-y:auto; padding-right:5px;';
+
+    const createCheckbox = (label, value, key, isChecked = true) => {
+        if (!value) return null;
+
+        const row = createEl('label');
+        row.style.cssText = 'display:flex; align-items:start; gap:10px; cursor:pointer; padding:5px; border-radius:4px; transition:background 0.2s;';
+        row.onmouseover = () => row.style.background = '#f7fafc';
+        row.onmouseleave = () => row.style.background = 'transparent';
+
+        const cb = createEl('input');
+        cb.type = 'checkbox';
+        cb.checked = isChecked;
+        cb.dataset.key = key;
+        cb.style.marginTop = '4px';
+
+        const textDiv = createEl('div');
+        textDiv.style.flex = '1';
+        const b = createEl('b', '', label);
+        b.style.display = 'block';
+        b.style.marginBottom = '2px';
+        b.style.color = '#4a5568';
+
+        const span = createEl('div', '', value);
+        span.style.color = '#718096';
+        span.style.fontSize = '0.95em';
+        span.style.wordBreak = 'break-word';
+
+        textDiv.appendChild(b);
+        textDiv.appendChild(span);
+
+        row.appendChild(cb);
+        row.appendChild(textDiv);
+        return row;
+    };
+
+    if (data.procTitle) {
+        const item = createCheckbox('Proceedings Title', data.procTitle, 'procTitle');
+        if (item) form.appendChild(item);
+    }
+    if (data.seriesTitle) {
+        const item = createCheckbox('Series Title', data.seriesTitle, 'seriesTitle');
+        if (item) form.appendChild(item);
+    }
+    if (data.place) {
+        const item = createCheckbox('Ort', data.place, 'place');
+        if (item) form.appendChild(item);
+    }
+    if (data.date) {
+        const item = createCheckbox('Datum', data.date, 'date');
+        if (item) form.appendChild(item);
+    }
+    if (data.editors && data.editors.length > 0) {
+        const editorNames = data.editors.map(e => (e.family || '') + (e.given ? ', ' + e.given : '')).join('; ');
+        const item = createCheckbox(`Editoren (${data.editors.length})`, editorNames, 'editors');
+        if (item) form.appendChild(item);
+    }
+
+    if (form.children.length === 0) {
+        const noData = createEl('div', '', 'Keine relevanten Daten gefunden.');
+        noData.style.color = '#718096';
+        form.appendChild(noData);
+    }
+
+    box.appendChild(form);
+
+    // Actions
+    const btnRow = createEl('div');
+    btnRow.style.cssText = 'display:flex; justify-content:flex-end; gap:12px; margin-top:5px; padding-top:15px; border-top:1px solid #eee;';
+
+    const closeAll = () => {
+        overlay.remove();
+    };
+
+    const cancelBtn = createEl('button', '', 'Abbrechen');
+    cancelBtn.style.cssText = 'background:white; border:1px solid #cbd5e0; color:#4a5568; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:500; transition:all 0.2s;';
+    cancelBtn.onmouseover = () => cancelBtn.style.background = '#f7fafc';
+    cancelBtn.onmouseleave = () => cancelBtn.style.background = 'white';
+    cancelBtn.onclick = closeAll;
+
+    const confirmBtn = createEl('button', '', 'Daten übernehmen');
+    confirmBtn.style.cssText = 'background:#3182ce; border:none; color:white; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:600; box-shadow:0 2px 4px rgba(49,130,206,0.3); transition:all 0.2s;';
+    confirmBtn.onmouseover = () => { confirmBtn.style.background = '#2b6cb0'; confirmBtn.style.transform = 'translateY(-1px)'; };
+    confirmBtn.onmouseleave = () => { confirmBtn.style.background = '#3182ce'; confirmBtn.style.transform = 'translateY(0)'; };
+
+    // Prevent default to avoid blur issues causing weird states
+    const handleConfirm = (e) => {
+        if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        const selectedKeys = [];
+        form.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+            selectedKeys.push(cb.dataset.key);
+        });
+
+        const filteredData = {};
+        selectedKeys.forEach(key => {
+            if (data[key]) filteredData[key] = data[key];
+        });
+
+        if (onConfirm) onConfirm(filteredData);
+        closeAll();
+    };
+
+    // Use mousedown to trigger before blur events might interfere
+    confirmBtn.addEventListener('mousedown', handleConfirm);
+    // keep click just in case
+    confirmBtn.onclick = handleConfirm;
+
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(confirmBtn);
+    box.appendChild(btnRow);
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    // Close on click outside box
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closeAll();
+    });
+}
+function isEditPage() {
+    // Check for specific form IDs or Classes typical for DORA/Islandora Edit Forms
+    if (document.getElementById('islandora-ingest-form')) return true;
+    if (document.querySelector('.node-form')) return true;
+    if (document.getElementById('edit-identifiers-doi')) return true; // Strong indicator
+    
+    // Check URL patterns
+    const loc = window.location.href;
+    if (loc.includes('/ingest') || loc.includes('/edit') || loc.includes('/manage')) return true;
+
+    return false;
 }
