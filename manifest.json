@@ -3,7 +3,13 @@
   "name": "Dora Helper",
   "version": "2.50",
   "description": "Metadaten-Validierung, DOI- & Buchkapitel-Import, PDF-Analyse und Open-Access-Checks für DORA.",
-  "permissions": ["activeTab", "scripting", "storage", "downloads", "tabs"],
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "downloads",
+    "tabs"
+  ],
   "host_permissions": [
     "*://*.dora.lib4ri.ch/*",
     "https://api.unpaywall.org/*",
@@ -17,58 +23,65 @@
   "optional_host_permissions": [
     "*://*/*"
   ],
-  
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' http://lib-dora-prod1.emp-eaw.ch:8080 https://*;"
   },
-
   "browser_specific_settings": {
     "gecko": {
       "id": "dora@lib4ri.ch",
       "strict_min_version": "115.0",
       "update_url": "https://raw.githubusercontent.com/andihoffmann/DORA-Helper/refs/heads/main/updates.json",
       "data_collection_permissions": {
-         "required": ["none"]
+        "required": [
+          "none"
+        ]
       }
     }
   },
-
   "options_ui": {
     "page": "options.html",
     "open_in_tab": false
   },
-
   "background": {
-    "scripts": ["background.js"]
+    "scripts": [
+      "background.js"
+    ]
   },
-  
   "icons": {
     "48": "icons/logo-48.png",
     "128": "icons/logo-128.png"
   },
-  
   "action": {
     "default_icon": {
       "16": "icons/logo-16.png",
       "32": "icons/logo-32.png"
     }
   },
-
   "content_scripts": [
     {
-      "matches": ["*://*.dora.lib4ri.ch/*"],
+      "matches": [
+        "*://*.dora.lib4ri.ch/*",
+        "http://lib-dora-prod1.emp-eaw.ch:8080/*"
+      ],
       "js": [
         "psi_data.js",
         "psi_affiliations.js",
         "content.js"
       ],
-      "css": ["styles.css"]
+      "css": [
+        "styles.css"
+      ]
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["icons/logo-128.png", "icons/logo-48.png"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "icons/logo-128.png",
+        "icons/logo-48.png"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ]
 }

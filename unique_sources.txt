@@ -1,0 +1,5 @@
+<StringArray>
+[ 'SAP2013',  'SAP2014',  'SAP2015',  'SAP2016',  'SAP2017',  'SAP2006',
+  'SAP2007',  'SAP2008',  'SAP2009',  'SAP2010',  'SAP2011',  'SAP2012',
+  'SAP2018', 'zCID2019', 'zCID2020', 'zCID2021', 'zCID2022']
+Length: 17, dtype: str

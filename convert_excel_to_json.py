@@ -1,10 +1,11 @@
 import pandas as pd
+import re
 import json
 import os
 
 # Configuration
 INPUT_FILE = 'psi_affiliations.xlsx'  # Replace with your actual file name
-OUTPUT_FILE = 'psi_data.js'           # Output as .js for direct use in extension
+OUTPUT_FILE = 'psi_data_2023.js'           # Output as .js for direct use in extension
 
 def convert_excel_to_js():
     # Check if file exists
@@ -38,12 +39,15 @@ def convert_excel_to_js():
             # Create Key: "Lastname, Firstname"
             key = f"{lastname}, {firstname}"
             
-            # Extract Year from Source (e.g., "SAP2013" -> 2013)
+            # Extract Year from Source (e.g., "SAP2013" -> 2013, "zCID2022" -> 2022)
             source = str(row.get('Source', '')).strip()
             year = None
-            if source.startswith('SAP') and len(source) >= 7:
+            
+            # Look for 4 digits (e.g. 2021) pattern
+            match = re.search(r'(\d{4})', source)
+            if match:
                 try:
-                    year = int(source[3:])
+                    year = int(match.group(1))
                 except ValueError:
                     pass
             
@@ -63,13 +67,7 @@ def convert_excel_to_js():
             if lab == 'nan': lab = ""
             if division == 'nan': division = ""
             
-            record = {
-                "year": year,
-                "group": group,
-                "section": section,
-                "lab": lab,
-                "division": division
-            }
+            record = [year, group, section, lab, division]
             
             if key not in psi_history:
                 psi_history[key] = []
@@ -82,7 +80,8 @@ def convert_excel_to_js():
         print(f"Writing to {OUTPUT_FILE}...")
         
         # Convert dict to JSON string
-        json_str = json.dumps(psi_history, ensure_ascii=False, indent=4)
+        # Convert dict to JSON string (Minified)
+        json_str = json.dumps(psi_history, ensure_ascii=False, separators=(',', ':'))
         
         # Wrap in JS variable assignment
         js_content = f"const PSI_HISTORY = {json_str}"

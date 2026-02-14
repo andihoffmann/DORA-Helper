@@ -170,4 +170,60 @@
 .dora-drag-handle:hover { background: #e2e2e2; color: #555; }
 .dora-drag-handle:active { cursor: grabbing; background: #ccc; }
 
+
 .original-keywords-hidden .tag-list { opacity: 0.3; pointer-events: none; filter: grayscale(100%); }
+
+/* ==========================================================================
+   5. AUTOCOMPLETE & RESULT BOX FIXES
+   ========================================================================== */
+
+/* Result Box Core Styles */
+#dora-result-box {
+    position: fixed;
+    top: 110px;
+    right: 20px;
+    width: 320px;
+    z-index: 10000;
+    background-color: #ffffff;
+    border: 1px solid #ccc;
+    border-left: 5px solid #0073e6;
+    border-radius: 5px;
+    padding: 15px;
+    box-shadow: 0 5px 20px rgba(0,0,0,0.15);
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #333;
+    line-height: 1.5;
+    box-sizing: border-box; /* Ensure padding doesn't expand width */
+}
+
+/* Autocomplete Dropdown */
+.dora-autocomplete-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    max-height: 200px;
+    overflow-y: auto;
+    background-color: #fff;
+    border: 1px solid #ccc;
+    border-top: none;
+    border-radius: 0 0 4px 4px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    z-index: 9999;
+}
+
+.dora-autocomplete-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid #eee;
+    font-size: 13px;
+    color: #333;
+}
+
+.dora-autocomplete-item:hover {
+    background-color: #f0f0f0;
+}
+
+.dora-autocomplete-item:last-child {
+    border-bottom: none;
+}
