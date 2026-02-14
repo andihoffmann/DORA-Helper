@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.50 - internal: 2.62
+// Version: 2.51 - internal: 2.64
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -2803,7 +2803,7 @@ function isEditPage() {
     if (document.getElementById('islandora-ingest-form')) return true;
     if (document.querySelector('.node-form')) return true;
     if (document.getElementById('edit-identifiers-doi')) return true; // Strong indicator
-    
+
     // Check URL patterns
     const loc = window.location.href;
     if (loc.includes('/ingest') || loc.includes('/edit') || loc.includes('/manage')) return true;
