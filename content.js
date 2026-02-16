@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.51 - internal: 2.64
+// Version: 2.52
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -7,6 +7,8 @@ let lastAutoFetchedDoi = "";
 let cachedExceptions = [];
 let isMouseOverHandle = false;
 let isSummaryMinimized = false; // Status für das Fehler-Panel
+let lastErrorsHash = "";      // Zum Vergleichen der Fehlerliste
+let lastMinimizedState = null; // Zum Vergleichen des Status
 
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', startObserver);
@@ -86,9 +88,9 @@ function createFloatingBox() {
     }
     // Styles
     Object.assign(box.style, {
-        position: 'fixed', top: '110px', right: '20px', width: '320px', zIndex: '10000',
+        position: 'fixed', top: '110px', right: '20px', width: '300px', zIndex: '10000',
         backgroundColor: '#ffffff', border: '1px solid #ccc', borderLeft: '5px solid #0073e6',
-        borderRadius: '5px', padding: '15px', boxShadow: '0 5px 20px rgba(0,0,0,0.15)'
+        borderRadius: '5px', padding: '10px', boxShadow: '0 5px 20px rgba(0,0,0,0.15)'
     });
     return box;
 }
@@ -405,7 +407,7 @@ function renderResultBox(data) {
     // Logo
     const logo = createEl('img');
     logo.src = chrome.runtime.getURL('icons/logo-48.png');
-    logo.style.cssText = 'float:left; width:32px; height:32px; margin-right:10px;';
+    logo.style.cssText = 'float:left; width:24px; height:24px; margin-right:8px;';
     header.appendChild(logo);
 
     // Title (Restored, smaller, stripped HTML)
@@ -417,15 +419,17 @@ function renderResultBox(data) {
     const doc = parser.parseFromString(titleText, 'text/html');
     title.textContent = doc.body.textContent || "";
 
-    title.style.fontSize = '0.9em'; // Reduced by ~20-30% from 1.1em
+    title.style.fontSize = '0.85em';
     title.style.fontWeight = 'bold';
-    title.style.marginBottom = '5px';
-    title.style.lineHeight = '1.3';
+    title.style.marginBottom = '2px';
+    title.style.lineHeight = '1.2';
 
     const containerTitle = meta['container-title'] ? meta['container-title'][0] : '';
     const pubDate = meta.created && meta.created['date-parts'] ? meta.created['date-parts'][0][0] : '-';
     const journalInfo = `${containerTitle} (${pubDate})`;
     const journal = createEl('div', 'dora-meta-journal', journalInfo);
+    journal.style.fontSize = '0.75em';
+    journal.style.color = '#666';
 
     header.appendChild(title);
     header.appendChild(journal);
@@ -448,7 +452,7 @@ function renderResultBox(data) {
 
     // 4. Badges Container
     const badgesDiv = createEl('div');
-    badgesDiv.style.marginBottom = '10px';
+    badgesDiv.style.margin = '6px 0';
 
     const statusBadge = createEl('span', `dora-badge ${statusClass}`, statusText);
     badgesDiv.appendChild(statusBadge);
@@ -471,11 +475,11 @@ function renderResultBox(data) {
     // 5c. Data Quality Checker (Scopus / DOAJ / Crossref)
     if (data.scopus || data.doaj || data.crossrefLicense) {
         const checkerDiv = createEl('div', 'dora-checker-box');
-        checkerDiv.style.cssText = 'margin-top:10px; padding:8px; background:#f8f9fa; border:1px solid #dee2e6; border-radius:4px; font-size:0.9em;';
+        checkerDiv.style.cssText = 'margin-top:6px; padding:5px; background:#f8f9fa; border:1px solid #dee2e6; border-radius:4px; font-size:0.75em;';
 
         const headerRow = createEl('div', '', '🔍 Data Cross-Check');
         headerRow.style.fontWeight = 'bold';
-        headerRow.style.marginBottom = '5px';
+        headerRow.style.marginBottom = '3px';
         headerRow.style.color = '#495057';
         checkerDiv.appendChild(headerRow);
 
@@ -625,7 +629,8 @@ function renderResultBox(data) {
     const btnContainer = createEl('div', 'dora-btn-container');
     btnContainer.style.display = 'flex';
     btnContainer.style.flexDirection = 'column';
-    btnContainer.style.gap = '8px';
+    btnContainer.style.gap = '5px';
+    btnContainer.style.marginTop = '8px';
 
     // Check if it is a Book Chapter
     const pubTypeEl = document.getElementById('edit-publication-type');
@@ -694,6 +699,7 @@ function renderResultBox(data) {
         pdfBtn.appendChild(icon);
         pdfBtn.appendChild(document.createTextNode(' PDF ansehen (Unpaywall)'));
         pdfBtn.style.flex = '1';
+        pdfBtn.style.fontSize = '12px'; // Reduced
         pdfActionRow.appendChild(pdfBtn);
 
         const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary');
@@ -717,6 +723,7 @@ function renderResultBox(data) {
         icon.style.marginRight = '5px';
         policyBtn.appendChild(icon);
         policyBtn.appendChild(document.createTextNode(' Policy prüfen'));
+        policyBtn.style.fontSize = '12px'; // Reduced
         btnContainer.appendChild(policyBtn);
     }
 
@@ -740,7 +747,7 @@ function renderResultBox(data) {
 
     // 6. PDF Drop Zone (Moved to bottom of result box)
     const dropZone = createEl('div', 'dora-pdf-drop', '📄 PDF hier ablegen oder öffnen');
-    dropZone.style.cssText = 'border: 2px dashed #ccc; padding: 10px; border-radius: 4px; cursor: pointer; color: #666; font-size: 0.9em; background: #f9f9f9; margin-top: 10px; text-align: center; transition: all 0.2s;';
+    dropZone.style.cssText = 'border: 2px dashed #ccc; padding: 6px; border-radius: 4px; cursor: pointer; color: #666; font-size: 0.85em; background: #f9f9f9; margin-top: 8px; text-align: center; transition: all 0.2s;';
 
     dropZone.addEventListener('dragover', (e) => {
         e.preventDefault();
@@ -1614,6 +1621,8 @@ function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
                 pubPdfBtn.appendChild(icon);
                 pubPdfBtn.appendChild(document.createTextNode(' PDF (Verlag)'));
                 pubPdfBtn.style.flex = '1';
+                pubPdfBtn.style.fontSize = '12px'; // Reduced
+                pubPdfBtn.style.padding = '6px 4px';
 
                 const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary');
                 analyzeBtn.textContent = '⚡';
@@ -2242,9 +2251,27 @@ function validateAuthorRows(errors, pubYear) {
 function renderErrorSummary(errors) {
     let panel = document.getElementById('dora-error-summary');
 
+    // Generate a simple hash of the errors to detect changes
+    const currentErrorsHash = JSON.stringify(errors);
+
+    // Skip re-render if nothing changed (unless panel was removed)
+    if (panel && currentErrorsHash === lastErrorsHash && isSummaryMinimized === lastMinimizedState) {
+        return;
+    }
+
+    lastErrorsHash = currentErrorsHash;
+    lastMinimizedState = isSummaryMinimized;
+
     if (errors.length === 0) {
         if (panel) panel.remove();
         return;
+    }
+
+    // Capture current scroll position before re-rendering
+    let savedScrollTop = 0;
+    if (panel) {
+        const oldList = panel.querySelector('ul');
+        if (oldList) savedScrollTop = oldList.scrollTop;
     }
 
     if (!panel) {
@@ -2282,9 +2309,9 @@ function renderErrorSummary(errors) {
 
     } else {
         // --- MAXIMIERTE ANSICHT ---
-        panel.style.width = '320px';
-        panel.style.maxHeight = '400px';
-        panel.style.padding = '15px';
+        panel.style.width = '256px';
+        panel.style.maxHeight = '320px';
+        panel.style.padding = '12px';
         panel.style.cursor = 'default';
         panel.style.backgroundColor = '#fff5f5';
         panel.style.borderColor = '#e53e3e';
@@ -2295,8 +2322,9 @@ function renderErrorSummary(errors) {
         header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #e53e3e; padding-bottom:5px;';
 
         const title = createEl('span');
-        const b = createEl('b', '', `${errors.length} Probleme gefunden:`);
+        const b = createEl('b', '', `${errors.length} Probleme:`);
         b.style.color = '#c53030';
+        b.style.fontSize = '0.85em';
         title.appendChild(b);
 
         const minBtn = createEl('span', '', '➖');
@@ -2313,6 +2341,7 @@ function renderErrorSummary(errors) {
         panel.appendChild(header);
 
         const list = createEl('ul');
+        list.id = 'dora-error-list';
         list.style.cssText = 'padding-left:20px; margin:0; overflow-y:auto; max-height:300px;';
 
         errors.forEach(err => {
@@ -2346,6 +2375,11 @@ function renderErrorSummary(errors) {
         });
 
         panel.appendChild(list);
+
+        // Restore scroll position
+        if (savedScrollTop > 0) {
+            list.scrollTop = savedScrollTop;
+        }
     }
 }
 
