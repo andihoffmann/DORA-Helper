@@ -3,3 +3,5 @@ web-ext-artifacts/
 *.zip
 .idea/
 .DS_Store
+psi_affiliations.xlsx
+psi_data_2023.js
