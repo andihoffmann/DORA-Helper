@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.52
+// Version: 2.53
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -1107,7 +1107,7 @@ function bindItemEvents(liItem, topicContainer) {
         e.dataTransfer.setData('text/plain', '');
         liItem.classList.add('is-dragging');
     });
-    
+
     handle.addEventListener('dragend', function () {
         liItem.classList.remove('is-dragging');
         document.querySelectorAll('.dora-keyword-item').forEach(col => {
@@ -1265,124 +1265,32 @@ function injectDoraAutocompletes() {
     const fields = [
         { id: 'edit-confinfo-confname', solrField: 'mods_name_conference_ms' },
         { id: 'edit-host-titleinfo-title', solrField: 'mods_relatedItem_host_titleInfo_title_ms' },
-        { id: 'edit-host-series-titleinfo-title', solrField: 'mods_relatedItem_host_relatedItem_series_titleInfo_title_ms' }
+        { id: 'edit-host-series-titleinfo-title', solrField: 'mods_relatedItem_host_relatedItem_series_titleInfo_title_ms' },
+        { id: 'edit-host-series-issn', solrField: 'mods_relatedItem_host_relatedItem_series_identifier_issn_ms' }
     ];
 
     fields.forEach(field => {
-        const input = document.getElementById(field.id);
+        let input = document.getElementById(field.id);
+
+        // Fallback for Series ISSN or if the ID is not an input
+        if (!input || (input.tagName !== 'INPUT' && input.tagName !== 'TEXTAREA')) {
+            if (field.id.includes('issn')) input = findField('ISSN') || findField('Series ISSN') || input;
+            else if (field.id.includes('confname')) input = findField('Conference Name') || input;
+        }
+
         if (!input || input.dataset.doraAutocompleteAttached) return;
+        if (input.tagName !== 'INPUT' && input.tagName !== 'TEXTAREA') return;
 
-        console.log('DORA Helper: Attaching autocomplete to', field.id, 'isTextarea:', input.tagName.toLowerCase() === 'textarea');
+        console.log('DORA Helper: Attaching custom autocomplete to', field.id);
         input.dataset.doraAutocompleteAttached = "true";
-        const isTextarea = input.tagName.toLowerCase() === 'textarea';
-
-        if (isTextarea) {
-            // Custom dropdown for textarea elements
-            attachTextareaAutocomplete(input, field);
-        } else {
-            // Native datalist for input elements
-            attachInputAutocomplete(input, field);
-        }
+        attachCustomAutocomplete(input, field);
     });
 }
 
-// Native datalist autocomplete for <input> elements
-function attachInputAutocomplete(input, field) {
-    const listId = `datalist-${field.id}`;
-    let dataList = document.getElementById(listId);
-    if (!dataList) {
-        dataList = createEl('datalist');
-        dataList.id = listId;
-        input.parentNode.appendChild(dataList);
-    }
 
-    input.setAttribute('list', listId);
-    input.setAttribute('autocomplete', 'off');
-
-    let debounceTimer;
-    let matchTimer; // Timer for exact match delay
-
-    // Ensure we track last processed query on the element itself to persist across re-attachments (if any)
-    if (typeof input.dataset.doraLastAutoQuery === 'undefined') {
-        input.dataset.doraLastAutoQuery = '';
-    }
-
-    // Pass event 'e' to check inputType
-    input.addEventListener('input', (e) => {
-        const query = input.value.trim();
-        if (query.length < 3) {
-            dataList.replaceChildren();
-            return;
-        }
-
-        // Check for immediate match ONLY if it looks like a specific selection (not normal typing)
-        // 'insertReplacementText' is used by Chrome when selecting from a datalist
-        // We also check !e.inputType for compatibility (some browsers or paste operations)
-        const isSelection = !e.inputType || e.inputType === 'insertReplacementText';
-
-        if (field.id === 'edit-confinfo-confname' && isSelection) {
-            const options = Array.from(dataList.options).map(o => o.value);
-            if (options.includes(query)) {
-                // Exact match found via SELECTION!
-                if (matchTimer) clearTimeout(matchTimer);
-
-                // We can use a shorter delay here because the user explicitly selected it
-                console.log("DORA Helper: List selection detected. Triggering in 200ms...", query);
-                matchTimer = setTimeout(() => {
-                    if (query !== input.dataset.doraLastAutoQuery) {
-                        fetchConferenceDetails(query);
-                        input.dataset.doraLastAutoQuery = query;
-                    }
-                    matchTimer = null;
-                }, 200);
-
-                return;
-            }
-        }
-
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => {
-            fetchSolrSuggestions(field.solrField, query, (results) => {
-                dataList.replaceChildren();
-                results.forEach(name => {
-                    const option = document.createElement('option');
-                    option.value = name.trim();
-                    dataList.appendChild(option);
-                });
-                // UI Refresh Hack
-                input.removeAttribute('list');
-                input.setAttribute('list', listId);
-
-                // REMOVED: Do not check for exact match in async results. 
-                // This prevents the modal from popping up while typing just because a prefix matched.
-                // The user must select from the list or hit enter/tab (change event).
-            });
-        }, 400);
-    });
-
-    // Keep change event as fallback (Enter key or Blur)
-    input.addEventListener('change', () => {
-        const val = input.value.trim();
-        if (val.length > 3) {
-            // Check if it's the conference field
-            if (field.id === 'edit-confinfo-confname') {
-                // Rely on deduplication in showConferenceConfirmation to handle overlaps
-                // AND check dataset to avoid re-opening on blur if already handled
-                if (!matchTimer && val !== input.dataset.doraLastAutoQuery) {
-                    console.log("DORA Helper: Change event triggering fetch for:", val);
-                    fetchConferenceDetails(val);
-                    input.dataset.doraLastAutoQuery = val;
-                } else {
-                    console.log("DORA Helper: Change event skipped (timer active or already processed):", val);
-                }
-            }
-        }
-    });
-}
-
-// Custom dropdown autocomplete for <textarea> elements
-function attachTextareaAutocomplete(textarea, field) {
-    const wrapper = textarea.closest('.form-textarea-wrapper') || textarea.parentNode;
+// Custom dropdown autocomplete for <input> and <textarea> elements
+function attachCustomAutocomplete(inputEl, field) {
+    const wrapper = inputEl.closest('.form-item') || inputEl.parentNode;
     wrapper.style.position = 'relative';
 
     const dropdownId = `dora-dropdown-${field.id}`;
@@ -1394,9 +1302,12 @@ function attachTextareaAutocomplete(textarea, field) {
             position: 'absolute',
             top: '100%',
             left: '0',
-            right: '0',
+            minWidth: '100%',
+            width: 'max-content',
+            maxWidth: '800px',
             maxHeight: '200px',
             overflowY: 'auto',
+            overflowX: 'hidden',
             backgroundColor: '#fff',
             border: '1px solid #ccc',
             borderTop: 'none',
@@ -1405,15 +1316,17 @@ function attachTextareaAutocomplete(textarea, field) {
             zIndex: '9999',
             display: 'none'
         });
-        wrapper.appendChild(dropdown);
+        inputEl.insertAdjacentElement('afterend', dropdown);
     }
+
+    inputEl.setAttribute('autocomplete', 'off');
 
     let debounceTimer;
     let selectedIndex = -1;
 
-    textarea.addEventListener('input', () => {
-        const query = textarea.value.trim();
-        console.log('DORA Helper: Textarea input event', { fieldId: field.id, query, queryLength: query.length });
+    inputEl.addEventListener('input', () => {
+        const query = inputEl.value.trim();
+        console.log('DORA Helper: Autocomplete input event', { fieldId: field.id, query, queryLength: query.length });
         if (query.length < 3) {
             dropdown.style.display = 'none';
             dropdown.replaceChildren();
@@ -1439,7 +1352,8 @@ function attachTextareaAutocomplete(textarea, field) {
                         padding: '8px 12px',
                         cursor: 'pointer',
                         borderBottom: '1px solid #eee',
-                        fontSize: '13px'
+                        fontSize: '13px',
+                        whiteSpace: 'nowrap'
                     });
                     item.addEventListener('mouseenter', () => {
                         item.style.backgroundColor = '#f0f0f0';
@@ -1448,10 +1362,11 @@ function attachTextareaAutocomplete(textarea, field) {
                         item.style.backgroundColor = '#fff';
                     });
                     item.addEventListener('click', () => {
-                        textarea.value = name.trim();
+                        inputEl.value = name.trim();
                         dropdown.style.display = 'none';
-                        textarea.focus();
-                        textarea.dispatchEvent(new Event('change', { bubbles: true }));
+                        inputEl.focus();
+                        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+                        inputEl.dispatchEvent(new Event('change', { bubbles: true }));
 
                         // Trigger fetching if this is the conference field
                         if (field.id === 'edit-confinfo-confname') {
@@ -1467,7 +1382,7 @@ function attachTextareaAutocomplete(textarea, field) {
     });
 
     // Keyboard navigation
-    textarea.addEventListener('keydown', (e) => {
+    inputEl.addEventListener('keydown', (e) => {
         const items = dropdown.querySelectorAll('.dora-autocomplete-item');
         if (items.length === 0 || dropdown.style.display === 'none') return;
 
@@ -1481,9 +1396,15 @@ function attachTextareaAutocomplete(textarea, field) {
             updateSelection(items, selectedIndex);
         } else if (e.key === 'Enter' && selectedIndex >= 0) {
             e.preventDefault();
-            textarea.value = items[selectedIndex].textContent;
+            inputEl.value = items[selectedIndex].textContent;
             dropdown.style.display = 'none';
-            textarea.dispatchEvent(new Event('change', { bubbles: true }));
+            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+            inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+
+            // Trigger fetching if this is the conference field
+            if (field.id === 'edit-confinfo-confname') {
+                fetchConferenceDetails(inputEl.value.trim());
+            }
         } else if (e.key === 'Escape') {
             dropdown.style.display = 'none';
         }
@@ -1491,7 +1412,7 @@ function attachTextareaAutocomplete(textarea, field) {
 
     // Close on outside click
     document.addEventListener('click', (e) => {
-        if (!wrapper.contains(e.target)) {
+        if (!inputEl.contains(e.target) && !dropdown.contains(e.target)) {
             dropdown.style.display = 'none';
         }
     });
@@ -2420,6 +2341,7 @@ function fetchConferenceDetails(confName) {
     const fl = [
         'mods_relatedItem_host_titleInfo_title_ms',
         'mods_relatedItem_host_relatedItem_series_titleInfo_title_ms',
+        'mods_relatedItem_host_relatedItem_series_identifier_issn_ms',
         'mods_relatedItem_host_name_personal_namePart_family_ms', // Editor Family Name (Specific)
         'mods_relatedItem_host_name_personal_namePart_given_ms',  // Editor Given Name (Specific)
         'mods_name_personal_editor_ms',
@@ -2464,6 +2386,7 @@ function prepareConferenceData(doc) {
     const data = {
         procTitle: null,
         seriesTitle: null,
+        seriesIssn: null,
         editors: [],
         place: null,
         date: null
@@ -2477,6 +2400,9 @@ function prepareConferenceData(doc) {
     // 2. Series Title
     if (doc.mods_relatedItem_host_relatedItem_series_titleInfo_title_ms && doc.mods_relatedItem_host_relatedItem_series_titleInfo_title_ms[0]) {
         data.seriesTitle = doc.mods_relatedItem_host_relatedItem_series_titleInfo_title_ms[0];
+    }
+    if (doc.mods_relatedItem_host_relatedItem_series_identifier_issn_ms && doc.mods_relatedItem_host_relatedItem_series_identifier_issn_ms[0]) {
+        data.seriesIssn = doc.mods_relatedItem_host_relatedItem_series_identifier_issn_ms[0];
     }
 
     // 3. Editors
@@ -2575,6 +2501,18 @@ async function applyConferenceData(data) {
             seriesTitleEl.value = data.seriesTitle;
             seriesTitleEl.dispatchEvent(new Event('input', { bubbles: true }));
             msg += "- Series Title\n";
+            hasChanges = true;
+        }
+    }
+
+    // 2b. Series ISSN
+    if (data.seriesIssn) {
+        const seriesIssnEl = document.getElementById('edit-host-series-issn') || findField('ISSN') || findField('Series ISSN');
+        if (seriesIssnEl) {
+            seriesIssnEl.value = data.seriesIssn;
+            seriesIssnEl.dispatchEvent(new Event('input', { bubbles: true }));
+            seriesIssnEl.dispatchEvent(new Event('change', { bubbles: true }));
+            msg += "- Series ISSN\n";
             hasChanges = true;
         }
     }
@@ -2751,6 +2689,10 @@ function showConferenceConfirmation(data, onConfirm) {
     }
     if (data.seriesTitle) {
         const item = createCheckbox('Series Title', data.seriesTitle, 'seriesTitle');
+        if (item) form.appendChild(item);
+    }
+    if (data.seriesIssn) {
+        const item = createCheckbox('Series ISSN', data.seriesIssn, 'seriesIssn');
         if (item) form.appendChild(item);
     }
     if (data.place) {
