@@ -1068,7 +1068,6 @@ function loadKeywordsIntoManager(topicContainer) {
             if (!input.value) return;
             const formattedValue = formatKeyword(input.value);
             const li = createEl('li', 'dora-keyword-item');
-            li.setAttribute('draggable', 'true');
 
             // Input
             const inputField = createEl('input', 'dora-keyword-input');
@@ -1078,6 +1077,8 @@ function loadKeywordsIntoManager(topicContainer) {
             // Handle
             const handle = createEl('span', 'dora-drag-handle', '☰');
             handle.title = "Ziehen zum Sortieren";
+
+            handle.setAttribute('draggable', 'true');
 
             li.appendChild(inputField);
             li.appendChild(handle);
@@ -1100,16 +1101,15 @@ function bindItemEvents(liItem, topicContainer) {
     input.addEventListener('input', () => syncKeywordsBackToDora(topicContainer));
     input.addEventListener('mousedown', (e) => e.stopPropagation());
 
-    liItem.addEventListener('dragstart', function (e) {
-        if (!isMouseOverHandle) { e.preventDefault(); return false; }
-        dragSrcEl = this;
+    handle.addEventListener('dragstart', function (e) {
+        dragSrcEl = liItem;
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('text/plain', '');
-        this.classList.add('is-dragging');
+        liItem.classList.add('is-dragging');
     });
-
-    liItem.addEventListener('dragend', function () {
-        this.classList.remove('is-dragging');
+    
+    handle.addEventListener('dragend', function () {
+        liItem.classList.remove('is-dragging');
         document.querySelectorAll('.dora-keyword-item').forEach(col => {
             col.classList.remove('drop-target-top', 'drop-target-bottom');
         });
