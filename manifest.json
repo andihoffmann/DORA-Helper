@@ -20,9 +20,7 @@
     "<all_urls>",
     "file:///*"
   ],
-  "optional_host_permissions": [
-    "*://*/*"
-  ],
+
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' http://lib-dora-prod1.emp-eaw.ch:8080 https://*;"
   },
@@ -30,12 +28,7 @@
     "gecko": {
       "id": "dora@lib4ri.ch",
       "strict_min_version": "115.0",
-      "update_url": "https://raw.githubusercontent.com/andihoffmann/DORA-Helper/refs/heads/main/updates.json",
-      "data_collection_permissions": {
-        "required": [
-          "none"
-        ]
-      }
+      "update_url": "https://raw.githubusercontent.com/andihoffmann/DORA-Helper/refs/heads/main/updates.json"
     }
   },
   "options_ui": {
