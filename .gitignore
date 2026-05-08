@@ -5,7 +5,6 @@ web-ext-artifacts/
 .DS_Store
 psi_affiliations.xlsx
 psi_data_2023.js
-convert_excel_to_json.py
 tmp.json
 tmp2.json
 icons/ai-robot.png
