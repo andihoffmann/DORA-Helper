@@ -77,7 +77,8 @@
     {
       "resources": [
         "icons/logo-128.png",
-        "icons/logo-48.png"
+        "icons/logo-48.png",
+        "icons/ai-robot.png"
       ],
       "matches": [
         "<all_urls>"

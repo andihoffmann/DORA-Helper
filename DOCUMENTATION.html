@@ -48,13 +48,26 @@
         .feature-list { list-style-type: none; padding-left: 0; }
         .feature-list li { padding: 5px 0; }
         .feature-list li:before { content: ""; margin-right: 8px; }
+        kbd {
+            background-color: #eee;
+            border-radius: 3px;
+            border: 1px solid #b4b4b4;
+            box-shadow: 0 1px 1px rgba(0,0,0,.2), 0 2px 0 0 rgba(255,255,255,.7) inset;
+            color: #333;
+            display: inline-block;
+            font-size: .85em;
+            font-weight: 700;
+            line-height: 1;
+            padding: 2px 4px;
+            white-space: nowrap;
+        }
     </style>
 </head>
 <body>
 
 <h1>DORA Lib4ri Assistant</h1>
 
-<p>The <strong>DORA Lib4ri Assistant</strong> is a browser extension designed to streamline the workflow for editing metadata in the DORA repository (Lib4ri). It provides automated metadata fetching, intelligent form validation, PDF analysis, and a powerful keyword manager.</p>
+<p>The <strong>DORA Lib4ri Assistant</strong> is a powerful browser extension designed to streamline the workflow for editing metadata in the DORA repository (Lib4ri). It provides automated metadata fetching, intelligent form validation, PDF analysis, and an integrated keyword manager.</p>
 
 <hr>
 
@@ -81,215 +94,135 @@
 
 <h2>Core Features</h2>
 
-<h3>1. Metadata Auto-Fetch</h3>
-<p>When you open an edit page in DORA, the assistant automatically scans for a DOI.</p>
+<h3>1. Metadata Auto-Fetch &amp; Cross-Check</h3>
+<p>When an edit page is opened in DORA, the assistant automatically scans for a DOI and fetches data from <strong>Crossref</strong>, <strong>Unpaywall</strong>, <strong>Scopus</strong>, and <strong>DOAJ</strong>.</p>
 
 <ul>
-    <li><strong>Auto-Check</strong>: If a DOI is found, the assistant fetches metadata from <strong>Crossref</strong>, <strong>Unpaywall</strong>, and <strong>Scopus</strong>.</li>
-    <li><strong>Result Box</strong>: A floating panel appears on the right side displaying:
+    <li><strong>Result Box</strong>: A floating panel on the right displays:
         <ul>
-            <li><strong>Open Access Status</strong> (Gold, Green, Hybrid, Closed).</li>
-            <li><strong>License Information</strong> (e.g., CC-BY).</li>
-            <li><strong>Version</strong> (Published Version vs. Accepted Manuscript).</li>
-            <li><strong>Corresponding Author Check</strong>: Validates if the corresponding author is affiliated with Eawag, Empa, PSI, or WSL (using Scopus API).</li>
+            <li><strong>Open Access Status</strong> (Gold, Green, Hybrid, Bronze, Closed).</li>
+            <li><strong>License Information</strong> (e.g., CC-BY) with direct links.</li>
+            <li><strong>Version Detection</strong> (Published Version/VoR vs. Accepted Manuscript/AAM).</li>
+        </ul>
+    </li>
+    <li><strong>🔍 Data Cross-Check</strong>: An intelligent validation layer that compares sources:
+        <ul>
+            <li><strong>Corresponding Author Check</strong>: Validates if the corresponding author is affiliated with Eawag, Empa, PSI, or WSL (requires Scopus API key).</li>
+            <li><strong>DOAJ Integration</strong>: Warns if a "Gold OA" article is not listed in DOAJ or if a "Hybrid" article is listed.</li>
+            <li><strong>License Match</strong>: Flags discrepancies between Unpaywall and Crossref license data.</li>
         </ul>
     </li>
     <li><strong>Quick Actions</strong>:
         <ul>
-            <li><code>#hybrid setzen</code>: Adds the <code>#hybrid</code> tag to the "Additional Information" field.</li>
-            <li><code>PDF ansehen</code>: Opens the full-text PDF (if available).</li>
-            <li><code>Policy pruefen</code>: Checks the journal policy via Jisc Open Policy Finder.</li>
-            <li><code>Metadaten importieren</code>: Import metadata for book chapters (Editors, Book Title, ISBN).</li>
+            <li><code>Metadaten importieren</code>: (Book Chapters/Proceedings) Imports title, host title, pages, year, publisher, authors, editors, and abstract.</li>
+            <li><code>#hybrid setzen</code>: Quickly adds the <code>#hybrid</code> tag to the "Additional Information" field.</li>
         </ul>
     </li>
-    <li><strong>Minimizable Panel</strong>: Click the header to minimize/expand the result box.</li>
-    <li><strong>Info Tags</strong>: Additional information is displayed as colored tags (e.g., Hybrid status, Corresponding Author).</li>
 </ul>
 
 <hr>
 
-<h3>2. PDF Analysis</h3>
-<p>Extract metadata (<strong>Page Count</strong> and <strong>Keywords</strong>) directly from PDF files without manual entry.</p>
+<h3>2. Advanced PDF Analysis &amp; Extraction</h3>
+<p>Extract <strong>Page Count</strong> and <strong>Keywords</strong> directly from PDFs and discover missing full-texts.</p>
 
 <ul>
-    <li><strong>Drag &amp; Drop</strong>: Drop a PDF file into the designated zone at the bottom of the result box.</li>
-    <li><strong>URL Analysis</strong>: Click the lightning bolt icon next to a PDF link to analyze it directly via the backend service.</li>
-    <li><strong>Passive Monitor</strong>: The assistant automatically detects PDFs opened in other tabs or downloaded. The drop zone turns green ("PDF Detected") - click it to import.</li>
-    <li><strong>Backend Service</strong>: PDF analysis is powered by a Hugging Face Space microservice that extracts:
-        <ul>
-            <li>Page count</li>
-            <li>Keywords from PDF metadata and content</li>
-        </ul>
-    </li>
+    <li><strong>Zotero-style Page Scanning</strong>: If Unpaywall has no PDF, the assistant scans the publisher's page via meta-tags (<code>citation_pdf_url</code>) and JSON-LD to find direct links.</li>
+    <li><strong>Lightning Analysis (⚡)</strong>: Click the lightning bolt next to any PDF link (even on publisher sites) to analyze it via our Hugging Face backend.</li>
+    <li><strong>Passive Monitor</strong>: The assistant detects PDFs opened in other tabs or downloaded. The drop zone turns green ("⚡ PDF Detected") - click it to import immediately.</li>
+    <li><strong>Drag &amp; Drop</strong>: Analyze local files by dropping them into the result box.</li>
+    <li><strong>Smart Filling</strong>: Automatically appends page counts (e.g., <code>(12 pp.)</code>) and populates the keyword manager.</li>
 </ul>
 
 <hr>
 
 <h3>3. Autocomplete for Form Fields</h3>
-<p>The assistant provides intelligent autocomplete suggestions from the DORA Solr index for faster data entry.</p>
+<p>The assistant provides intelligent autocomplete suggestions from the DORA Solr index.</p>
 
 <p><strong>Supported Fields:</strong></p>
-<table>
-    <tr>
-        <th>Field</th>
-        <th>Element Type</th>
-        <th>Solr Field</th>
-    </tr>
-    <tr>
-        <td>Conference Name</td>
-        <td>Input (native datalist)</td>
-        <td><code>mods_name_conference_ms</code></td>
-    </tr>
-    <tr>
-        <td>Proceedings Title</td>
-        <td>Textarea (custom dropdown)</td>
-        <td><code>mods_relatedItem_host_titleInfo_title_ms</code></td>
-    </tr>
-    <tr>
-        <td>Series Title</td>
-        <td>Textarea (custom dropdown)</td>
-        <td><code>mods_relatedItem_host_relatedItem_series_titleInfo_title_ms</code></td>
-    </tr>
-</table>
+<ul>
+    <li><strong>Conference Name</strong>: Pulls existing conferences; selecting one triggers a lookup for related proceedings and editors.</li>
+    <li><strong>Proceedings Title</strong>, <strong>Series Title</strong>, <strong>Series ISSN</strong>, and <strong>Publisher</strong> (for non-journal items).</li>
+</ul>
 
 <p><strong>How it works:</strong></p>
 <ul>
-    <li>Start typing (minimum 3 characters) to see suggestions from existing DORA records.</li>
-    <li>For input fields: Uses native HTML5 datalist.</li>
-    <li>For textarea fields: Uses a custom dropdown with keyboard navigation:
+    <li>Suggestions appear after 3 characters.</li>
+    <li>Uses a custom dropdown with keyboard navigation:
         <ul>
             <li><kbd>&uarr;</kbd>/<kbd>&darr;</kbd> to navigate</li>
             <li><kbd>Enter</kbd> to select</li>
             <li><kbd>Escape</kbd> to close</li>
         </ul>
     </li>
+    <li>Automatically refreshes with native Drupal AJAX handling.</li>
 </ul>
 
 <hr>
 
-<h3>4. Keyword Manager</h3>
-<p>The standard keyword input in DORA can be difficult to manage. The Assistant injects a <strong>"Keyword Manager"</strong> directly above the keyword field.</p>
+<h3>4. Integrated Keyword Manager</h3>
+<p>Replaces the standard keyword input with a sophisticated management tool.</p>
 
 <ul>
-    <li><strong>Edit &amp; Sort</strong>: Click the button to load existing keywords into a clean list.</li>
-    <li><strong>Drag &amp; Drop</strong>: Reorder keywords by dragging the handle.</li>
-    <li><strong>Auto-Formatting</strong>: Keywords are automatically corrected (e.g., "dna" &rarr; "DNA", "ph" &rarr; "pH") based on your settings.</li>
-    <li><strong>Sync</strong>: Any changes are immediately synced back to the DORA form.</li>
+    <li><strong>Edit &amp; Sort</strong>: Click to load keywords into a draggable list.</li>
+    <li><strong>Drag &amp; Drop</strong>: Easily reorder keywords for the final record.</li>
+    <li><strong>Auto-Formatting</strong>: Corrects case based on a customizable exception list (e.g., "dna" &rarr; "DNA", "ph" &rarr; "pH").</li>
+    <li><strong>Direct Sync</strong>: Changes are instantly written back to the hidden DORA fields.</li>
 </ul>
 
 <hr>
 
-<h3>5. Real-time Validation</h3>
-<p>The assistant validates form fields as you type, highlighting errors with a <strong>red border</strong> and providing tooltips.</p>
+<h3>5. Smart Tags for "Additional Information"</h3>
+<p>Commonly used tags can be inserted with a single click below the "Additional Information" field.</p>
 
-<p><strong>Validation Rules:</strong></p>
 <ul>
-    <li><strong>Volume</strong>: Must be filled if "Publication Status" is "Published".</li>
-    <li><strong>Start Page</strong>: Must include the page count (e.g., <code>(12 pp.)</code>) if the "End Page" is empty. Required if "Publication Status" is "Published".</li>
-    <li><strong>Sentence Case</strong>: Detects Title Case usage (capitalized words) in:
+    <li><strong>Available Tags</strong>: <code>#other_journal_contribution</code>, <code>#present_address</code> (with name prompt), <code>#corporate</code>, <code>#green</code>, and <code>#CERC</code> (context-aware for WSL).</li>
+    <li><strong>Consistency</strong>: Ensures tags are formatted correctly every time.</li>
+</ul>
+
+<hr>
+
+<h3>6. Real-time Validation &amp; Error Summary</h3>
+<p>The assistant validates form fields as you type, highlighting issues with a <strong>red border</strong> (errors) or <strong>dotted line</strong> (warnings).</p>
+
+<ul>
+    <li><strong>Validation Rules</strong>:
         <ul>
-            <li>Article Title</li>
-            <li>Conference Name</li>
-            <li>Proceedings Title</li>
-            <li>Series Title</li>
+            <li><strong>Volume</strong>: Mandatory for published journal articles (with exceptions for Book Chapters).</li>
+            <li><strong>Start Page</strong>: Validates required status and <code>(pp.)</code> format.</li>
+            <li><strong>Sentence Case Check</strong>: Intelligence to detect unwanted Title Case in titles and names (English vs. German aware).</li>
+            <li><strong>Author Validation</strong>: Flags "nomatch" entries and missing affiliations.</li>
         </ul>
     </li>
-    <li><strong>Author/Affiliation</strong>:
-        <ul>
-            <li>Flags "Standardized Form of Name" if it contains "nomatch" or "4RI".</li>
-            <li>Requires an Affiliation/Department if an Author Name is entered.</li>
-            <li><strong>PSI Affiliation Check</strong>: Validates Group, Laboratory, and Division against historical PSI data for the publication year.</li>
-            <li><strong>Legacy Data</strong>: For publications before 2006, checks for "0000 PSI" in the Group field.</li>
-            <li><strong>Completeness</strong>: If Group is filled, Laboratory and Division must also be filled.</li>
-        </ul>
-    </li>
-</ul>
-
-<hr>
-
-<h3>6. Error Summary Panel</h3>
-<p>If validation errors are found, a summary panel appears at the <strong>bottom right</strong> of the screen.</p>
-
-<ul>
-    <li><strong>Overview</strong>: Displays the total count of issues.</li>
-    <li><strong>Details</strong>: Lists the specific errors to fix.</li>
-    <li><strong>Minimizable</strong>: Click to minimize/expand the panel.</li>
-    <li><strong>Navigation</strong>: Helps you find missing fields quickly.</li>
+    <li><strong>PSI Affiliation Check</strong>: Validates Group, Lab, and Division against historical data for the publication year.</li>
+    <li><strong>Error Summary Panel</strong>: A minimizable panel at the bottom right provides a "to-do list" of issues to fix before saving.</li>
 </ul>
 
 <hr>
 
 <h2>Configuration</h2>
-<p>You can configure the extension via the <strong>Options</strong> page (Right-click extension icon &rarr; Options).</p>
 
+<p>Customization via the <strong>Options</strong> page:</p>
 <ol>
-    <li><strong>Scopus API Key</strong>: Enter your personal API Key to enable the Corresponding Author Affiliation Check.</li>
-    <li><strong>Keyword Exceptions</strong>: Edit the list of exceptions (Format: <code>lowercase -&gt; Replacement</code>).
-        <ul>
-            <li><em>Example:</em> <code>dna -&gt; DNA</code></li>
-        </ul>
-    </li>
-    <li><strong>PSI Affiliation Data</strong>: Upload a new <code>psi_data.js</code> file to update the historical affiliation database.</li>
+    <li><strong>Scopus API Key</strong>: Required for Corresponding Author checks.</li>
+    <li><strong>Keyword Exceptions</strong>: Define your own formatting rules (<code>pattern -&gt; replacement</code>).</li>
+    <li><strong>PSI Affiliation Data</strong>: Upload <code>psi_data.js</code> updates here.</li>
 </ol>
 
 <hr>
 
 <h2>HTTP Internal Server Configuration</h2>
 
-<p>The extension accesses an internal Solr server for autocomplete functionality via HTTP (not HTTPS) at <code>http://lib-dora-prod1.emp-eaw.ch:8080</code>.</p>
-
-<h3>Browser-Specific Configuration</h3>
-
-<h4>Firefox</h4>
-<p>Firefox typically handles HTTP requests to local/internal servers well. If you encounter issues:</p>
-<ol>
-    <li>Open <code>about:config</code> in Firefox</li>
-    <li>Search for <code>security.mixed_content.block_active_content</code></li>
-    <li>Set to <code>false</code> (only if necessary and you trust the internal network)</li>
-</ol>
-
-<h4>Chrome/Edge</h4>
-<p>Chrome enforces stricter mixed content policies. If autocomplete fails:</p>
-<ol>
-    <li><strong>Enable "Insecure content" for DORA sites</strong>:
-        <ul>
-            <li>Navigate to your DORA site</li>
-            <li>Click the lock icon in the address bar</li>
-            <li>Go to <strong>Site settings</strong></li>
-            <li>Find <strong>Insecure content</strong> and set to <strong>Allow</strong></li>
-        </ul>
-    </li>
-    <li><strong>Network Configuration</strong>:
-        <ul>
-            <li>Ensure your firewall/network allows HTTP connections to port 8080</li>
-            <li>Test access by opening the Solr URL directly in your browser</li>
-        </ul>
-    </li>
-</ol>
-
-<h3>Troubleshooting</h3>
-<p>If autocomplete still doesn't work:</p>
-<ol>
-    <li><strong>Check Browser Console</strong>: Look for "DORA Helper:" prefixed messages for debugging info.</li>
-    <li><strong>Check Extension Console</strong>: Go to <code>chrome://extensions</code> or <code>about:debugging</code> and inspect the extension.</li>
-    <li><strong>Network Access</strong>: Verify you're on the internal network where the server is accessible.</li>
-</ol>
-
-<hr>
-
-<h2>Technical Notes</h2>
-
-<h3>Mozilla Add-on Compatibility</h3>
-<p>The extension uses secure DOM manipulation methods to comply with Mozilla's add-on policies:</p>
+<p>The extension accesses an internal Solr server at <code>http://lib-dora-prod1.emp-eaw.ch:8080</code>.</p>
 <ul>
-    <li><code>textContent</code> instead of <code>innerHTML</code> for text content</li>
-    <li><code>replaceChildren()</code> for clearing elements</li>
-    <li><code>createElement</code>/<code>appendChild</code> for DOM construction</li>
+    <li><strong>Chrome/Edge</strong>: Requires enabling "Insecure content" in Site Settings for DORA.</li>
+    <li><strong>Firefox</strong>: Handled via standard mixed-content exceptions.</li>
 </ul>
 
-<hr>
-
-<p><em>Version: See commit history for detailed changes.</em></p>
+<h3>Accessibility &amp; Compatibility</h3>
+<ul>
+    <li>Complies with Mozilla's secure DOM manipulation policies (<code>textContent</code>).</li>
+    <li>Compatible with Islandora/Drupal AJAX form updates.</li>
+</ul>
 
 </body>
 </html>

@@ -4,8 +4,8 @@ import json
 import os
 
 # Configuration
-INPUT_FILE = 'psi_affiliations.xlsx'  # Replace with your actual file name
-OUTPUT_FILE = 'psi_data_2023.js'           # Output as .js for direct use in extension
+INPUT_FILE = 'LATEST_Historische Gruppen_20260330.xlsx'  # Replace with your actual file name
+OUTPUT_FILE = 'psi_data_latest.js'           # Output as .js for direct use in extension
 
 def convert_excel_to_js():
     # Check if file exists

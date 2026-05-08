@@ -55,6 +55,7 @@ function scanAndInject() {
     injectDoraAutocompletes();
 
     validateForm();
+    initAiMetadataCheck();
 }
 
 function findKeywordContainer() {
@@ -796,21 +797,35 @@ async function addMissingRows(containerSelector, requiredCount) {
         safetyLimit--;
 
         // 1. FRESH QUERY: Always re-query the container because Drupal AJAX replaces it
-        const container = document.querySelector(containerSelector + ' .islandora-form-fieldpanel-panel');
+        let container = document.querySelector(containerSelector + ' .islandora-form-fieldpanel-panel');
+        let rowSelector = '.islandora-form-fieldpanel-pane';
+        
+        // Fallback for standard Drupal multi-value tables
         if (!container) {
-            console.warn('DORA Helper: Container not found ' + containerSelector);
-            return;
+            container = document.querySelector(containerSelector + ' table');
+            if (container) {
+                rowSelector = 'tbody tr:not(.tabledrag-hide)';
+            } else {
+                console.warn('DORA Helper: Container not found ' + containerSelector);
+                return;
+            }
         }
 
         // 2. CHECK COUNT
-        const currentRows = container.querySelectorAll('.islandora-form-fieldpanel-pane').length;
+        const currentRows = container.querySelectorAll(rowSelector).length;
         if (currentRows >= requiredCount) {
             console.log("DORA Helper: All rows present (" + currentRows + ")");
             return; // Done!
         }
 
         // 3. FIND BUTTON
-        const addButton = container.querySelector('.fieldpanel-add.form-submit');
+        // Look in the parent/wrapper since table add buttons are usually outside the table itself
+        const wrapper = document.querySelector(containerSelector);
+        let addButton = container.querySelector('.fieldpanel-add.form-submit');
+        if (!addButton && wrapper) {
+             addButton = wrapper.querySelector('.fieldpanel-add.form-submit, input[type="submit"][value="Add"], input[type="submit"][name$="[add]"]');
+        }
+        
         if (!addButton) {
             console.warn('DORA Helper: "Add" button missing in ' + containerSelector);
             return;
@@ -824,17 +839,23 @@ async function addMissingRows(containerSelector, requiredCount) {
         // 5. WAIT FOR AJAX
         await new Promise(resolve => {
             const observer = new MutationObserver((mutations, obs) => {
-                const newCount = document.querySelectorAll(containerSelector + ' .islandora-form-fieldpanel-pane').length;
-                if (newCount > currentRows) {
-                    obs.disconnect();
-                    resolve();
+                let checkContainer = document.querySelector(containerSelector + ' .islandora-form-fieldpanel-panel');
+                if (!checkContainer) checkContainer = document.querySelector(containerSelector + ' table');
+                
+                if (checkContainer) {
+                    const newCount = checkContainer.querySelectorAll(rowSelector).length;
+                    if (newCount > currentRows) {
+                        obs.disconnect();
+                        resolve();
+                    }
                 }
             });
             // Observer on the specific container (which might be replaced, but we observe the parent if possible or the container itself)
             // Ideally we'd observe the parent of the container, but the container itself usually mutates children.
             // If the container ITSELF is replaced, the observer might die. 
             // Better: Observe the wrapper if possible, or just accept the timeout fallback.
-            observer.observe(container, { childList: true, subtree: true });
+            const observeTarget = document.querySelector(containerSelector).parentNode || document.body;
+            observer.observe(observeTarget, { childList: true, subtree: true });
 
             // Timeout: 2.5 seconds (AJAX should be faster)
             // If timeout occurs, loop continues and re-checks count.
@@ -914,17 +935,33 @@ async function fillBookChapterMetadata(meta) {
 
     // 7. Authors - Fill data
     if (meta.author && meta.author.length > 0) {
-        const authorContainer = document.querySelector('.form-item-authors .islandora-form-fieldpanel-panel');
+        const authorContainer = document.querySelector('.form-item-authors');
         if (authorContainer) {
-            const authorPanes = authorContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
+            let authorPanes = authorContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
+            if (authorPanes.length === 0) authorPanes = authorContainer.querySelectorAll('table tbody tr:not(.tabledrag-hide)');
+            
             meta.author.forEach((auth, idx) => {
                 if (authorPanes[idx]) {
                     const pane = authorPanes[idx];
                     const familyEl = pane.querySelector('input[name$="[family]"]');
                     const givenEl = pane.querySelector('input[name$="[given]"]');
 
-                    if (familyEl) familyEl.value = auth.family || '';
-                    if (givenEl) givenEl.value = auth.given || '';
+                    if (familyEl) {
+                        familyEl.value = auth.family || '';
+                        familyEl.dispatchEvent(new Event('input', { bubbles: true }));
+                        familyEl.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    if (givenEl) {
+                        givenEl.value = auth.given || '';
+                        givenEl.dispatchEvent(new Event('input', { bubbles: true }));
+                        givenEl.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    
+                    // Trigger PSI Affiliation button if available
+                    const affilBtn = pane.querySelector('.lib4ri-author-fill');
+                    if (affilBtn) {
+                        affilBtn.click();
+                    }
                 }
             });
         }
@@ -932,9 +969,11 @@ async function fillBookChapterMetadata(meta) {
 
     // 8. Editors - Fill data
     if (meta.editor && meta.editor.length > 0) {
-        const editorContainer = document.querySelector('.form-item-host-editor .islandora-form-fieldpanel-panel');
+        const editorContainer = document.querySelector('.form-item-host-editor');
         if (editorContainer) {
-            const editorPanes = editorContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
+            let editorPanes = editorContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
+            if (editorPanes.length === 0) editorPanes = editorContainer.querySelectorAll('table tbody tr:not(.tabledrag-hide)');
+            
             meta.editor.forEach((ed, idx) => {
                 if (editorPanes[idx]) {
                     const pane = editorPanes[idx];
@@ -943,8 +982,22 @@ async function fillBookChapterMetadata(meta) {
                     const familyEl = pane.querySelector('input[name$="[familyEditor]"]');
                     const givenEl = pane.querySelector('input[name$="[givenEditor]"]');
 
-                    if (familyEl) familyEl.value = ed.family || '';
-                    if (givenEl) givenEl.value = ed.given || '';
+                    if (familyEl) {
+                        familyEl.value = ed.family || '';
+                        familyEl.dispatchEvent(new Event('input', { bubbles: true }));
+                        familyEl.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    if (givenEl) {
+                        givenEl.value = ed.given || '';
+                        givenEl.dispatchEvent(new Event('input', { bubbles: true }));
+                        givenEl.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    
+                    // Trigger PSI Affiliation button if available
+                    const affilBtn = pane.querySelector('.lib4ri-author-fill');
+                    if (affilBtn) {
+                        affilBtn.click();
+                    }
                 }
             });
         }
@@ -1268,6 +1321,17 @@ function injectDoraAutocompletes() {
         { id: 'edit-host-series-titleinfo-title', solrField: 'mods_relatedItem_host_relatedItem_series_titleInfo_title_ms' },
         { id: 'edit-host-series-issn', solrField: 'mods_relatedItem_host_relatedItem_series_identifier_issn_ms' }
     ];
+
+    // Conditionally add Publisher autocomplete if NOT a Journal Article
+    const pubTypeEl = document.getElementById('edit-publication-type');
+    const isJournalArticle = pubTypeEl && pubTypeEl.value === 'Journal Article';
+
+    if (!isJournalArticle) {
+        fields.push({ id: 'edit-host-origininfo1-0-publisher', solrField: 'mods_originInfo_publisher_ms' });
+        fields.push({ id: 'edit-origininfo1-0-publisher', solrField: 'mods_originInfo_publisher_ms' });
+        fields.push({ id: 'edit-host-origininfo-0-publisher', solrField: 'mods_originInfo_publisher_ms' });
+        fields.push({ id: 'edit-origininfo-0-publisher', solrField: 'mods_originInfo_publisher_ms' });
+    }
 
     fields.forEach(field => {
         let input = document.getElementById(field.id);
@@ -1956,7 +2020,11 @@ function validateAuthorRows(errors, pubYear) {
     // 1. Specific Islandora Fieldpanel Logic
     const authorsContainer = document.querySelector('.form-item-authors');
     if (authorsContainer) {
-        const panes = authorsContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
+        let panes = authorsContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
+        if (panes.length === 0) {
+            panes = authorsContainer.querySelectorAll('table tbody tr:not(.tabledrag-hide)');
+        }
+        
         panes.forEach((pane, idx) => {
             const nameInput = pane.querySelector('input[type="text"][name$="[valName]"]');
 
