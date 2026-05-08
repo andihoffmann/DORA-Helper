@@ -13,34 +13,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
+          cache: 'npm'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci || npm install
 
       # Signieren (Ohne --id Flag, liest aus manifest.json)
       - name: Sign Extension
         run: |
           npx web-ext sign \
-            --api-key=${{ secrets.AMO_JWT_ISSUER }} \
-            --api-secret=${{ secrets.AMO_JWT_SECRET }} \
+            --api-key="${{ secrets.AMO_JWT_ISSUER }}" \
+            --api-secret="${{ secrets.AMO_JWT_SECRET }}" \
             --channel=unlisted \
             --timeout=600000
+
+      # Debug: Zeige erstellte Dateien
+      - name: List Artifacts
+        run: ls -R web-ext-artifacts/
 
       # Datei umbenennen (damit der Name sauber ist)
       - name: Rename Signed XPI
         run: mv web-ext-artifacts/*.xpi web-ext-artifacts/dora-helper-signed.xpi
 
-      # Hochladen ins Release (jetzt mit Schreibrechten)
+      # Hochladen ins Release
       - name: Upload Signed XPI to Release
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: web-ext-artifacts/dora-helper-signed.xpi
           asset_name: dora-helper-signed.xpi
-          tag: ${{ github.ref }}
+          tag: ${{ github.event.release.tag_name }}
+          overwrite: true
