@@ -71,7 +71,11 @@
       "resources": [
         "icons/logo-128.png",
         "icons/logo-48.png",
-        "icons/ai-robot.png"
+        "icons/ai-robot.png",
+        "pdf_viewer.html",
+        "pdf_viewer.js",
+        "pdf.min.js",
+        "pdf.worker.min.js"
       ],
       "matches": [
         "<all_urls>"

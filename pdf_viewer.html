@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>DORA PDF Vorschau</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #334155;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+            color: #f8fafc;
+        }
+        #toolbar {
+            background-color: #1e293b;
+            padding: 8px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #334155;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            z-index: 10;
+        }
+        .btn-group {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+        button {
+            background-color: #334155;
+            border: 1px solid #475569;
+            color: #f8fafc;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            transition: all 0.15s ease;
+        }
+        button:hover:not(:disabled) {
+            background-color: #475569;
+            border-color: #64748b;
+        }
+        button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        #page-info {
+            font-size: 13px;
+            font-weight: 600;
+            color: #cbd5e1;
+            background-color: #0f172a;
+            padding: 4px 10px;
+            border-radius: 4px;
+            border: 1px solid #334155;
+        }
+        #canvas-container {
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: auto;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            background-color: #0f172a;
+            scroll-behavior: smooth;
+        }
+        #pages-container {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+            align-items: center;
+            width: 100%;
+        }
+        .page-wrapper {
+            position: relative;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -4px rgba(0, 0, 0, 0.4);
+            background-color: white;
+            border-radius: 4px;
+        }
+        canvas {
+            display: block;
+            border-radius: 4px;
+        }
+        /* PDF.js Text Layer Overlay for Selection and Copying */
+        .textLayer {
+            position: absolute;
+            left: 0;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            overflow: hidden;
+            opacity: 1.0;
+            line-height: 1.0;
+            border-radius: 4px;
+            pointer-events: auto;
+            z-index: 2;
+        }
+        .textLayer span {
+            color: transparent;
+            position: absolute;
+            white-space: pre;
+            cursor: text;
+            transform-origin: 0% 0%;
+            pointer-events: auto;
+            user-select: text;
+            -webkit-user-select: text;
+            -moz-user-select: text;
+        }
+        /* Sky Blue Highlighting for Selected PDF Text */
+        .textLayer ::selection {
+            background: rgba(14, 165, 233, 0.45) !important;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 14px;
+            font-weight: 600;
+            color: #94a3b8;
+        }
+    </style>
+    <script src="pdf.min.js"></script>
+</head>
+<body>
+    <div id="toolbar">
+        <div class="btn-group">
+            <span id="page-info"><span id="page-count">-</span> Seiten</span>
+        </div>
+        <div class="btn-group">
+            <button id="zoom-out-btn">🔎-</button>
+            <button id="zoom-in-btn">🔎+</button>
+            <button id="adobe-btn">📥 In Adobe öffnen</button>
+        </div>
+    </div>
+    <div id="canvas-container">
+        <div id="loading">Lädt PDF...</div>
+        <div id="pages-container"></div>
+    </div>
+
+    <script src="pdf_viewer.js"></script>
+</body>
+</html>

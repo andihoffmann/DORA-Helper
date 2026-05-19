@@ -3493,8 +3493,18 @@ function initBatchQcDashboard(pids) {
     const right = document.createElement('div');
     right.style.cssText = 'flex: 1.2; display: flex; flex-direction: column; background: #f8fafc; border-left: 1px solid #e2e8f0;';
 
+    const rightToolbar = document.createElement('div');
+    rightToolbar.style.cssText = 'padding: 10px 16px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; gap: 10px;';
+
+    const rightTitle = document.createElement('span');
+    rightTitle.textContent = '📄 PDF Vorschau (scrollbar)';
+    rightTitle.style.cssText = 'font-weight: 600; font-size: 12px; color: #475569;';
+    rightToolbar.appendChild(rightTitle);
+
     const rightIframe = document.createElement('iframe');
     rightIframe.style.cssText = 'flex: 1; border: none; width: 100%;';
+    
+    right.appendChild(rightToolbar);
     right.appendChild(rightIframe);
 
     body.appendChild(sidebar);
@@ -3542,8 +3552,14 @@ function initBatchQcDashboard(pids) {
 
     function loadRecord(pid) {
         const inst = getInstitutionPath();
-        // PDF Iframe
-        rightIframe.src = `/${inst}/islandora/object/${pid}/datastream/PDF/view`;
+        const pdfUrl = `/${inst}/islandora/object/${pid}/datastream/PDF/view`;
+        
+        // PDF Iframe (Uses locally bundled PDF.js viewer to bypass Adobe Acrobat browser settings)
+        const viewerUrl = chrome.runtime.getURL('pdf_viewer.html');
+        const absolutePdfUrl = window.location.origin + pdfUrl;
+        rightIframe.src = `${viewerUrl}?file=${encodeURIComponent(absolutePdfUrl)}`;
+        
+        
 
         // Inject script into iframe to hide header/footer (Bound BEFORE setting src to avoid race conditions!)
         middleIframe.onload = () => {
@@ -3827,53 +3843,188 @@ function initBatchQcDashboard(pids) {
                     restructureFormForQc();
                 };
 
-                // Formular umsortieren und wichtigste Felder hervorheben
                 const restructureFormForQc = () => {
                     const form = doc.getElementById('islandora-xml-form-builder-form') || doc.querySelector('form');
                     if (!form) return;
 
-                    // Mehrfache Ausführung verhindern
-                    if (form.getAttribute('data-dora-restructured') === 'true') return;
-                    form.setAttribute('data-dora-restructured', 'true');
-
                     let qcFieldWrapper = null;
                     let initialsFieldWrapper = null;
 
-                    doc.querySelectorAll('label').forEach(label => {
-                        const text = label.textContent.toLowerCase();
-                        if (text.includes('quality control') && !text.includes('id') && !text.includes('by') && !text.includes('kürzel')) {
-                            qcFieldWrapper = label.closest('.form-item') || label.parentElement;
+                    const isValidQcWrapper = (el) => {
+                        if (!el) return false;
+                        const tag = el.tagName;
+                        if (tag === 'FORM' || tag === 'FIELDSET' || tag === 'TABLE' || tag === 'BODY' || tag === 'HTML') return false;
+                        if (el.querySelector('fieldset, table, input[type="submit"], button[type="submit"]')) return false;
+                        return true;
+                    };
+
+                    // Robust alle Text-Träger durchsuchen um QC-Felder sprachunabhängig zu extrahieren
+                    doc.querySelectorAll('label, legend, .fieldset-legend, span, div, th, td').forEach(el => {
+                        if (el.children.length > 0 && el.tagName !== 'LABEL' && el.tagName !== 'LEGEND' && !el.classList.contains('fieldset-legend')) return;
+
+                        const text = el.textContent.toLowerCase();
+                        // Quality Control Status Feld (Yes/No Dropdown)
+                        const isQcStatus = text.includes('quality control') || text.includes('qualitätskontrolle') || text.includes('freigabe') || (text.includes('qc') && !text.includes('id') && !text.includes('by') && !text.includes('kürzel'));
+                        if (isQcStatus && !text.includes('id') && !text.includes('by') && !text.includes('kürzel') && !text.includes('reviewer')) {
+                            const candidate = el.closest('.form-item') || el.closest('.form-wrapper') || el.parentElement;
+                            if (isValidQcWrapper(candidate)) {
+                                qcFieldWrapper = candidate;
+                            }
                         }
-                        if (text.includes('quality control id') || text.includes('kürzel') || text.includes('reviewer') || text.includes('user') || text.includes('quality control by') || text.includes('qc id')) {
-                            initialsFieldWrapper = label.closest('.form-item') || label.parentElement;
+                        // Reviewer / Initials / QC ID Feld
+                        const isInitials = text.includes('quality control id') || text.includes('kürzel') || text.includes('reviewer') || text.includes('user') || text.includes('quality control by') || text.includes('qc id') || text.includes('qc-id') || text.includes('qc_id');
+                        if (isInitials) {
+                            const candidate = el.closest('.form-item') || el.closest('.form-wrapper') || el.parentElement;
+                            if (isValidQcWrapper(candidate)) {
+                                initialsFieldWrapper = candidate;
+                            }
                         }
                     });
 
-                    let qcCard = null;
-                    if (qcFieldWrapper || initialsFieldWrapper) {
-                        qcCard = doc.createElement('div');
-                        qcCard.id = 'dora-qc-header-card';
-                        qcCard.className = 'dora-qc-highlight-box';
+                    // Manage die grüne QC-Card (einmalig erzeugen, falls Felder vorhanden sind)
+                    let qcCard = doc.getElementById('dora-qc-header-card');
+                    try {
+                        if (qcFieldWrapper || initialsFieldWrapper) {
+                            if (!qcCard) {
+                                qcCard = doc.createElement('div');
+                                qcCard.id = 'dora-qc-header-card';
+                                qcCard.className = 'dora-qc-highlight-box';
+                                qcCard.style.cssText = 'margin-top: 24px !important; margin-bottom: 24px !important;';
 
-                        const qcH3 = doc.createElement('h3');
-                        qcH3.innerHTML = '⚡ QC Status &amp; Freigabe (Quality Control)';
-                        qcCard.appendChild(qcH3);
+                                const qcH3 = doc.createElement('h3');
+                                qcH3.innerHTML = '⚡ QC Status &amp; Freigabe (Quality Control)';
+                                qcCard.appendChild(qcH3);
 
-                        const fieldsContainer = doc.createElement('div');
-                        fieldsContainer.style.cssText = 'display: flex; gap: 15px;';
-                        qcCard.appendChild(fieldsContainer);
+                                const fieldsContainer = doc.createElement('div');
+                                fieldsContainer.id = 'dora-qc-fields-container';
+                                fieldsContainer.style.cssText = 'display: flex; gap: 15px;';
+                                qcCard.appendChild(fieldsContainer);
 
-                        if (qcFieldWrapper) {
-                            qcFieldWrapper.style.cssText = 'flex: 1; margin: 0 !important;';
-                            fieldsContainer.appendChild(qcFieldWrapper);
+                                // Positionieren am Formularende (neben den Aktionen)
+                                const formSubmitBtn = doc.querySelector('input[type="submit"], button[type="submit"], .form-submit');
+                                const actionsContainer = doc.getElementById('edit-actions') || doc.querySelector('.form-actions') || (formSubmitBtn ? formSubmitBtn.closest('.form-actions') || formSubmitBtn.parentElement : null);
+                                
+                                if (actionsContainer && actionsContainer.parentElement) {
+                                    actionsContainer.parentElement.insertBefore(qcCard, actionsContainer);
+                                } else {
+                                    form.appendChild(qcCard);
+                                }
+                            }
+
+                            const fieldsContainer = doc.getElementById('dora-qc-fields-container');
+
+                            // Spiegelungs-Klon für QC Status (falls noch nicht erzeugt)
+                            if (qcFieldWrapper && !doc.getElementById('dora-mirrored-qc-status')) {
+                                const originalSelect = qcFieldWrapper.querySelector('select');
+                                const originalInput = qcFieldWrapper.querySelector('input');
+                                
+                                const wrapper = doc.createElement('div');
+                                wrapper.id = 'dora-mirrored-qc-status';
+                                wrapper.style.cssText = 'flex: 1; display: flex; flex-direction: column; gap: 4px;';
+                                
+                                const label = doc.createElement('label');
+                                label.textContent = 'Quality Control';
+                                label.style.cssText = 'font-weight: 600; font-size: 11px; color: #475569; text-transform: uppercase; margin-bottom: 2px !important;';
+                                wrapper.appendChild(label);
+                                
+                                let myInput;
+                                if (originalSelect) {
+                                    myInput = doc.createElement('select');
+                                    Array.from(originalSelect.options).forEach(opt => {
+                                        const myOpt = doc.createElement('option');
+                                        myOpt.value = opt.value;
+                                        myOpt.textContent = opt.textContent;
+                                        myOpt.selected = opt.selected;
+                                        myInput.appendChild(myOpt);
+                                    });
+                                } else {
+                                    myInput = doc.createElement('input');
+                                    myInput.type = originalInput ? originalInput.type : 'text';
+                                    myInput.value = originalInput ? originalInput.value : '';
+                                }
+                                myInput.style.cssText = 'width: 100% !important; padding: 6px 10px !important; border: 1px solid #cbd5e1 !important; border-radius: 6px !important; box-sizing: border-box !important; background: white !important;';
+                                wrapper.appendChild(myInput);
+                                fieldsContainer.appendChild(wrapper);
+                                
+                                // Sync Gespiegelt -> Original
+                                const syncToOriginal = () => {
+                                    const target = originalSelect || originalInput;
+                                    if (target) {
+                                        target.value = myInput.value;
+                                        target.dispatchEvent(new Event('change', { bubbles: true }));
+                                        target.dispatchEvent(new Event('input', { bubbles: true }));
+                                    }
+                                };
+                                myInput.addEventListener('change', syncToOriginal);
+                                if (!originalSelect) {
+                                    myInput.addEventListener('input', syncToOriginal);
+                                }
+                                
+                                // Periodischer Sync Original -> Gespiegelt
+                                setInterval(() => {
+                                    const target = originalSelect || originalInput;
+                                    if (target && myInput && doc.activeElement !== myInput) {
+                                        if (myInput.value !== target.value) {
+                                            myInput.value = target.value;
+                                        }
+                                    }
+                                }, 250);
+                            }
+
+                            // Original-Feld sichtbar lassen und highlighten
+                            if (qcFieldWrapper) {
+                                qcFieldWrapper.style.borderLeft = '3px solid #22c55e';
+                                qcFieldWrapper.style.paddingLeft = '8px';
+                            }
+                            
+                            // Spiegelungs-Klon für QC ID (falls noch nicht erzeugt)
+                            if (initialsFieldWrapper && !doc.getElementById('dora-mirrored-qc-id')) {
+                                const originalInitialsInput = initialsFieldWrapper.querySelector('input');
+                                
+                                const wrapper = doc.createElement('div');
+                                wrapper.id = 'dora-mirrored-qc-id';
+                                wrapper.style.cssText = 'flex: 1; display: flex; flex-direction: column; gap: 4px;';
+                                
+                                const label = doc.createElement('label');
+                                label.textContent = 'Quality Control ID (Kürzel)';
+                                label.style.cssText = 'font-weight: 600; font-size: 11px; color: #475569; text-transform: uppercase; margin-bottom: 2px !important;';
+                                wrapper.appendChild(label);
+                                
+                                const myInitialsInput = doc.createElement('input');
+                                myInitialsInput.type = 'text';
+                                myInitialsInput.value = originalInitialsInput ? originalInitialsInput.value : '';
+                                myInitialsInput.placeholder = 'z.B. cro';
+                                myInitialsInput.style.cssText = 'width: 100% !important; padding: 6px 10px !important; border: 1px solid #cbd5e1 !important; border-radius: 6px !important; box-sizing: border-box !important; background: white !important;';
+                                wrapper.appendChild(myInitialsInput);
+                                fieldsContainer.appendChild(wrapper);
+                                
+                                // Sync Gespiegelt -> Original
+                                myInitialsInput.addEventListener('input', () => {
+                                    if (originalInitialsInput) {
+                                        originalInitialsInput.value = myInitialsInput.value;
+                                        originalInitialsInput.dispatchEvent(new Event('input', { bubbles: true }));
+                                        originalInitialsInput.dispatchEvent(new Event('change', { bubbles: true }));
+                                    }
+                                });
+                                
+                                // Periodischer Sync Original -> Gespiegelt
+                                setInterval(() => {
+                                    if (originalInitialsInput && myInitialsInput && doc.activeElement !== myInitialsInput) {
+                                        if (myInitialsInput.value !== originalInitialsInput.value) {
+                                            myInitialsInput.value = originalInitialsInput.value;
+                                        }
+                                    }
+                                }, 250);
+                            }
+
+                            // Original-Feld sichtbar lassen und highlighten
+                            if (initialsFieldWrapper) {
+                                initialsFieldWrapper.style.borderLeft = '3px solid #22c55e';
+                                initialsFieldWrapper.style.paddingLeft = '8px';
+                            }
                         }
-                        if (initialsFieldWrapper) {
-                            initialsFieldWrapper.style.cssText = 'flex: 1; margin: 0 !important;';
-                            fieldsContainer.appendChild(initialsFieldWrapper);
-                        }
-
-                        // An den absoluten Anfang des Formulars setzen
-                        form.insertBefore(qcCard, form.firstChild);
+                    } catch (cardError) {
+                        console.error('Error rendering DORA QC Card at bottom:', cardError);
                     }
 
                     // Wichtige Abschnitte suchen
@@ -3892,35 +4043,39 @@ function initBatchQcDashboard(pids) {
                         }
                     });
 
-                    // Physisches Umsortieren nach der QC Card
-                    const next = qcCard ? qcCard.nextSibling : form.firstChild;
+                    // Physisches Umsortieren am Anfang des Formulars (einmalig markiert per Attribut)
+                    const next = form.firstChild;
 
-                    if (doiFieldset) {
+                    if (doiFieldset && doiFieldset.getAttribute('data-dora-moved') !== 'true') {
                         form.insertBefore(doiFieldset, next);
                         doiFieldset.style.borderLeft = '4px solid #3b82f6';
                         doiFieldset.style.paddingLeft = '12px';
+                        doiFieldset.setAttribute('data-dora-moved', 'true');
                     }
-                    if (titleFieldset) {
+                    if (titleFieldset && titleFieldset.getAttribute('data-dora-moved') !== 'true') {
                         form.insertBefore(titleFieldset, doiFieldset ? doiFieldset.nextSibling : next);
                         titleFieldset.style.borderLeft = '4px solid #3b82f6';
                         titleFieldset.style.paddingLeft = '12px';
+                        titleFieldset.setAttribute('data-dora-moved', 'true');
                     }
-                    if (authorFieldset) {
+                    if (authorFieldset && authorFieldset.getAttribute('data-dora-moved') !== 'true') {
                         form.insertBefore(authorFieldset, titleFieldset ? titleFieldset.nextSibling : (doiFieldset ? doiFieldset.nextSibling : next));
                         authorFieldset.style.borderLeft = '4px solid #3b82f6';
                         authorFieldset.style.paddingLeft = '12px';
                         authorFieldset.classList.add('dora-authors-fieldset');
+                        authorFieldset.setAttribute('data-dora-moved', 'true');
                     }
 
                     // Highlight specific QC-critical micro-fields (Corresponding Author, Start Page, Peer Review, Publication Status)
                     const highlightField = (el, isFieldset = false) => {
-                        if (!el) return;
+                        if (!el || el.getAttribute('data-dora-highlighted') === 'true') return;
                         el.style.borderLeft = '3px solid #f59e0b'; // Amber Accent
                         el.style.background = '#fffbeb';          // Soft warm amber background
                         el.style.padding = isFieldset ? '10px 15px' : '6px 12px';
                         el.style.margin = isFieldset ? '12px 0 !important' : '8px 0 !important';
                         el.style.borderRadius = '0 6px 6px 0';
                         el.style.boxShadow = '0 1px 2px rgba(245, 158, 11, 0.05)';
+                        el.setAttribute('data-dora-highlighted', 'true');
                     };
 
                     doc.querySelectorAll('label').forEach(label => {
@@ -3955,8 +4110,6 @@ function initBatchQcDashboard(pids) {
                         submitBtn.style.cssText = 'background: #22c55e !important; color: white !important; border: 1px solid #16a34a !important; padding: 10px 20px !important; border-radius: 6px !important; font-weight: bold !important; font-size: 13px !important; cursor: pointer !important; margin-top: 15px !important; width: 100% !important; transition: background 0.15s !important;';
                     }
                 };
-
-                // Sofort ausführen und danach periodisch für 15 Sekunden (um AJAX-Nachladen abzufangen)
                 hideSpecificFields();
                 const hideInterval = setInterval(hideSpecificFields, 500);
                 setTimeout(() => clearInterval(hideInterval), 15000);
