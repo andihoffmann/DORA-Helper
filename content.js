@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.56
+// Version: 2.57
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -3503,7 +3503,7 @@ function initBatchQcDashboard(pids) {
 
     const rightIframe = document.createElement('iframe');
     rightIframe.style.cssText = 'flex: 1; border: none; width: 100%;';
-    
+
     right.appendChild(rightToolbar);
     right.appendChild(rightIframe);
 
@@ -3553,13 +3553,13 @@ function initBatchQcDashboard(pids) {
     function loadRecord(pid) {
         const inst = getInstitutionPath();
         const pdfUrl = `/${inst}/islandora/object/${pid}/datastream/PDF/view`;
-        
+
         // PDF Iframe (Uses locally bundled PDF.js viewer to bypass Adobe Acrobat browser settings)
         const viewerUrl = chrome.runtime.getURL('pdf_viewer.html');
         const absolutePdfUrl = window.location.origin + pdfUrl;
         rightIframe.src = `${viewerUrl}?file=${encodeURIComponent(absolutePdfUrl)}`;
-        
-        
+
+
 
         // Inject script into iframe to hide header/footer (Bound BEFORE setting src to avoid race conditions!)
         middleIframe.onload = () => {
@@ -3903,7 +3903,7 @@ function initBatchQcDashboard(pids) {
                                 // Positionieren am Formularende (neben den Aktionen)
                                 const formSubmitBtn = doc.querySelector('input[type="submit"], button[type="submit"], .form-submit');
                                 const actionsContainer = doc.getElementById('edit-actions') || doc.querySelector('.form-actions') || (formSubmitBtn ? formSubmitBtn.closest('.form-actions') || formSubmitBtn.parentElement : null);
-                                
+
                                 if (actionsContainer && actionsContainer.parentElement) {
                                     actionsContainer.parentElement.insertBefore(qcCard, actionsContainer);
                                 } else {
@@ -3917,16 +3917,16 @@ function initBatchQcDashboard(pids) {
                             if (qcFieldWrapper && !doc.getElementById('dora-mirrored-qc-status')) {
                                 const originalSelect = qcFieldWrapper.querySelector('select');
                                 const originalInput = qcFieldWrapper.querySelector('input');
-                                
+
                                 const wrapper = doc.createElement('div');
                                 wrapper.id = 'dora-mirrored-qc-status';
                                 wrapper.style.cssText = 'flex: 1; display: flex; flex-direction: column; gap: 4px;';
-                                
+
                                 const label = doc.createElement('label');
                                 label.textContent = 'Quality Control';
                                 label.style.cssText = 'font-weight: 600; font-size: 11px; color: #475569; text-transform: uppercase; margin-bottom: 2px !important;';
                                 wrapper.appendChild(label);
-                                
+
                                 let myInput;
                                 if (originalSelect) {
                                     myInput = doc.createElement('select');
@@ -3945,7 +3945,7 @@ function initBatchQcDashboard(pids) {
                                 myInput.style.cssText = 'width: 100% !important; padding: 6px 10px !important; border: 1px solid #cbd5e1 !important; border-radius: 6px !important; box-sizing: border-box !important; background: white !important;';
                                 wrapper.appendChild(myInput);
                                 fieldsContainer.appendChild(wrapper);
-                                
+
                                 // Sync Gespiegelt -> Original
                                 const syncToOriginal = () => {
                                     const target = originalSelect || originalInput;
@@ -3959,7 +3959,7 @@ function initBatchQcDashboard(pids) {
                                 if (!originalSelect) {
                                     myInput.addEventListener('input', syncToOriginal);
                                 }
-                                
+
                                 // Periodischer Sync Original -> Gespiegelt
                                 setInterval(() => {
                                     const target = originalSelect || originalInput;
@@ -3976,20 +3976,20 @@ function initBatchQcDashboard(pids) {
                                 qcFieldWrapper.style.borderLeft = '3px solid #22c55e';
                                 qcFieldWrapper.style.paddingLeft = '8px';
                             }
-                            
+
                             // Spiegelungs-Klon für QC ID (falls noch nicht erzeugt)
                             if (initialsFieldWrapper && !doc.getElementById('dora-mirrored-qc-id')) {
                                 const originalInitialsInput = initialsFieldWrapper.querySelector('input');
-                                
+
                                 const wrapper = doc.createElement('div');
                                 wrapper.id = 'dora-mirrored-qc-id';
                                 wrapper.style.cssText = 'flex: 1; display: flex; flex-direction: column; gap: 4px;';
-                                
+
                                 const label = doc.createElement('label');
                                 label.textContent = 'Quality Control ID (Kürzel)';
                                 label.style.cssText = 'font-weight: 600; font-size: 11px; color: #475569; text-transform: uppercase; margin-bottom: 2px !important;';
                                 wrapper.appendChild(label);
-                                
+
                                 const myInitialsInput = doc.createElement('input');
                                 myInitialsInput.type = 'text';
                                 myInitialsInput.value = originalInitialsInput ? originalInitialsInput.value : '';
@@ -3997,7 +3997,7 @@ function initBatchQcDashboard(pids) {
                                 myInitialsInput.style.cssText = 'width: 100% !important; padding: 6px 10px !important; border: 1px solid #cbd5e1 !important; border-radius: 6px !important; box-sizing: border-box !important; background: white !important;';
                                 wrapper.appendChild(myInitialsInput);
                                 fieldsContainer.appendChild(wrapper);
-                                
+
                                 // Sync Gespiegelt -> Original
                                 myInitialsInput.addEventListener('input', () => {
                                     if (originalInitialsInput) {
@@ -4006,7 +4006,7 @@ function initBatchQcDashboard(pids) {
                                         originalInitialsInput.dispatchEvent(new Event('change', { bubbles: true }));
                                     }
                                 });
-                                
+
                                 // Periodischer Sync Original -> Gespiegelt
                                 setInterval(() => {
                                     if (originalInitialsInput && myInitialsInput && doc.activeElement !== myInitialsInput) {
