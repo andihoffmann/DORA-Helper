@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Dora Helper",
-  "version": "2.55",
+  "version": "2.56",
   "description": "Metadaten-Validierung, DOI- & Buchkapitel-Import, PDF-Analyse und Open-Access-Checks für DORA.",
   "permissions": [
     "activeTab",
@@ -55,6 +55,7 @@
         "*://*.dora.lib4ri.ch/*",
         "http://lib-dora-prod1.emp-eaw.ch:8080/*"
       ],
+      "all_frames": true,
       "js": [
         "psi_data.js",
         "psi_affiliations.js",

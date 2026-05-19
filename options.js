@@ -589,10 +589,14 @@ function restoreOptions() {
   chrome.storage.local.get({
     exceptionList: defaultExceptions,
     scopusApiKey: '',
-    psiDataLastUpdated: ''
+    psiDataLastUpdated: '',
+    enableBatchQc: true,
+    qcInitials: ''
   }, function (items) {
     if (document.getElementById('exceptions')) document.getElementById('exceptions').value = items.exceptionList;
     if (document.getElementById('scopusKey')) document.getElementById('scopusKey').value = items.scopusApiKey;
+    if (document.getElementById('enableBatchQc')) document.getElementById('enableBatchQc').checked = items.enableBatchQc;
+    if (document.getElementById('qcInitials')) document.getElementById('qcInitials').value = items.qcInitials;
     if (document.getElementById('lastUpdated') && items.psiDataLastUpdated) {
       document.getElementById('lastUpdated').textContent = "Zuletzt aktualisiert: " + items.psiDataLastUpdated;
     }
@@ -612,6 +616,18 @@ function saveKeywords() {
   const text = document.getElementById('exceptions') ? document.getElementById('exceptions').value : defaultExceptions;
   chrome.storage.local.set({ exceptionList: text }, function () {
     showStatus('statusKeywords');
+  });
+}
+
+// 4. Speichern Batch QC
+function saveBatchQc() {
+  const isEnabled = document.getElementById('enableBatchQc') ? document.getElementById('enableBatchQc').checked : false;
+  const initials = document.getElementById('qcInitials') ? document.getElementById('qcInitials').value.trim() : '';
+  chrome.storage.local.set({ 
+    enableBatchQc: isEnabled,
+    qcInitials: initials
+  }, function () {
+    showStatus('statusBatchQc');
   });
 }
 
@@ -706,5 +722,6 @@ document.addEventListener('DOMContentLoaded', () => {
   restoreOptions();
   if (document.getElementById('saveScopus')) document.getElementById('saveScopus').addEventListener('click', saveScopus);
   if (document.getElementById('saveKeywords')) document.getElementById('saveKeywords').addEventListener('click', saveKeywords);
+  if (document.getElementById('saveBatchQc')) document.getElementById('saveBatchQc').addEventListener('click', saveBatchQc);
   if (document.getElementById('uploadPsiData')) document.getElementById('uploadPsiData').addEventListener('click', handlePsiDataUpload);
 });

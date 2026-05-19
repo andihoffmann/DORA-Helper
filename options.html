@@ -32,6 +32,25 @@
   </div>
 
   <div class="section">
+    <h2>Batch QC Dashboard</h2>
+    <div class="hint">
+      Aktiviert die Split-Screen Ansicht für schnelles Abarbeiten von PIDs auf der Suchseite.
+    </div>
+    <label style="display: block; margin-bottom: 10px;">
+      <input type="checkbox" id="enableBatchQc"> Dashboard aktivieren
+    </label>
+    <div class="hint" style="margin-bottom: 5px;">
+      <strong>Pflichtfeld:</strong> Ihr Kürzel für die Qualitätskontrolle (wird an das QC ID Feld angehängt).
+    </div>
+    <input type="text" id="qcInitials" placeholder="z.B. ah" style="width: 150px;">
+    
+    <div style="margin-top: 10px;">
+      <button id="saveBatchQc">Speichern</button>
+      <span id="statusBatchQc" style="opacity:0; color:green; margin-left:10px; font-weight:bold;">Gespeichert!</span>
+    </div>
+  </div>
+
+  <div class="section">
     <h2>Keyword Ausnahmen</h2>
     <div class="hint">
       Format: <code>suchwort -> Ersetzung</code><br>

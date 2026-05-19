@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.53
+// Version: 2.56
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -34,6 +34,19 @@ function startObserver() {
 }
 
 function scanAndInject() {
+    // NEW: Check for Search Page for Batch QC feature
+    if (isSearchPage()) {
+        chrome.storage.local.get({ enableBatchQc: true }, function (result) {
+            if (result.enableBatchQc) {
+                injectBatchQcButton();
+            } else {
+                const btn = document.getElementById('dora-batch-qc-btn');
+                if (btn) btn.remove();
+            }
+        });
+        return;
+    }
+
     // SECURITY / PERFORMANCE: Only run on Edit or Ingest Forms
     if (!isEditPage()) return;
 
@@ -52,6 +65,7 @@ function scanAndInject() {
         injectKeywordManager(topicContainer);
     }
     injectTagButtons();
+    injectBulkDataTool();
     injectDoraAutocompletes();
 
     validateForm();
@@ -89,7 +103,7 @@ function createFloatingBox() {
     }
     // Styles
     Object.assign(box.style, {
-        position: 'fixed', top: '110px', right: '20px', width: '300px', zIndex: '10000',
+        position: 'fixed', top: '110px', right: '20px', width: '320px', zIndex: '10000',
         backgroundColor: '#ffffff', border: '1px solid #ccc', borderLeft: '5px solid #0073e6',
         borderRadius: '5px', padding: '10px', boxShadow: '0 5px 20px rgba(0,0,0,0.15)'
     });
@@ -392,6 +406,18 @@ function renderErrorBox(msgText) {
 function renderResultBox(data) {
     const oa = data.unpaywall;
     const meta = data.crossref;
+
+    // Hide the Bulk Data Tool by default when DOI results are shown
+    const bulkTool = document.getElementById('dora-bulk-data-tool');
+    if (bulkTool) {
+        bulkTool.style.display = 'none';
+        const b = bulkTool.querySelector('#dora-bulk-data-tool > div:nth-child(2)');
+        if (b) b.style.display = 'none';
+        const icon = document.getElementById('dora-bulk-toggle-icon');
+        if (icon) icon.textContent = '▼';
+        bulkTool.style.width = 'auto';
+    }
+
     let box = createFloatingBox();
     box.replaceChildren(); // Reset
 
@@ -399,16 +425,35 @@ function renderResultBox(data) {
     const closeBtn = createEl('div', 'dora-close-btn', '×');
     closeBtn.id = 'dora-box-close';
     closeBtn.style.cssText = 'position: absolute; top: 5px; right: 10px; cursor: pointer; font-size: 1.2em; color: #666;';
-    closeBtn.addEventListener('click', () => box.remove());
+    closeBtn.addEventListener('click', () => {
+        box.remove();
+        // Restore the Bulk Data Tool button so it's accessible without DOI box
+        const bulkTool = document.getElementById('dora-bulk-data-tool');
+        if (bulkTool) {
+            bulkTool.style.display = 'block';
+            const b = bulkTool.querySelector('#dora-bulk-data-tool > div:nth-child(2)');
+            if (b) b.style.display = 'none';
+            const icon = document.getElementById('dora-bulk-toggle-icon');
+            if (icon) icon.textContent = '▼';
+            bulkTool.style.width = 'auto';
+        }
+    });
     box.appendChild(closeBtn);
 
     // 2. Header
     const header = createEl('div', 'dora-meta-header');
 
-    // Logo
+    // Logo (Clickable to toggle Bulk tool)
     const logo = createEl('img');
+    logo.id = 'dora-robot-logo';
     logo.src = chrome.runtime.getURL('icons/logo-48.png');
-    logo.style.cssText = 'float:left; width:24px; height:24px; margin-right:8px;';
+    logo.style.cssText = 'float:left; width:24px; height:24px; margin-right:8px; cursor:pointer;';
+    logo.title = 'Klicken, um den Bulk Copy & Paste Assistenten anzuzeigen';
+    logo.addEventListener('click', () => {
+        if (typeof toggleBulkDataTool === 'function') {
+            toggleBulkDataTool();
+        }
+    });
     header.appendChild(logo);
 
     // Title (Restored, smaller, stripped HTML)
@@ -799,7 +844,7 @@ async function addMissingRows(containerSelector, requiredCount) {
         // 1. FRESH QUERY: Always re-query the container because Drupal AJAX replaces it
         let container = document.querySelector(containerSelector + ' .islandora-form-fieldpanel-panel');
         let rowSelector = '.islandora-form-fieldpanel-pane';
-        
+
         // Fallback for standard Drupal multi-value tables
         if (!container) {
             container = document.querySelector(containerSelector + ' table');
@@ -823,9 +868,9 @@ async function addMissingRows(containerSelector, requiredCount) {
         const wrapper = document.querySelector(containerSelector);
         let addButton = container.querySelector('.fieldpanel-add.form-submit');
         if (!addButton && wrapper) {
-             addButton = wrapper.querySelector('.fieldpanel-add.form-submit, input[type="submit"][value="Add"], input[type="submit"][name$="[add]"]');
+            addButton = wrapper.querySelector('.fieldpanel-add.form-submit, input[type="submit"][value="Add"], input[type="submit"][name$="[add]"]');
         }
-        
+
         if (!addButton) {
             console.warn('DORA Helper: "Add" button missing in ' + containerSelector);
             return;
@@ -841,7 +886,7 @@ async function addMissingRows(containerSelector, requiredCount) {
             const observer = new MutationObserver((mutations, obs) => {
                 let checkContainer = document.querySelector(containerSelector + ' .islandora-form-fieldpanel-panel');
                 if (!checkContainer) checkContainer = document.querySelector(containerSelector + ' table');
-                
+
                 if (checkContainer) {
                     const newCount = checkContainer.querySelectorAll(rowSelector).length;
                     if (newCount > currentRows) {
@@ -939,7 +984,7 @@ async function fillBookChapterMetadata(meta) {
         if (authorContainer) {
             let authorPanes = authorContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
             if (authorPanes.length === 0) authorPanes = authorContainer.querySelectorAll('table tbody tr:not(.tabledrag-hide)');
-            
+
             meta.author.forEach((auth, idx) => {
                 if (authorPanes[idx]) {
                     const pane = authorPanes[idx];
@@ -956,12 +1001,8 @@ async function fillBookChapterMetadata(meta) {
                         givenEl.dispatchEvent(new Event('input', { bubbles: true }));
                         givenEl.dispatchEvent(new Event('change', { bubbles: true }));
                     }
-                    
-                    // Trigger PSI Affiliation button if available
-                    const affilBtn = pane.querySelector('.lib4ri-author-fill');
-                    if (affilBtn) {
-                        affilBtn.click();
-                    }
+                    // Trigger PSI Affiliation button removed because it is unreliable with just the name
+                    // and often selects the wrong internal author object.
                 }
             });
         }
@@ -973,7 +1014,7 @@ async function fillBookChapterMetadata(meta) {
         if (editorContainer) {
             let editorPanes = editorContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
             if (editorPanes.length === 0) editorPanes = editorContainer.querySelectorAll('table tbody tr:not(.tabledrag-hide)');
-            
+
             meta.editor.forEach((ed, idx) => {
                 if (editorPanes[idx]) {
                     const pane = editorPanes[idx];
@@ -992,7 +1033,7 @@ async function fillBookChapterMetadata(meta) {
                         givenEl.dispatchEvent(new Event('input', { bubbles: true }));
                         givenEl.dispatchEvent(new Event('change', { bubbles: true }));
                     }
-                    
+
                     // Trigger PSI Affiliation button if available
                     const affilBtn = pane.querySelector('.lib4ri-author-fill');
                     if (affilBtn) {
@@ -1313,7 +1354,339 @@ function insertAtCursor(myField, myValue) {
     }
 }
 
-// --- DORA AUTOCOMPLETE INJECTION (Direct Solr Access) ---
+// --- BULK DATA ENTRY TOOL ---
+function toggleBulkDataTool(forceState) {
+    const container = document.getElementById('dora-bulk-data-tool');
+    if (!container) return;
+    const body = container.querySelector('#dora-bulk-data-tool > div:nth-child(2)');
+    const icon = document.getElementById('dora-bulk-toggle-icon');
+    if (!body) return;
+
+    // Check if it is currently expanded/open (body is displayed and container is visible)
+    const isCurrentlyHidden = container.style.display === 'none' || body.style.display === 'none';
+    const show = (forceState !== undefined) ? forceState : isCurrentlyHidden;
+
+    const hasDoiBox = !!document.getElementById('dora-result-box');
+
+    if (show) {
+        container.style.display = 'block';
+        body.style.display = 'block';
+        if (icon) icon.textContent = '▲';
+        container.style.width = '320px';
+        container.style.right = hasDoiBox ? '350px' : '20px';
+    } else {
+        if (hasDoiBox) {
+            container.style.display = 'none';
+        } else {
+            container.style.display = 'block';
+            body.style.display = 'none';
+            if (icon) icon.textContent = '▼';
+            container.style.width = 'auto';
+            container.style.right = '20px';
+        }
+    }
+}
+
+function injectBulkDataTool() {
+    if (document.getElementById('dora-bulk-data-tool')) {
+        // If it already exists, manage its visibility based on DOI box presence
+        const hasDoiBox = !!document.getElementById('dora-result-box');
+        const container = document.getElementById('dora-bulk-data-tool');
+        const body = container.querySelector('#dora-bulk-data-tool > div:nth-child(2)');
+        if (hasDoiBox && body && body.style.display === 'none') {
+            container.style.display = 'none';
+        } else {
+            container.style.right = hasDoiBox ? '350px' : '20px';
+        }
+        return;
+    }
+
+    const authorContainer = document.querySelector('.form-item-authors');
+    if (!authorContainer) return;
+
+    const container = document.createElement('div');
+    container.id = 'dora-bulk-data-tool';
+
+    // Hide initially if DOI box is active, slide to 20px or 350px
+    const hasDoiBox = !!document.getElementById('dora-result-box');
+    container.style.cssText = 'position: fixed; right: ' + (hasDoiBox ? '350px' : '20px') + '; top: 110px; width: auto; z-index: 9999; margin: 15px 0; border: 1px solid #17a2b8; border-radius: 4px; background: #f8f9fa; font-size: 13px; font-family: sans-serif; box-shadow: 0 4px 6px rgba(0,0,0,0.2); transition: width 0.2s ease, right 0.2s ease;';
+    if (hasDoiBox) {
+        container.style.display = 'none';
+    } else {
+        container.style.display = 'block';
+    }
+
+    const header = document.createElement('div');
+    header.style.cssText = 'padding: 8px 12px; background: #17a2b8; color: #fff; cursor: pointer; font-weight: bold; display: flex; justify-content: space-between; align-items: center; border-radius: 3px; gap: 10px; white-space: nowrap;';
+    header.innerHTML = `<span>🚀 Bulk Copy & Paste</span><span id="dora-bulk-toggle-icon">▼</span>`;
+
+    const body = document.createElement('div');
+    body.style.cssText = 'padding: 15px; display: none;';
+
+    header.addEventListener('click', () => {
+        toggleBulkDataTool();
+    });
+
+    // Authors Section
+    const authorSec = document.createElement('div');
+    authorSec.style.cssText = 'margin-bottom: 20px;';
+    authorSec.innerHTML = `
+        <div style="font-weight: bold; margin-bottom: 5px;">👥 Autoren Bulk-Input</div>
+        <div style="display: flex; gap: 10px; margin-bottom: 5px; align-items: center;">
+            <label style="font-size: 11px;">Trennen durch:</label>
+            <select id="dora-bulk-author-sep" style="font-size: 11px; padding: 2px;">
+                <option value="auto">Automatisch (Erraten)</option>
+                <option value=";">Semikolon (;)</option>
+                <option value=",">Komma (,)</option>
+                <option value="\\n">Zeilenumbruch (Enter)</option>
+                <option value="and">And / &</option>
+            </select>
+        </div>
+        <textarea id="dora-bulk-author-text" placeholder="Beispiel: Müller, Thomas; Meier, Beat, Dr.; John Doe..." style="width: 100%; height: 60px; margin-bottom: 5px; padding: 5px; box-sizing: border-box;"></textarea>
+        <div>
+            <button id="dora-bulk-author-btn" type="button" class="form-submit" style="padding: 4px 10px; background: #28a745; border-color: #28a745; color: white;">Autoren einfügen</button>
+            <span id="dora-bulk-author-status" style="margin-left: 10px; color: green; font-weight: bold;"></span>
+        </div>
+    `;
+
+    // Keywords Section
+    const keywordSec = document.createElement('div');
+    keywordSec.innerHTML = `
+        <div style="font-weight: bold; margin-bottom: 5px;">🏷️ Keywords Bulk-Input</div>
+        <div style="display: flex; gap: 10px; margin-bottom: 5px; align-items: center;">
+            <label style="font-size: 11px;">Trennen durch:</label>
+            <select id="dora-bulk-keyword-sep" style="font-size: 11px; padding: 2px;">
+                <option value="auto">Automatisch (Erraten)</option>
+                <option value=",">Komma (,)</option>
+                <option value=";">Semikolon (;)</option>
+                <option value="\\n">Zeilenumbruch (Enter)</option>
+                <option value="-">Strich (-)</option>
+            </select>
+        </div>
+        <textarea id="dora-bulk-keyword-text" placeholder="Beispiel: Climate change, hydrology, water quality..." style="width: 100%; height: 60px; margin-bottom: 5px; padding: 5px; box-sizing: border-box;"></textarea>
+        <div>
+            <button id="dora-bulk-keyword-btn" type="button" class="form-submit" style="padding: 4px 10px; background: #28a745; border-color: #28a745; color: white;">Keywords einfügen</button>
+            <span id="dora-bulk-keyword-status" style="margin-left: 10px; color: green; font-weight: bold;"></span>
+        </div>
+    `;
+
+    body.appendChild(authorSec);
+    body.appendChild(keywordSec);
+    container.appendChild(header);
+    container.appendChild(body);
+
+    document.body.appendChild(container);
+
+    document.getElementById('dora-bulk-author-btn').addEventListener('click', async (e) => {
+        e.preventDefault();
+        const text = document.getElementById('dora-bulk-author-text').value.trim();
+        const sep = document.getElementById('dora-bulk-author-sep').value;
+        if (!text) return;
+
+        const btn = document.getElementById('dora-bulk-author-btn');
+        const oldText = btn.textContent;
+        btn.textContent = "Verarbeite...";
+        btn.disabled = true;
+
+        await processBulkAuthors(text, sep);
+
+        btn.textContent = oldText;
+        btn.disabled = false;
+        const status = document.getElementById('dora-bulk-author-status');
+        status.textContent = "Erledigt!";
+        document.getElementById('dora-bulk-author-text').value = '';
+        setTimeout(() => status.textContent = "", 3000);
+    });
+
+    document.getElementById('dora-bulk-keyword-btn').addEventListener('click', async (e) => {
+        e.preventDefault();
+        const text = document.getElementById('dora-bulk-keyword-text').value.trim();
+        const sep = document.getElementById('dora-bulk-keyword-sep').value;
+        if (!text) return;
+
+        const btn = document.getElementById('dora-bulk-keyword-btn');
+        const oldText = btn.textContent;
+        btn.textContent = "Verarbeite...";
+        btn.disabled = true;
+
+        await processBulkKeywords(text, sep);
+
+        btn.textContent = oldText;
+        btn.disabled = false;
+        const status = document.getElementById('dora-bulk-keyword-status');
+        status.textContent = "Erledigt!";
+        document.getElementById('dora-bulk-keyword-text').value = '';
+        setTimeout(() => status.textContent = "", 3000);
+    });
+}
+
+async function processBulkAuthors(text, separatorMode) {
+    let sep = separatorMode;
+    if (sep === 'auto') {
+        const counts = {
+            ';': (text.match(/;/g) || []).length,
+            '\\n': (text.match(/\n/g) || []).length,
+            'and': (text.match(/\s+and\s+|\s+&\s+/gi) || []).length,
+            ',': (text.match(/,/g) || []).length
+        };
+
+        // Prioritized detection: Semicolons and Newlines are stronger indicators of author separation than commas.
+        if (counts[';'] > 0) sep = ';';
+        else if (counts['\\n'] > 0) sep = '\\n';
+        else if (counts['and'] > 0) sep = 'and';
+        else if (counts[','] > 0) sep = ',';
+        else sep = ';';
+    }
+
+    let rawList = [];
+    if (sep === '\\n') {
+        rawList = text.split(/\n/);
+    } else if (sep === 'and') {
+        rawList = text.split(/\s+and\s+|\s+&\s+/i);
+    } else {
+        rawList = text.split(sep);
+    }
+
+    const parsedAuthors = [];
+    rawList.forEach(item => {
+        let clean = item.trim();
+        if (!clean) return;
+
+        // Remove trailing affiliation markers (e.g., "a 1", "b,c", "*", "†", superscripts)
+        // Matches trailing spaces/commas followed by single lowercase letters, digits, or common symbols
+        clean = clean.replace(/(?:[\s,]*\b(?:[a-z]|\d+)\b|[\s,]*[*†‡¹²³⁴⁵⁶⁷⁸⁹⁰ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖ]+)+$/, '').trim();
+
+        let family = '';
+        let given = '';
+
+        if (clean.includes(',')) {
+            const parts = clean.split(',');
+            family = parts.shift().trim();
+            given = parts.join(',').trim();
+        } else {
+            const parts = clean.split(/\s+/);
+            if (parts.length > 1) {
+                family = parts.pop();
+                given = parts.join(' ');
+            } else {
+                family = clean;
+            }
+        }
+        parsedAuthors.push({ family, given });
+    });
+
+    if (parsedAuthors.length === 0) return;
+
+    await addMissingRows('.form-item-authors', parsedAuthors.length);
+
+    const authorContainer = document.querySelector('.form-item-authors');
+    if (!authorContainer) return;
+
+    let authorPanes = authorContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
+    if (authorPanes.length === 0) authorPanes = authorContainer.querySelectorAll('table tbody tr:not(.tabledrag-hide)');
+
+    parsedAuthors.forEach((auth, idx) => {
+        if (authorPanes[idx]) {
+            const pane = authorPanes[idx];
+            const familyEl = pane.querySelector('input[name$="[family]"]');
+            const givenEl = pane.querySelector('input[name$="[given]"]');
+
+            if (familyEl) {
+                familyEl.value = auth.family;
+                familyEl.dispatchEvent(new Event('input', { bubbles: true }));
+                familyEl.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            if (givenEl) {
+                givenEl.value = auth.given;
+                givenEl.dispatchEvent(new Event('input', { bubbles: true }));
+                givenEl.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+
+            // Note: We intentionally skip triggering the .lib4ri-author-fill button 
+            // to avoid false-positive matches on the internal author object.
+        }
+    });
+}
+
+async function processBulkKeywords(text, separatorMode) {
+    let sep = separatorMode;
+    if (sep === 'auto') {
+        const counts = {
+            ',': (text.match(/,/g) || []).length,
+            ';': (text.match(/;/g) || []).length,
+            '\\n': (text.match(/\n/g) || []).length,
+            '-': (text.match(/-/g) || []).length
+        };
+        let maxCount = 0;
+        sep = ',';
+        for (const [key, count] of Object.entries(counts)) {
+            if (count > maxCount) {
+                maxCount = count;
+                sep = key;
+            }
+        }
+    }
+
+    let rawList = [];
+    if (sep === '\\n') {
+        rawList = text.split(/\n/);
+    } else {
+        rawList = text.split(sep);
+    }
+
+    const keywords = rawList.map(k => k.trim()).filter(k => k.length > 0);
+    if (keywords.length === 0) return;
+
+    // We use an async loop and re-fetch elements because Drupal AJAX replaces the DOM!
+    for (const kw of keywords) {
+        const container = findKeywordContainer();
+        if (!container) {
+            console.warn("Keyword-Feld konnte nicht gefunden werden.");
+            break;
+        }
+
+        const tagInput = container.querySelector('input[type="text"].form-text, input.tag-input');
+        const addBtn = container.querySelector('input[type="image"][src*="add.png"]');
+
+        if (tagInput && addBtn) {
+            tagInput.value = kw;
+            tagInput.dispatchEvent(new Event('input', { bubbles: true }));
+            tagInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+            await new Promise(r => setTimeout(r, 100));
+
+            // Trigger the Add button
+            addBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+
+            // Wait for the AJAX call to replace the DOM (tagInput will be detached)
+            let waitLimit = 40; // max 2000ms
+            while (waitLimit > 0 && document.body.contains(tagInput)) {
+                await new Promise(r => setTimeout(r, 50));
+                waitLimit--;
+            }
+
+            await new Promise(r => setTimeout(r, 200)); // Let the new DOM settle
+
+        } else if (tagInput) {
+            // Fallback for simple textareas or standard text inputs without an Add button
+            let current = tagInput.value.trim();
+            if (current && !current.endsWith(',')) current += ', ';
+            tagInput.value = current + kw;
+            tagInput.dispatchEvent(new Event('input', { bubbles: true }));
+            tagInput.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+            const textarea = container.querySelector('textarea');
+            if (textarea) {
+                let current = textarea.value.trim();
+                if (current && !current.endsWith(',')) current += ', ';
+                textarea.value = current + kw;
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                textarea.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        }
+    }
+}
+
 function injectDoraAutocompletes() {
     const fields = [
         { id: 'edit-confinfo-confname', solrField: 'mods_name_conference_ms' },
@@ -2024,7 +2397,7 @@ function validateAuthorRows(errors, pubYear) {
         if (panes.length === 0) {
             panes = authorsContainer.querySelectorAll('table tbody tr:not(.tabledrag-hide)');
         }
-        
+
         panes.forEach((pane, idx) => {
             const nameInput = pane.querySelector('input[type="text"][name$="[valName]"]');
 
@@ -2853,4 +3226,860 @@ function isEditPage() {
     if (loc.includes('/ingest') || loc.includes('/edit') || loc.includes('/manage')) return true;
 
     return false;
+}
+
+// --- BATCH QC DASHBOARD ---
+
+function isSearchPage() {
+    const loc = window.location.href.toLowerCase();
+    const path = window.location.pathname.toLowerCase();
+    return loc.includes('/islandora/search') || loc.includes('/solr/search') || path.includes('/search');
+}
+
+function injectBatchQcButton() {
+    try {
+        // Collect all visible PIDs on the page safely (with try-catch for URI components)
+        const getPagePids = () => {
+            const pids = new Set();
+            document.querySelectorAll('a[href*="/islandora/object/"]').forEach(a => {
+                try {
+                    const hrefAttr = a.getAttribute('href');
+                    if (!hrefAttr) return;
+                    const href = decodeURIComponent(hrefAttr);
+                    const match = href.match(/islandora\/object\/([a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+)/);
+                    if (match) {
+                        pids.add(match[1]);
+                    }
+                } catch (err) {
+                    // Fallback to raw non-decoded match if decoding fails
+                    const hrefAttr = a.getAttribute('href');
+                    if (hrefAttr) {
+                        const match = hrefAttr.match(/islandora\/object\/([a-zA-Z0-9_%-]+:[a-zA-Z0-9_%-]+)/);
+                        if (match) {
+                            try {
+                                pids.add(decodeURIComponent(match[1]));
+                            } catch (e) {
+                                pids.add(match[1].replace(/%3A/gi, ':'));
+                            }
+                        }
+                    }
+                }
+            });
+            return Array.from(pids);
+        };
+
+        const allPids = getPagePids();
+        const bookmarkTable = document.querySelector('table.islandora-bookmark-solr-results');
+
+        // Check if button already exists
+        let btn = document.getElementById('dora-batch-qc-btn');
+        if (btn) {
+            // Update counts for existing button
+            if (bookmarkTable) {
+                const checked = document.querySelectorAll('input.islandora-bookmark-solr-results:checked');
+                btn.textContent = `Batch QC Dashboard (${checked.length} selected)`;
+                btn.disabled = checked.length === 0;
+                btn.style.opacity = checked.length === 0 ? '0.5' : '1';
+                if (checked.length === 0) {
+                    btn.style.background = '#94a3b8';
+                    btn.style.borderColor = '#cbd5e1';
+                    btn.style.boxShadow = 'none';
+                } else {
+                    btn.style.background = '#22c55e';
+                    btn.style.borderColor = '#16a34a';
+                    btn.style.boxShadow = '0 2px 4px rgba(34, 197, 94, 0.2)';
+                }
+            } else {
+                btn.textContent = `Batch QC visible results (${allPids.length} items)`;
+                btn.disabled = allPids.length === 0;
+                btn.style.opacity = allPids.length === 0 ? '0.5' : '1';
+                if (allPids.length === 0) {
+                    btn.style.background = '#94a3b8';
+                    btn.style.borderColor = '#cbd5e1';
+                    btn.style.boxShadow = 'none';
+                } else {
+                    btn.style.background = '#22c55e';
+                    btn.style.borderColor = '#16a34a';
+                    btn.style.boxShadow = '0 2px 4px rgba(34, 197, 94, 0.2)';
+                }
+            }
+            return; // Done updating existing button!
+        }
+
+        // Find insertion container
+        const targetElement = document.querySelector('table.islandora-bookmark-solr-results') ||
+            document.querySelector('div.islandora-solr-search-results') ||
+            document.querySelector('.islandora-solr-search') ||
+            document.querySelector('.block-islandora-solr') ||
+            document.querySelector('div.islandora');
+
+        const fallbackElement = document.querySelector('#content') ||
+            document.querySelector('.region-content') ||
+            document.querySelector('#main');
+
+        if (!targetElement && !fallbackElement) return;
+
+        const container = document.createElement('div');
+        container.style.cssText = 'margin: 15px 0; display: flex; align-items: center; justify-content: flex-end; gap: 10px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;';
+
+        btn = document.createElement('button');
+        btn.id = 'dora-batch-qc-btn';
+        btn.className = 'form-submit';
+        btn.style.cssText = 'background-color: #22c55e; color: #fff; border: 1px solid #16a34a; padding: 8px 18px; font-size: 13px; font-weight: bold; border-radius: 6px; cursor: pointer; box-shadow: 0 2px 4px rgba(34, 197, 94, 0.2); transition: all 0.15s ease-in-out;';
+
+        const updateCount = () => {
+            const currentPids = getPagePids();
+            if (bookmarkTable) {
+                const checked = document.querySelectorAll('input.islandora-bookmark-solr-results:checked');
+                btn.textContent = `Batch QC Dashboard (${checked.length} selected)`;
+                btn.disabled = checked.length === 0;
+                btn.style.opacity = checked.length === 0 ? '0.5' : '1';
+                if (checked.length === 0) {
+                    btn.style.background = '#94a3b8';
+                    btn.style.borderColor = '#cbd5e1';
+                    btn.style.boxShadow = 'none';
+                } else {
+                    btn.style.background = '#22c55e';
+                    btn.style.borderColor = '#16a34a';
+                    btn.style.boxShadow = '0 2px 4px rgba(34, 197, 94, 0.2)';
+                }
+            } else {
+                btn.textContent = `Batch QC visible results (${currentPids.length} items)`;
+                btn.disabled = currentPids.length === 0;
+                btn.style.opacity = currentPids.length === 0 ? '0.5' : '1';
+                if (currentPids.length === 0) {
+                    btn.style.background = '#94a3b8';
+                    btn.style.borderColor = '#cbd5e1';
+                    btn.style.boxShadow = 'none';
+                } else {
+                    btn.style.background = '#22c55e';
+                    btn.style.borderColor = '#16a34a';
+                    btn.style.boxShadow = '0 2px 4px rgba(34, 197, 94, 0.2)';
+                }
+            }
+        };
+
+        // Hover animations
+        btn.onmouseenter = () => {
+            if (!btn.disabled) btn.style.background = '#16a34a';
+        };
+        btn.onmouseleave = () => {
+            if (!btn.disabled) btn.style.background = '#22c55e';
+        };
+
+        // Attach listener if bookmark table is present
+        if (bookmarkTable) {
+            bookmarkTable.addEventListener('change', (e) => {
+                if (e.target.classList.contains('islandora-bookmark-solr-results') || e.target.closest('.select-all')) {
+                    updateCount();
+                }
+            });
+        }
+
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (bookmarkTable) {
+                const checked = document.querySelectorAll('input.islandora-bookmark-solr-results:checked');
+                const pids = Array.from(checked).map(cb => cb.value);
+                if (pids.length > 0) {
+                    initBatchQcDashboard(pids);
+                }
+            } else {
+                const currentPids = getPagePids();
+                if (currentPids.length > 0) {
+                    initBatchQcDashboard(currentPids);
+                }
+            }
+        });
+
+        updateCount();
+        container.appendChild(btn);
+        if (targetElement && targetElement.parentNode) {
+            targetElement.parentNode.insertBefore(container, targetElement);
+        } else if (fallbackElement) {
+            fallbackElement.prepend(container);
+        }
+    } catch (e) {
+        console.error("DORA Helper: Error injecting Batch QC button:", e);
+    }
+}
+
+function initBatchQcDashboard(pids) {
+    if (document.getElementById('dora-batch-qc-overlay')) return;
+
+    const getInstitutionPath = () => {
+        const path = window.location.pathname;
+        const segments = path.split('/').filter(s => s.length > 0);
+        if (segments.length > 0 && ['psi', 'eawag', 'empa', 'wsl'].includes(segments[0].toLowerCase())) {
+            return segments[0].toLowerCase();
+        }
+        return 'psi';
+    };
+
+    const overlay = document.createElement('div');
+    overlay.id = 'dora-batch-qc-overlay';
+    overlay.style.cssText = `
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        background: #f8fafc; z-index: 100000;
+        display: flex; flex-direction: column;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    `;
+
+    // Header
+    const header = document.createElement('div');
+    header.style.cssText = 'padding: 12px 20px; background: #0f172a; color: #fff; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06); z-index: 10;';
+
+    const title = document.createElement('h2');
+    title.textContent = 'DORA Batch QC Dashboard';
+    title.style.cssText = 'margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0.5px;';
+    header.appendChild(title);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = 'Schließen';
+    closeBtn.style.cssText = 'background: #ef4444; color: white; border: none; padding: 6px 16px; border-radius: 6px; font-weight: bold; cursor: pointer; transition: background 0.15s; font-size: 13px;';
+    closeBtn.onmouseenter = () => closeBtn.style.background = '#dc2626';
+    closeBtn.onmouseleave = () => closeBtn.style.background = '#ef4444';
+    closeBtn.onclick = () => overlay.remove();
+    header.appendChild(closeBtn);
+
+    overlay.appendChild(header);
+
+    // Body Grid
+    const body = document.createElement('div');
+    body.style.cssText = 'display: flex; flex: 1; overflow: hidden;';
+
+    // Sidebar
+    const sidebar = document.createElement('div');
+    sidebar.style.cssText = 'width: 100px; background: #f1f5f9; border-right: 1px solid #e2e8f0; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 6px; font-size: 11px;';
+
+    // Middle (Form)
+    const middle = document.createElement('div');
+    middle.style.cssText = 'flex: 2.8; border-right: 1px solid #e2e8f0; display: flex; flex-direction: column; background: #fff; position: relative;';
+
+    const middleToolbar = document.createElement('div');
+    middleToolbar.style.cssText = 'padding: 10px 16px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center;';
+
+    const approveBtn = document.createElement('button');
+    approveBtn.textContent = '✅ Schnell-Freigabe (QC = Yes)';
+    approveBtn.style.cssText = 'background: #22c55e; color: white; border: none; padding: 8px 18px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 13px; box-shadow: 0 2px 4px rgba(34, 197, 94, 0.2); transition: background 0.15s;';
+    approveBtn.onmouseenter = () => approveBtn.style.background = '#16a34a';
+    approveBtn.onmouseleave = () => approveBtn.style.background = '#22c55e';
+    approveBtn.onclick = () => approveCurrentForm();
+    middleToolbar.appendChild(approveBtn);
+
+    // Fetch actual initials for approveBtn label dynamically
+    chrome.storage.local.get({ qcInitials: '' }, function (result) {
+        const initials = result.qcInitials.trim();
+        if (initials) {
+            approveBtn.textContent = `✅ Schnell-Freigabe (QC = Yes, User = ${initials})`;
+        }
+    });
+
+    const reloadBtn = document.createElement('button');
+    reloadBtn.textContent = '↻ Neu laden';
+    reloadBtn.style.cssText = 'background: #64748b; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; transition: background 0.15s;';
+    reloadBtn.onmouseenter = () => reloadBtn.style.background = '#475569';
+    reloadBtn.onmouseleave = () => reloadBtn.style.background = '#64748b';
+    reloadBtn.onclick = () => { if (currentPid) loadRecord(currentPid); };
+    middleToolbar.appendChild(reloadBtn);
+
+    const middleIframe = document.createElement('iframe');
+    middleIframe.style.cssText = 'flex: 1; border: none; width: 100%;';
+
+    middle.appendChild(middleToolbar);
+    middle.appendChild(middleIframe);
+
+    // Right (PDF)
+    const right = document.createElement('div');
+    right.style.cssText = 'flex: 1.2; display: flex; flex-direction: column; background: #f8fafc; border-left: 1px solid #e2e8f0;';
+
+    const rightIframe = document.createElement('iframe');
+    rightIframe.style.cssText = 'flex: 1; border: none; width: 100%;';
+    right.appendChild(rightIframe);
+
+    body.appendChild(sidebar);
+    body.appendChild(middle);
+    body.appendChild(right);
+    overlay.appendChild(body);
+
+    let currentPid = null;
+
+    // Load PIDs into sidebar
+    pids.forEach((pid, idx) => {
+        const item = document.createElement('div');
+        item.style.cssText = 'padding: 10px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; cursor: pointer; user-select: none; transition: all 0.15s ease-in-out; word-break: break-all; font-weight: 500; color: #475569; box-shadow: 0 1px 2px rgba(0,0,0,0.02);';
+        item.innerHTML = `<strong>${pid}</strong>`;
+        item.id = `batch-qc-item-${pid.replace(':', '-')}`;
+
+        item.onmouseenter = () => { if (currentPid !== pid) { item.style.background = '#f1f5f9'; item.style.color = '#0f172a'; } };
+        item.onmouseleave = () => { if (currentPid !== pid) { item.style.background = '#ffffff'; item.style.color = '#475569'; } };
+
+        item.onclick = () => {
+            // Unhighlight all
+            Array.from(sidebar.children).forEach(child => {
+                child.style.background = '#ffffff';
+                child.style.borderLeft = '1px solid #e2e8f0';
+                child.style.color = '#475569';
+                child.style.boxShadow = '0 1px 2px rgba(0,0,0,0.02)';
+            });
+            // Highlight current
+            item.style.background = '#eff6ff';
+            item.style.borderLeft = '4px solid #3b82f6';
+            item.style.color = '#1e3a8a';
+            item.style.boxShadow = '0 2px 4px rgba(59, 130, 246, 0.05)';
+            currentPid = pid;
+            loadRecord(pid);
+        };
+        sidebar.appendChild(item);
+    });
+
+    document.body.appendChild(overlay);
+
+    // Automatically load first
+    if (pids.length > 0) {
+        sidebar.children[0].click();
+    }
+
+    function loadRecord(pid) {
+        const inst = getInstitutionPath();
+        // PDF Iframe
+        rightIframe.src = `/${inst}/islandora/object/${pid}/datastream/PDF/view`;
+
+        // Inject script into iframe to hide header/footer (Bound BEFORE setting src to avoid race conditions!)
+        middleIframe.onload = () => {
+            try {
+                const doc = middleIframe.contentDocument || middleIframe.contentWindow.document;
+                if (!doc) return;
+
+                // Hide Drupal header/footer to save space
+                const header = doc.getElementById('header');
+                const footer = doc.getElementById('footer');
+                const tabs = doc.querySelector('ul.tabs');
+                const toolbar = doc.getElementById('toolbar');
+                const branding = doc.getElementById('branding');
+                const pageTitle = doc.getElementById('page-title');
+                if (header) header.style.display = 'none';
+                if (footer) footer.style.display = 'none';
+                if (tabs) tabs.style.display = 'none';
+                if (toolbar) toolbar.style.display = 'none';
+                if (branding) branding.style.display = 'none';
+                if (pageTitle) pageTitle.style.display = 'none';
+
+                // Hide sidebars, navigation, breadcrumbs
+                const sidebarFirst = doc.getElementById('sidebar-first') || doc.querySelector('.sidebar') || doc.querySelector('.region-sidebar-first');
+                const sidebarSecond = doc.getElementById('sidebar-second') || doc.querySelector('.region-sidebar-second');
+                const navigation = doc.getElementById('navigation') || doc.getElementById('nav');
+                const breadcrumb = doc.getElementById('breadcrumb') || doc.querySelector('.breadcrumb');
+                if (sidebarFirst) sidebarFirst.style.display = 'none';
+                if (sidebarSecond) sidebarSecond.style.display = 'none';
+                if (navigation) navigation.style.display = 'none';
+                if (breadcrumb) breadcrumb.style.display = 'none';
+
+                // Inject Compact & Modernized CSS
+                const style = doc.createElement('style');
+                style.textContent = `
+                    /* Kompakte, moderne Darstellung des Formulars */
+                    body { 
+                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important; 
+                        background-color: #f8fafc !important; 
+                        color: #1e293b !important;
+                        padding: 12px !important;
+                    }
+                    body, label, input, select, textarea { font-size: 12px !important; line-height: 1.4 !important; }
+                    
+                    .form-item { margin: 8px 0 !important; padding: 0 !important; display: block !important; }
+                    
+                    .form-item label { 
+                        display: block !important; 
+                        margin: 0 0 3px 0 !important; 
+                        font-weight: 600 !important; 
+                        font-size: 11px !important; 
+                        color: #475569 !important; 
+                        text-transform: uppercase !important;
+                        letter-spacing: 0.3px !important;
+                    }
+                    
+                    input[type="text"], select, textarea { 
+                        width: 100% !important; 
+                        max-width: 100% !important; 
+                        padding: 6px 10px !important; 
+                        margin: 0 !important; 
+                        box-sizing: border-box !important; 
+                        border: 1px solid #cbd5e1 !important;
+                        border-radius: 6px !important;
+                        background-color: #ffffff !important;
+                        color: #0f172a !important;
+                        transition: all 0.15s ease-in-out !important;
+                    }
+                    
+                    input[type="text"]:focus, select:focus, textarea:focus {
+                        border-color: #3b82f6 !important;
+                        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15) !important;
+                        outline: none !important;
+                    }
+                    
+                    textarea { min-height: 50px !important; resize: vertical !important; }
+                    
+                    fieldset { 
+                        margin: 12px 0 !important; 
+                        padding: 12px !important; 
+                        border: 1px solid #e2e8f0 !important; 
+                        border-radius: 8px !important;
+                        background: #ffffff !important; 
+                        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02) !important;
+                    }
+                    
+                    legend { 
+                        font-weight: 700 !important; 
+                        font-size: 11px !important; 
+                        text-transform: uppercase !important;
+                        letter-spacing: 0.3px !important;
+                        margin: 0 !important; 
+                        padding: 3px 8px !important; 
+                        background: #f1f5f9 !important; 
+                        color: #475569 !important;
+                        border: 1px solid #cbd5e1 !important; 
+                        border-radius: 4px !important; 
+                    }
+                    
+                    .fieldset-wrapper { margin-top: 2px !important; }
+                    
+                    /* Hilfstexte konsequenter ausblenden */
+                    .description, .help-block, div.description, p.help, .form-item .description, .form-desc, div[class*="description"] { display: none !important; }
+                    
+                    .islandora-xml-form-builder-form { margin-top: 0 !important; }
+                    
+                    /* Generelle Tabellen-Anpassung */
+                    table { width: 100% !important; border-collapse: collapse !important; margin: 8px 0 !important; }
+                    table, tr, td { padding: 4px !important; margin: 0 !important; }
+                    
+                    /* Breitenkontrolle für die verschachtelten Tabellen (Autoren, Affiliationen) */
+                    fieldset { overflow-x: auto !important; }
+                    table td input[type="text"], table td select { max-width: 250px !important; }
+                    
+                    /* Ultra-Kompression für die Autorenliste */
+                    .dora-authors-fieldset table {
+                        margin: 2px 0 !important;
+                    }
+                    .dora-authors-fieldset table td {
+                        padding: 2px 4px !important;
+                        vertical-align: middle !important;
+                    }
+                    .dora-authors-fieldset .form-item {
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+                    .dora-authors-fieldset input[type="text"], 
+                    .dora-authors-fieldset select {
+                        padding: 3px 6px !important;
+                        height: 24px !important;
+                        font-size: 11px !important;
+                    }
+                    .dora-authors-fieldset input[type="image"], 
+                    .dora-authors-fieldset input[type="submit"] {
+                        padding: 2px !important;
+                        margin: 0 !important;
+                        height: 20px !important;
+                        width: auto !important;
+                    }
+                    
+                    .messages { padding: 8px !important; margin: 8px 0 !important; border-radius: 6px !important; }
+                    
+                    /* Hide Drupal Theme Sidebars, Navigation, Breadcrumbs */
+                    #sidebar-first, #sidebar-second, .region-sidebar-first, .region-sidebar-second, 
+                    #navigation, #nav, .sidebar, #breadcrumb, .breadcrumb, #admin-menu, #page-title {
+                        display: none !important;
+                        width: 0 !important;
+                    }
+                    
+                    /* Force Main Content to 100% Width */
+                    #main, #content, #main-wrapper, #content-wrapper, .main-content, .content, #center, #main-content {
+                        width: 100% !important;
+                        max-width: 100% !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                        float: none !important;
+                    }
+                    
+                    /* Hilfsklasse zum erzwungenen Ausblenden (überschreibt display: block !important) */
+                    .dora-hidden { display: none !important; }
+                    
+                    /* Neue QC-Highlight-Box am Formularanfang */
+                    .dora-qc-highlight-box {
+                        background: #f0fdf4 !important;
+                        border: 1px solid #bbf7d0 !important;
+                        border-left: 5px solid #22c55e !important;
+                        border-radius: 8px !important;
+                        padding: 12px !important;
+                        margin-bottom: 16px !important;
+                        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
+                    }
+                    
+                    .dora-qc-highlight-box h3 {
+                        margin: 0 0 8px 0 !important;
+                        font-size: 13px !important;
+                        color: #15803d !important;
+                        display: flex !important;
+                        align-items: center !important;
+                        gap: 6px !important;
+                        text-transform: uppercase !important;
+                        letter-spacing: 0.5px !important;
+                    }
+                `;
+                doc.head.appendChild(style);
+
+                // Spezifische Felder anhand ihrer Beschriftung & Element-Attribute ausblenden (Dual-Strategie für maximale Zuverlässigkeit)
+                const hideSpecificFields = () => {
+                    // Strategie 1: Text-basierte Übereinstimmung für Labels, Legenden und Tabellenköpfe
+                    const textTargets = [
+                        "corresponding author's e-mail",
+                        "corresponding author e-mail",
+                        "department descriptor",
+                        "duo group info",
+                        "duo laboratory info",
+                        "duo division info"
+                    ];
+
+                    const matchesText = (text) => {
+                        const cleanText = text.toLowerCase().trim().replace(/\s+/g, ' ');
+                        return textTargets.some(t => cleanText === t || cleanText.startsWith(t) || cleanText.endsWith(t) || (cleanText.includes(t) && cleanText.length < 50));
+                    };
+
+                    // Strategie 2: Attribut-basierte Übereinstimmung (id, name, class) für Inputs/Textareas
+                    const attributeTargets = [
+                        "notes_group", "notes-group", "notes_lab", "notes-lab", "notes_div", "notes-div",
+                        "dept_descriptor", "dept-descriptor",
+                        "department_descriptor", "department-descriptor",
+                        "corresponding_author_email", "corresponding-author-email", "corresponding_email", "corresponding-email"
+                    ];
+
+                    const matchesAttribute = (attr) => {
+                        if (!attr) return false;
+                        const cleanAttr = attr.toLowerCase();
+                        return attributeTargets.some(t => cleanAttr.includes(t));
+                    };
+
+                    // A: Zuerst alle Formularfelder (input, textarea, select) nach ID/Name/Klasse durchsuchen
+                    doc.querySelectorAll('input, textarea, select').forEach(el => {
+                        if (matchesAttribute(el.id) || matchesAttribute(el.name) || matchesAttribute(el.className)) {
+                            // Wrapper des Formularfelds ausblenden
+                            const wrapper = el.closest('.form-item') || el.closest('.form-wrapper') || el.closest('td') || el.parentElement;
+                            if (wrapper && !wrapper.classList.contains('dora-hidden')) {
+                                wrapper.classList.add('dora-hidden');
+                            }
+                            // Dazugehörige Labels ebenfalls ausblenden (über das 'for'-Attribut)
+                            if (el.id) {
+                                doc.querySelectorAll(`label[for="${el.id}"]`).forEach(lbl => {
+                                    lbl.classList.add('dora-hidden');
+                                    const lblWrapper = lbl.closest('.form-item') || lbl.closest('.form-wrapper') || lbl.parentElement;
+                                    if (lblWrapper && !lblWrapper.classList.contains('dora-hidden')) {
+                                        lblWrapper.classList.add('dora-hidden');
+                                    }
+                                });
+                            }
+                        }
+                    });
+
+                    // B: Alle Labels nach Textinhalt oder 'for'-Attribut durchsuchen
+                    doc.querySelectorAll('label').forEach(label => {
+                        if (matchesText(label.textContent) || matchesAttribute(label.getAttribute('for'))) {
+                            const wrapper = label.closest('.form-item') || label.closest('.form-wrapper') || label.closest('td') || label.parentElement;
+                            if (wrapper && !wrapper.classList.contains('dora-hidden')) {
+                                wrapper.classList.add('dora-hidden');
+                            }
+                        }
+                    });
+
+                    // C: Alle Fieldset-Legenden nach Textinhalt durchsuchen
+                    doc.querySelectorAll('legend, .fieldset-legend').forEach(legend => {
+                        if (matchesText(legend.textContent)) {
+                            const fieldset = legend.closest('fieldset') || legend.closest('.form-wrapper');
+                            if (fieldset && !fieldset.classList.contains('dora-hidden')) {
+                                fieldset.classList.add('dora-hidden');
+                            }
+                        }
+                    });
+
+                    // D: Tabellenköpfe nach Textinhalt durchsuchen (für ganze Spalten wie in Autorentabellen)
+                    doc.querySelectorAll('th').forEach(th => {
+                        if (matchesText(th.textContent)) {
+                            const index = Array.from(th.parentElement.children).indexOf(th);
+                            const table = th.closest('table');
+                            if (table && index !== -1) {
+                                th.classList.add('dora-hidden');
+                                table.querySelectorAll(`tr`).forEach(tr => {
+                                    const cells = tr.children;
+                                    if (cells[index]) {
+                                        cells[index].classList.add('dora-hidden');
+                                    }
+                                });
+                            }
+                        }
+                    });
+
+                    // E: Hilfstexte und Beschreibungen extrem aggressiv ausblenden
+                    doc.querySelectorAll('.description, .help-block, div.description, p.help, .form-desc, .fieldset-description, [class*="description"]').forEach(el => {
+                        el.style.display = 'none';
+                        el.classList.add('dora-hidden');
+                    });
+
+                    // F: Formular restrukturieren (QC-Felder an den Anfang)
+                    restructureFormForQc();
+                };
+
+                // Formular umsortieren und wichtigste Felder hervorheben
+                const restructureFormForQc = () => {
+                    const form = doc.getElementById('islandora-xml-form-builder-form') || doc.querySelector('form');
+                    if (!form) return;
+
+                    // Mehrfache Ausführung verhindern
+                    if (form.getAttribute('data-dora-restructured') === 'true') return;
+                    form.setAttribute('data-dora-restructured', 'true');
+
+                    let qcFieldWrapper = null;
+                    let initialsFieldWrapper = null;
+
+                    doc.querySelectorAll('label').forEach(label => {
+                        const text = label.textContent.toLowerCase();
+                        if (text.includes('quality control') && !text.includes('id') && !text.includes('by') && !text.includes('kürzel')) {
+                            qcFieldWrapper = label.closest('.form-item') || label.parentElement;
+                        }
+                        if (text.includes('quality control id') || text.includes('kürzel') || text.includes('reviewer') || text.includes('user') || text.includes('quality control by') || text.includes('qc id')) {
+                            initialsFieldWrapper = label.closest('.form-item') || label.parentElement;
+                        }
+                    });
+
+                    let qcCard = null;
+                    if (qcFieldWrapper || initialsFieldWrapper) {
+                        qcCard = doc.createElement('div');
+                        qcCard.id = 'dora-qc-header-card';
+                        qcCard.className = 'dora-qc-highlight-box';
+
+                        const qcH3 = doc.createElement('h3');
+                        qcH3.innerHTML = '⚡ QC Status &amp; Freigabe (Quality Control)';
+                        qcCard.appendChild(qcH3);
+
+                        const fieldsContainer = doc.createElement('div');
+                        fieldsContainer.style.cssText = 'display: flex; gap: 15px;';
+                        qcCard.appendChild(fieldsContainer);
+
+                        if (qcFieldWrapper) {
+                            qcFieldWrapper.style.cssText = 'flex: 1; margin: 0 !important;';
+                            fieldsContainer.appendChild(qcFieldWrapper);
+                        }
+                        if (initialsFieldWrapper) {
+                            initialsFieldWrapper.style.cssText = 'flex: 1; margin: 0 !important;';
+                            fieldsContainer.appendChild(initialsFieldWrapper);
+                        }
+
+                        // An den absoluten Anfang des Formulars setzen
+                        form.insertBefore(qcCard, form.firstChild);
+                    }
+
+                    // Wichtige Abschnitte suchen
+                    let doiFieldset = null;
+                    let titleFieldset = null;
+                    let authorFieldset = null;
+
+                    doc.querySelectorAll('legend, .fieldset-legend').forEach(legend => {
+                        const text = legend.textContent.toLowerCase();
+                        if (text.includes('identifier') || text.includes('identifikator') || text.includes('doi')) {
+                            doiFieldset = legend.closest('fieldset') || legend.closest('.form-wrapper');
+                        } else if (text.includes('title') || text.includes('titel')) {
+                            titleFieldset = legend.closest('fieldset') || legend.closest('.form-wrapper');
+                        } else if (text.includes('author') || text.includes('autoren')) {
+                            authorFieldset = legend.closest('fieldset') || legend.closest('.form-wrapper');
+                        }
+                    });
+
+                    // Physisches Umsortieren nach der QC Card
+                    const next = qcCard ? qcCard.nextSibling : form.firstChild;
+
+                    if (doiFieldset) {
+                        form.insertBefore(doiFieldset, next);
+                        doiFieldset.style.borderLeft = '4px solid #3b82f6';
+                        doiFieldset.style.paddingLeft = '12px';
+                    }
+                    if (titleFieldset) {
+                        form.insertBefore(titleFieldset, doiFieldset ? doiFieldset.nextSibling : next);
+                        titleFieldset.style.borderLeft = '4px solid #3b82f6';
+                        titleFieldset.style.paddingLeft = '12px';
+                    }
+                    if (authorFieldset) {
+                        form.insertBefore(authorFieldset, titleFieldset ? titleFieldset.nextSibling : (doiFieldset ? doiFieldset.nextSibling : next));
+                        authorFieldset.style.borderLeft = '4px solid #3b82f6';
+                        authorFieldset.style.paddingLeft = '12px';
+                        authorFieldset.classList.add('dora-authors-fieldset');
+                    }
+
+                    // Highlight specific QC-critical micro-fields (Corresponding Author, Start Page, Peer Review, Publication Status)
+                    const highlightField = (el, isFieldset = false) => {
+                        if (!el) return;
+                        el.style.borderLeft = '3px solid #f59e0b'; // Amber Accent
+                        el.style.background = '#fffbeb';          // Soft warm amber background
+                        el.style.padding = isFieldset ? '10px 15px' : '6px 12px';
+                        el.style.margin = isFieldset ? '12px 0 !important' : '8px 0 !important';
+                        el.style.borderRadius = '0 6px 6px 0';
+                        el.style.boxShadow = '0 1px 2px rgba(245, 158, 11, 0.05)';
+                    };
+
+                    doc.querySelectorAll('label').forEach(label => {
+                        const text = label.textContent.toLowerCase();
+                        const isCorrespondingAuthor = text.includes('corresponding') && (text.includes('author') || text.includes('autor'));
+                        const isStartPage = (text.includes('start') || text.includes('anfangs') || text.includes('erste')) && (text.includes('page') || text.includes('seite')) && !text.includes('range');
+                        const isPeerReview = text.includes('peer') && (text.includes('review') || text.includes('reviewed') || text.includes('begutachtet'));
+                        const isPubStatus = (text.includes('publication') || text.includes('publikation') || text.includes('publishing')) && text.includes('status');
+
+                        if (isCorrespondingAuthor || isStartPage || isPeerReview || isPubStatus) {
+                            const item = label.closest('.form-item') || label.parentElement;
+                            if (item) highlightField(item, false);
+                        }
+                    });
+
+                    doc.querySelectorAll('legend, .fieldset-legend').forEach(legend => {
+                        const text = legend.textContent.toLowerCase();
+                        const isCorrespondingAuthor = text.includes('corresponding') && (text.includes('author') || text.includes('autor'));
+                        const isStartPage = (text.includes('start') || text.includes('anfangs') || text.includes('erste')) && (text.includes('page') || text.includes('seite')) && !text.includes('range');
+                        const isPeerReview = text.includes('peer') && (text.includes('review') || text.includes('reviewed') || text.includes('begutachtet'));
+                        const isPubStatus = (text.includes('publication') || text.includes('publikation') || text.includes('publishing')) && text.includes('status');
+
+                        if (isCorrespondingAuthor || isStartPage || isPeerReview || isPubStatus) {
+                            const fieldset = legend.closest('fieldset') || legend.closest('.form-wrapper');
+                            if (fieldset) highlightField(fieldset, true);
+                        }
+                    });
+
+                    // Speichern-Button stylen
+                    const submitBtn = doc.getElementById('edit-submit') || doc.querySelector('input[type="submit"][value="Save"]') || doc.querySelector('input[type="submit"][value="Speichern"]');
+                    if (submitBtn) {
+                        submitBtn.style.cssText = 'background: #22c55e !important; color: white !important; border: 1px solid #16a34a !important; padding: 10px 20px !important; border-radius: 6px !important; font-weight: bold !important; font-size: 13px !important; cursor: pointer !important; margin-top: 15px !important; width: 100% !important; transition: background 0.15s !important;';
+                    }
+                };
+
+                // Sofort ausführen und danach periodisch für 15 Sekunden (um AJAX-Nachladen abzufangen)
+                hideSpecificFields();
+                const hideInterval = setInterval(hideSpecificFields, 500);
+                setTimeout(() => clearInterval(hideInterval), 15000);
+
+                // We add a listener to the form inside the iframe to catch successful submits
+                const form = doc.getElementById('islandora-ingest-form') || doc.querySelector('.node-form') || doc.getElementById('islandora-xml-form-builder-form');
+                if (form) {
+                    form.addEventListener('submit', () => {
+                        // Optimistically mark as done
+                        const item = document.getElementById(`batch-qc-item-${currentPid.replace(':', '-')}`);
+                        if (item && !item.innerHTML.includes('✅')) {
+                            item.innerHTML = `✅ <strong>${currentPid}</strong>`;
+                        }
+                    });
+                }
+
+            } catch (e) {
+                console.log("Iframe cross-origin restriction or not ready:", e);
+            }
+        };
+        // Form Iframe src set AFTER onload to ensure event triggers reliably!
+        middleIframe.src = `/${inst}/islandora/object/${pid}/lib4ridora_edit_mods`;
+    }
+
+    function approveCurrentForm() {
+        if (!currentPid) return;
+
+        chrome.storage.local.get({ qcInitials: '' }, function (result) {
+            const initials = result.qcInitials.trim();
+            if (!initials) {
+                alert("Bitte legen Sie zuerst Ihr Kürzel für die Qualitätskontrolle in den DORA Helper Einstellungen fest!");
+                return;
+            }
+
+            try {
+                const doc = middleIframe.contentDocument;
+                if (!doc) {
+                    alert("Kann nicht auf das Formular zugreifen. Möglicherweise noch nicht geladen.");
+                    return;
+                }
+
+                let qcField = null;
+                let initialsField = null;
+
+                // 1. Suche nach Labels
+                const labels = doc.querySelectorAll('label');
+                labels.forEach(l => {
+                    const text = l.textContent.toLowerCase();
+
+                    // Quality Control Feld finden (Dropdown bevorzugt)
+                    if (text.includes('quality control') && !text.includes('id') && !text.includes('by') && !text.includes('kürzel')) {
+                        const inputId = l.getAttribute('for');
+                        if (inputId) {
+                            const el = doc.getElementById(inputId);
+                            if (el && el.tagName === 'SELECT') {
+                                qcField = el;
+                            } else if (!qcField && el) {
+                                qcField = el;
+                            }
+                        }
+                    }
+
+                    // Kürzel / User Feld finden (Quality Control ID Textfeld)
+                    if (text.includes('quality control id') || text.includes('kürzel') || text.includes('reviewer') || text.includes('user') || text.includes('quality control by') || text.includes('qc id')) {
+                        const inputId = l.getAttribute('for');
+                        if (inputId) initialsField = doc.getElementById(inputId);
+                    }
+                });
+
+                // Fallbacks für Quality Control (bevorzuge Dropdown!)
+                if (!qcField) {
+                    const select = doc.querySelector('select[name*="quality_control"]') || doc.querySelector('select[id*="quality_control"]');
+                    if (select) qcField = select;
+                }
+
+                if (qcField) {
+                    qcField.value = 'Yes';
+                    qcField.dispatchEvent(new Event('change', { bubbles: true }));
+                    qcField.dispatchEvent(new Event('input', { bubbles: true }));
+                    qcField.style.backgroundColor = '#d4edda'; // Highlight
+                } else {
+                    console.warn("DORA Helper: Quality Control dropdown not found automatically.");
+                }
+
+                // Fallbacks für Kürzel
+                if (!initialsField) {
+                    // Das Textfeld für ID / Reviewer
+                    initialsField = doc.querySelector('input[type="text"][name*="quality_control"]') || doc.querySelector('input[name*="reviewer"]') || doc.querySelector('input[name*="kuerzel"]') || doc.querySelector('input[name*="qc_id"]');
+                }
+
+                if (initialsField) {
+                    let currentVal = initialsField.value || '';
+                    if (currentVal && !currentVal.includes(initials)) {
+                        // Append if not already there
+                        initialsField.value = currentVal.trim() + ' ' + initials;
+                    } else if (!currentVal) {
+                        initialsField.value = initials;
+                    }
+                    initialsField.dispatchEvent(new Event('input', { bubbles: true }));
+                    initialsField.style.backgroundColor = '#d4edda';
+                } else {
+                    console.warn("DORA Helper: Initials field not found automatically.");
+                }
+
+                if (!qcField && !initialsField) {
+                    alert("Die Felder 'Quality control' und 'Kürzel' konnten im Formular nicht automatisch gefunden werden. Bitte füllen Sie sie manuell aus und teilen Sie dem Entwickler die exakten Feld-Namen mit.");
+                }
+
+                // Find submit button
+                const submitBtn = doc.getElementById('edit-submit') || doc.querySelector('input[type="submit"][value="Save"]') || doc.querySelector('input[type="submit"][value="Speichern"]');
+
+                if (submitBtn) {
+                    // Opt-in Auto-Submit (hier scrollen wir nur hin, damit der User nochmal prüfen kann)
+                    submitBtn.scrollIntoView({ behavior: "smooth", block: "center" });
+                    submitBtn.style.border = "3px solid #28a745";
+                } else {
+                    alert("Speichern-Button nicht gefunden!");
+                }
+
+            } catch (e) {
+                console.error(e);
+                alert("Fehler beim Approve-Vorgang. " + e.message);
+            }
+        });
+    }
 }
