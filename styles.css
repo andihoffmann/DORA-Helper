@@ -377,3 +377,11 @@
 .dora-autocomplete-item:last-child {
     border-bottom: none;
 }
+
+/* ==========================================================================
+   6. DORA ERROR STYLING
+   ========================================================================== */
+.dora-error, input.dora-error, select.dora-error, textarea.dora-error {
+    border: 2px solid #e53e3e !important;
+    background-color: #fff5f5 !important;
+}

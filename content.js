@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.57
+// Version: 2.58
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -2756,16 +2756,16 @@ function markError(el, isError, msg = '', isWarning = false) {
     if (isError) {
         target.classList.add('dora-error');
         if (isWarning) {
-            target.style.border = '2px dotted #e53e3e';
+            target.style.setProperty('border', '2px dotted #e53e3e', 'important');
         } else {
-            target.style.border = '2px solid #e53e3e';
+            target.style.setProperty('border', '2px solid #e53e3e', 'important');
         }
-        if (target === el) target.style.backgroundColor = '#fff5f5'; // Only color bg if it's the input
+        if (target === el) target.style.setProperty('background-color', '#fff5f5', 'important'); // Only color bg if it's the input
         target.title = msg;
     } else {
         target.classList.remove('dora-error');
-        target.style.border = '';
-        if (target === el) target.style.backgroundColor = '';
+        target.style.removeProperty('border');
+        if (target === el) target.style.removeProperty('background-color');
         target.title = '';
     }
 }
@@ -3407,6 +3407,37 @@ function injectBatchQcButton() {
 function initBatchQcDashboard(pids) {
     if (document.getElementById('dora-batch-qc-overlay')) return;
 
+    // Session-basiertes Tracking bereits freigegebener PIDs
+    let savedApproved = [];
+    try {
+        savedApproved = JSON.parse(sessionStorage.getItem('dora_approved_pids') || '[]');
+    } catch (e) { }
+    const approvedPids = new Set(savedApproved);
+
+    const markPidAsApproved = (pid) => {
+        approvedPids.add(pid);
+        try {
+            sessionStorage.setItem('dora_approved_pids', JSON.stringify(Array.from(approvedPids)));
+        } catch (e) { }
+
+        const item = document.getElementById(`batch-qc-item-${pid.replace(':', '-')}`);
+        if (item) {
+            item.classList.add('dora-approved-pid');
+            item.style.borderRight = '5px solid #22c55e';
+            if (currentPid !== pid) {
+                item.style.background = '#f0fdf4';
+                item.style.color = '#16a34a';
+            }
+            if (!item.querySelector('.dora-qc-yes-icon')) {
+                const icon = document.createElement('span');
+                icon.className = 'dora-qc-yes-icon';
+                icon.textContent = ' (QC: Yes)';
+                icon.style.cssText = 'color: #16a34a; font-size: 10px; font-weight: bold; margin-left: 4px;';
+                item.appendChild(icon);
+            }
+        }
+    };
+
     const getInstitutionPath = () => {
         const path = window.location.pathname;
         const segments = path.split('/').filter(s => s.length > 0);
@@ -3521,15 +3552,39 @@ function initBatchQcDashboard(pids) {
         item.innerHTML = `<strong>${pid}</strong>`;
         item.id = `batch-qc-item-${pid.replace(':', '-')}`;
 
-        item.onmouseenter = () => { if (currentPid !== pid) { item.style.background = '#f1f5f9'; item.style.color = '#0f172a'; } };
-        item.onmouseleave = () => { if (currentPid !== pid) { item.style.background = '#ffffff'; item.style.color = '#475569'; } };
+        // Falls bereits freigegeben, optischen Akzent setzen
+        if (approvedPids.has(pid)) {
+            item.classList.add('dora-approved-pid');
+            item.style.borderRight = '5px solid #22c55e';
+            item.style.background = '#f0fdf4';
+            item.style.color = '#16a34a';
+            const icon = document.createElement('span');
+            icon.className = 'dora-qc-yes-icon';
+            icon.textContent = ' (QC: Yes)';
+            icon.style.cssText = 'color: #16a34a; font-size: 10px; font-weight: bold; margin-left: 4px;';
+            item.appendChild(icon);
+        }
+
+        item.onmouseenter = () => {
+            if (currentPid !== pid) {
+                item.style.background = item.classList.contains('dora-approved-pid') ? '#e8f5e9' : '#f1f5f9';
+                item.style.color = '#0f172a';
+            }
+        };
+        item.onmouseleave = () => {
+            if (currentPid !== pid) {
+                item.style.background = item.classList.contains('dora-approved-pid') ? '#f0fdf4' : '#ffffff';
+                item.style.color = item.classList.contains('dora-approved-pid') ? '#16a34a' : '#475569';
+            }
+        };
 
         item.onclick = () => {
             // Unhighlight all
             Array.from(sidebar.children).forEach(child => {
-                child.style.background = '#ffffff';
+                const isApproved = child.classList.contains('dora-approved-pid');
+                child.style.background = isApproved ? '#f0fdf4' : '#ffffff';
                 child.style.borderLeft = '1px solid #e2e8f0';
-                child.style.color = '#475569';
+                child.style.color = isApproved ? '#16a34a' : '#475569';
                 child.style.boxShadow = '0 1px 2px rgba(0,0,0,0.02)';
             });
             // Highlight current
@@ -3551,6 +3606,18 @@ function initBatchQcDashboard(pids) {
     }
 
     function loadRecord(pid) {
+        // Reset des Freigabe-Buttons auf den Standard-Zustand für den neuen Datensatz
+        chrome.storage.local.get({ qcInitials: '' }, function (result) {
+            const initials = result.qcInitials.trim();
+            if (initials) {
+                approveBtn.textContent = `✅ Schnell-Freigabe (QC = Yes, User = ${initials})`;
+            } else {
+                approveBtn.textContent = '✅ Schnell-Freigabe (QC = Yes)';
+            }
+            approveBtn.style.background = '#22c55e';
+            approveBtn.style.boxShadow = '0 2px 4px rgba(34, 197, 94, 0.2)';
+        });
+
         const inst = getInstitutionPath();
         const pdfUrl = `/${inst}/islandora/object/${pid}/datastream/PDF/view`;
 
@@ -3719,6 +3786,12 @@ function initBatchQcDashboard(pids) {
                     
                     /* Hilfsklasse zum erzwungenen Ausblenden (überschreibt display: block !important) */
                     .dora-hidden { display: none !important; }
+
+                    /* Validierungsfehler-Hervorhebung */
+                    .dora-error, input.dora-error, select.dora-error, textarea.dora-error {
+                        border: 2px solid #e53e3e !important;
+                        background-color: #fff5f5 !important;
+                    }
                     
                     /* Neue QC-Highlight-Box am Formularanfang */
                     .dora-qc-highlight-box {
@@ -4114,6 +4187,41 @@ function initBatchQcDashboard(pids) {
                 const hideInterval = setInterval(hideSpecificFields, 500);
                 setTimeout(() => clearInterval(hideInterval), 15000);
 
+                // Prüfen, ob bereits freigegeben (QC = Yes) und ggf. in der Sidebar markieren
+                try {
+                    let isAlreadyApproved = false;
+                    const docLabels = doc.querySelectorAll('label');
+                    docLabels.forEach(l => {
+                        const text = l.textContent.toLowerCase();
+                        if (text.includes('quality control') && !text.includes('id') && !text.includes('by') && !text.includes('kürzel')) {
+                            const inputId = l.getAttribute('for');
+                            if (inputId) {
+                                const el = doc.getElementById(inputId);
+                                if (el) {
+                                    if (el.tagName === 'SELECT' && el.value === 'Yes') {
+                                        isAlreadyApproved = true;
+                                    } else if (el.tagName === 'INPUT' && el.value.toLowerCase().includes('yes')) {
+                                        isAlreadyApproved = true;
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                    if (!isAlreadyApproved) {
+                        const select = doc.querySelector('select[name*="quality_control"]') || doc.querySelector('select[id*="quality_control"]');
+                        if (select && select.value === 'Yes') {
+                            isAlreadyApproved = true;
+                        }
+                    }
+
+                    if (isAlreadyApproved) {
+                        markPidAsApproved(pid);
+                    }
+                } catch (err) {
+                    console.warn("Error scanning for pre-existing QC status:", err);
+                }
+
                 // We add a listener to the form inside the iframe to catch successful submits
                 const form = doc.getElementById('islandora-ingest-form') || doc.querySelector('.node-form') || doc.getElementById('islandora-xml-form-builder-form');
                 if (form) {
@@ -4143,6 +4251,14 @@ function initBatchQcDashboard(pids) {
                 alert("Bitte legen Sie zuerst Ihr Kürzel für die Qualitätskontrolle in den DORA Helper Einstellungen fest!");
                 return;
             }
+
+            // Sofortiges visuelles Feedback auf dem QC-Button
+            approveBtn.textContent = '✓ QC auf Yes gesetzt!';
+            approveBtn.style.background = '#15803d';
+            approveBtn.style.boxShadow = '0 2px 4px rgba(21, 128, 61, 0.4)';
+
+            // PID sofort in der Sidebar als freigegeben markieren
+            markPidAsApproved(currentPid);
 
             try {
                 const doc = middleIframe.contentDocument;
