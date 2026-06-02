@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.59
+// Version: 2.60
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -9,6 +9,8 @@ let isMouseOverHandle = false;
 let isSummaryMinimized = false; // Status für das Fehler-Panel
 let lastErrorsHash = "";      // Zum Vergleichen der Fehlerliste
 let lastMinimizedState = null; // Zum Vergleichen des Status
+let cachedCrossrefLicenseUrl = null;
+let cachedCrossrefMapped = null;
 
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', startObserver);
@@ -3259,8 +3261,6 @@ function showConferenceConfirmation(data, onConfirm) {
 }
 
 // --- PDF LICENSE CHECKER (CROSSREF) ---
-let cachedCrossrefLicenseUrl = null;
-let cachedCrossrefMapped = null;
 
 function initPdfLicenseChecker() {
     // Only run if there are PDF document-version selects
