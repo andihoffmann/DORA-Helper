@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.58
+// Version: 2.59
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -53,7 +53,7 @@ function scanAndInject() {
     // 1. Check URL parameters for DOI (Ingest workflow)
     let urlParams = new URLSearchParams(window.location.search);
     let urlDoi = urlParams.get('doi');
-    
+
     // Fallback: Check inline scripts (Drupal POSTs might hide URL params from the address bar)
     if (!urlDoi) {
         const scripts = document.querySelectorAll('script');
@@ -2577,7 +2577,7 @@ function validateAuthorRows(errors, pubYear) {
                                     markError(labInput, false);
                                 }
                             }
-                            
+
                             if (divisionInput) {
                                 if (!divisionInput.value.trim() && !isSpecialGroup) {
                                     markError(divisionInput, true, 'Division sollte ausgefüllt sein, wenn Group vorhanden ist.');
@@ -3272,11 +3272,11 @@ function initPdfLicenseChecker() {
     console.log(`DORA-Helper: Found ${versionSelects.length} PDF(s).`);
 
     let doi = sessionStorage.getItem('dora_helper_current_doi');
-    
+
     // Check if we are on the pdf management screen or ingest screen
     let objectIdMatch = window.location.href.match(/islandora\/object\/([^/]+)/);
     let pid = objectIdMatch ? objectIdMatch[1] : null;
-    
+
     console.log(`DORA-Helper: initPdfLicenseChecker - Initial DOI: ${doi}, PID: ${pid}`);
 
     const checkLicenses = (resolvedDoi) => {
@@ -3284,9 +3284,9 @@ function initPdfLicenseChecker() {
             console.log("DORA-Helper: checkLicenses called with empty DOI.");
             return;
         }
-        
+
         console.log(`DORA-Helper: checkLicenses running for DOI: ${resolvedDoi}`);
-        
+
         if (cachedCrossrefMapped) {
             console.log(`DORA-Helper: Using cached Crossref license: ${cachedCrossrefMapped}`);
             applyLicenseChecks(cachedCrossrefMapped, cachedCrossrefLicenseUrl);
@@ -3344,28 +3344,28 @@ function initPdfLicenseChecker() {
 
     function evaluateLicenseForVersionSelect(vs, mappedCrossref, fullUrl) {
         if (!vs) return;
-        
+
         // Use regex to extract the base ID, since we now use *= which could match edit-files-0-document-version-xyz
         const match = vs.id.match(/^(.*?)-document-version/);
         if (!match) return;
         const baseId = match[1];
-        
+
         const ls = document.getElementById(baseId + '-use-perm-manual') || document.getElementById(baseId + '-use-permission');
         const os = document.getElementById(baseId + '-use-permission');
-        
+
         if (!ls) return;
-        
+
         console.log(`[DORA-Helper] Checking PDF ${baseId}. Version: ${vs.value}`);
-        
+
         const targetWrapper = (os || ls).closest('.form-item');
         if (!targetWrapper || !targetWrapper.parentNode) return;
-        
+
         let warningDiv = targetWrapper.parentNode.querySelector('.dora-license-warning[data-for="' + baseId + '"]');
-        
+
         if (vs.value.toLowerCase() === 'published version') {
             const selectedVal = (os && os.value) ? os.value : ls.value;
             console.log(`[DORA-Helper] Selected License: ${selectedVal}, Crossref: ${mappedCrossref}`);
-            
+
             if (mappedCrossref && selectedVal !== mappedCrossref && !selectedVal.startsWith(mappedCrossref)) {
                 if (!warningDiv || warningDiv.dataset.mapped !== mappedCrossref) {
                     if (!warningDiv) {
@@ -3423,35 +3423,35 @@ function initPdfLicenseChecker() {
 function mapCrossrefLicenseToDora(url) {
     if (!url) return null;
     const lowerUrl = url.toLowerCase();
-    
+
     if (lowerUrl.includes('creativecommons.org/licenses/by/4.0')) return 'CC BY 4.0';
     if (lowerUrl.includes('creativecommons.org/licenses/by/3.0')) return 'CC BY 3.0';
     if (lowerUrl.includes('creativecommons.org/licenses/by/2.5')) return 'CC BY 2.5';
     if (lowerUrl.includes('creativecommons.org/licenses/by/2.0')) return 'CC BY 2.0';
     if (lowerUrl.includes('creativecommons.org/licenses/by/1.0')) return 'CC BY 1.0';
-    
+
     if (lowerUrl.includes('creativecommons.org/licenses/by-sa/4.0')) return 'CC BY-SA 4.0';
     if (lowerUrl.includes('creativecommons.org/licenses/by-sa/3.0')) return 'CC BY-SA 3.0';
     if (lowerUrl.includes('creativecommons.org/licenses/by-sa/2.5')) return 'CC BY-SA 2.5';
-    
+
     if (lowerUrl.includes('creativecommons.org/licenses/by-nc/4.0')) return 'CC BY-NC 4.0';
     if (lowerUrl.includes('creativecommons.org/licenses/by-nc/3.0')) return 'CC BY-NC 3.0';
     if (lowerUrl.includes('creativecommons.org/licenses/by-nc/2.5')) return 'CC BY-NC 2.5';
-    
+
     if (lowerUrl.includes('creativecommons.org/licenses/by-nc-nd/4.0')) return 'CC BY-NC-ND 4.0';
     if (lowerUrl.includes('creativecommons.org/licenses/by-nc-nd/3.0')) return 'CC BY-NC-ND 3.0';
     if (lowerUrl.includes('creativecommons.org/licenses/by-nc-nd/2.5')) return 'CC BY-NC-ND 2.5';
-    
+
     if (lowerUrl.includes('creativecommons.org/licenses/by-nc-sa/4.0')) return 'CC BY-NC-SA 4.0';
     if (lowerUrl.includes('creativecommons.org/licenses/by-nc-sa/3.0')) return 'CC BY-NC-SA 3.0';
     if (lowerUrl.includes('creativecommons.org/licenses/by-nc-sa/2.5')) return 'CC BY-NC-SA 2.5';
-    
+
     if (lowerUrl.includes('creativecommons.org/licenses/by-nd/4.0')) return 'CC BY-ND 4.0';
     if (lowerUrl.includes('creativecommons.org/licenses/by-nd/3.0')) return 'CC BY-ND 3.0';
     if (lowerUrl.includes('creativecommons.org/licenses/by-nd/2.5')) return 'CC BY-ND 2.5';
-    
+
     if (lowerUrl.includes('creativecommons.org/publicdomain/zero/1.0')) return 'CC0';
-    
+
     // Generic fallback for older/other versions
     if (lowerUrl.includes('creativecommons.org/licenses/by/')) return 'CC BY';
     if (lowerUrl.includes('creativecommons.org/licenses/by-nc/')) return 'CC BY-NC';
@@ -3459,7 +3459,7 @@ function mapCrossrefLicenseToDora(url) {
     if (lowerUrl.includes('creativecommons.org/licenses/by-nc-sa/')) return 'CC BY-NC-SA';
     if (lowerUrl.includes('creativecommons.org/licenses/by-nd/')) return 'CC BY-ND';
     if (lowerUrl.includes('creativecommons.org/licenses/by-sa/')) return 'CC BY-SA';
-    
+
     return null;
 }
 function isEditPage() {
