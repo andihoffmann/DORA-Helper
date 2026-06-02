@@ -50,10 +50,41 @@ function scanAndInject() {
     // SECURITY / PERFORMANCE: Only run on Edit or Ingest Forms
     if (!isEditPage()) return;
 
+    // 1. Check URL parameters for DOI (Ingest workflow)
+    let urlParams = new URLSearchParams(window.location.search);
+    let urlDoi = urlParams.get('doi');
+    
+    // Fallback: Check inline scripts (Drupal POSTs might hide URL params from the address bar)
+    if (!urlDoi) {
+        const scripts = document.querySelectorAll('script');
+        for (let script of scripts) {
+            if (script.textContent.includes('Drupal.settings') && script.textContent.includes('doi=')) {
+                const match = script.textContent.match(/[?&]doi=(10\.\d{4,9}\/[^&_"'\\]+)/i);
+                if (match) {
+                    urlDoi = decodeURIComponent(match[1]);
+                    break;
+                }
+            }
+        }
+    }
+
+    if (urlDoi) {
+        sessionStorage.setItem('dora_helper_current_doi', urlDoi);
+    }
+
     const doiInput = document.getElementById('edit-identifiers-doi');
     if (doiInput) {
-        if (!document.getElementById('dora-helper-btn')) injectDOIButton(doiInput);
+        if (!document.getElementById('dora-helper-btn')) {
+            injectDOIButton(doiInput);
+            doiInput.addEventListener('input', (e) => {
+                const val = e.target.value.trim();
+                if (val) sessionStorage.setItem('dora_helper_current_doi', val);
+            });
+        }
         const currentDoi = doiInput.value.trim();
+        if (currentDoi) {
+            sessionStorage.setItem('dora_helper_current_doi', currentDoi);
+        }
         if (currentDoi && currentDoi !== lastAutoFetchedDoi) {
             lastAutoFetchedDoi = currentDoi;
             showLoadingBox();
@@ -69,7 +100,10 @@ function scanAndInject() {
     injectDoraAutocompletes();
 
     validateForm();
-    initAiMetadataCheck();
+    if (typeof initAiMetadataCheck === 'function') {
+        initAiMetadataCheck();
+    }
+    initPdfLicenseChecker();
 }
 
 function findKeywordContainer() {
@@ -2535,14 +2569,22 @@ function validateAuthorRows(errors, pubYear) {
                             // Special Rule: Division Heads (e.g. 1000-9000) or '0000 PSI' don't need a Lab
                             const isSpecialGroup = /^[1-9]000/.test(groupVal) || groupVal.includes('0000 PSI');
 
-                            if (labInput && !labInput.value.trim() && !isSpecialGroup) {
-                                markError(labInput, true, 'Laboratory sollte ausgefüllt sein, wenn Group vorhanden ist.');
-                                errors.push(`<b>Author ${idx + 1} (Lab)</b>: Laboratory fehlt (Group ist gesetzt).`);
+                            if (labInput) {
+                                if (!labInput.value.trim() && !isSpecialGroup) {
+                                    markError(labInput, true, 'Laboratory sollte ausgefüllt sein, wenn Group vorhanden ist.');
+                                    errors.push(`<b>Author ${idx + 1} (Lab)</b>: Laboratory fehlt (Group ist gesetzt).`);
+                                } else if (!labInput.title.includes('Stammdaten')) {
+                                    markError(labInput, false);
+                                }
                             }
-                            // FIXED: Also apply isSpecialGroup exception to Division
-                            if (divisionInput && !divisionInput.value.trim() && !isSpecialGroup) {
-                                markError(divisionInput, true, 'Division sollte ausgefüllt sein, wenn Group vorhanden ist.');
-                                errors.push(`<b>Author ${idx + 1} (Division)</b>: Division fehlt (Group ist gesetzt).`);
+                            
+                            if (divisionInput) {
+                                if (!divisionInput.value.trim() && !isSpecialGroup) {
+                                    markError(divisionInput, true, 'Division sollte ausgefüllt sein, wenn Group vorhanden ist.');
+                                    errors.push(`<b>Author ${idx + 1} (Division)</b>: Division fehlt (Group ist gesetzt).`);
+                                } else if (!divisionInput.title.includes('Stammdaten') && !divisionInput.title.includes('umbenannt')) {
+                                    markError(divisionInput, false);
+                                }
                             }
                         }
                     }
@@ -3215,6 +3257,211 @@ function showConferenceConfirmation(data, onConfirm) {
         if (e.target === overlay) closeAll();
     });
 }
+
+// --- PDF LICENSE CHECKER (CROSSREF) ---
+let cachedCrossrefLicenseUrl = null;
+let cachedCrossrefMapped = null;
+
+function initPdfLicenseChecker() {
+    // Only run if there are PDF document-version selects
+    const versionSelects = document.querySelectorAll('select[id*="-document-version"]');
+    if (versionSelects.length === 0) {
+        console.log("DORA-Helper: No PDF document-version dropdowns found on this page.");
+        return;
+    }
+    console.log(`DORA-Helper: Found ${versionSelects.length} PDF(s).`);
+
+    let doi = sessionStorage.getItem('dora_helper_current_doi');
+    
+    // Check if we are on the pdf management screen or ingest screen
+    let objectIdMatch = window.location.href.match(/islandora\/object\/([^/]+)/);
+    let pid = objectIdMatch ? objectIdMatch[1] : null;
+    
+    console.log(`DORA-Helper: initPdfLicenseChecker - Initial DOI: ${doi}, PID: ${pid}`);
+
+    const checkLicenses = (resolvedDoi) => {
+        if (!resolvedDoi) {
+            console.log("DORA-Helper: checkLicenses called with empty DOI.");
+            return;
+        }
+        
+        console.log(`DORA-Helper: checkLicenses running for DOI: ${resolvedDoi}`);
+        
+        if (cachedCrossrefMapped) {
+            console.log(`DORA-Helper: Using cached Crossref license: ${cachedCrossrefMapped}`);
+            applyLicenseChecks(cachedCrossrefMapped, cachedCrossrefLicenseUrl);
+            return;
+        }
+
+        console.log(`DORA-Helper: Fetching Crossref data from background for DOI: ${resolvedDoi}`);
+        chrome.runtime.sendMessage({ action: "fetchData", doi: resolvedDoi }, (response) => {
+            console.log("DORA-Helper: Crossref background response:", response);
+            if (response && response.success && response.data.crossrefLicense) {
+                cachedCrossrefLicenseUrl = response.data.crossrefLicense;
+                cachedCrossrefMapped = mapCrossrefLicenseToDora(cachedCrossrefLicenseUrl);
+                console.log(`DORA-Helper: Mapped Crossref License: ${cachedCrossrefMapped}`);
+                applyLicenseChecks(cachedCrossrefMapped, cachedCrossrefLicenseUrl);
+            } else {
+                console.log("DORA-Helper: No valid license found in Crossref response.");
+            }
+        });
+    };
+
+    if (doi) {
+        console.log(`DORA-Helper: Using DOI from sessionStorage: ${doi}`);
+        checkLicenses(doi);
+    } else if (pid && decodeURIComponent(pid).startsWith('psi:') && !decodeURIComponent(pid).includes('publications') && !decodeURIComponent(pid).includes('external')) {
+        // Fetch MODS to find DOI if not in sessionStorage
+        const inst = window.location.pathname.split('/')[1] || 'psi';
+        const modsUrl = `/${inst}/islandora/object/${pid}/datastream/MODS`;
+        console.log(`DORA-Helper: Fetching MODS XML from: ${modsUrl}`);
+        fetch(modsUrl)
+            .then(res => {
+                console.log(`DORA-Helper: MODS fetch status: ${res.status}`);
+                return res.ok ? res.text() : null;
+            })
+            .then(xmlStr => {
+                if (!xmlStr) {
+                    console.log("DORA-Helper: MODS fetch returned empty string.");
+                    return;
+                }
+                const parser = new DOMParser();
+                const xmlDoc = parser.parseFromString(xmlStr, "text/xml");
+                const doiNodes = xmlDoc.querySelectorAll('identifier[type="doi"]');
+                if (doiNodes.length > 0) {
+                    doi = doiNodes[0].textContent.trim();
+                    console.log(`DORA-Helper: Extracted DOI from MODS: ${doi}`);
+                    sessionStorage.setItem('dora_helper_current_doi', doi);
+                    checkLicenses(doi);
+                } else {
+                    console.log("DORA-Helper: No DOI identifier found in MODS XML.");
+                }
+            })
+            .catch(e => console.error("DORA-Helper: Failed to fetch MODS for DOI.", e));
+    } else {
+        console.log("DORA-Helper: No DOI available and PID conditions not met for MODS fetch.");
+    }
+
+    function evaluateLicenseForVersionSelect(vs, mappedCrossref, fullUrl) {
+        if (!vs) return;
+        
+        // Use regex to extract the base ID, since we now use *= which could match edit-files-0-document-version-xyz
+        const match = vs.id.match(/^(.*?)-document-version/);
+        if (!match) return;
+        const baseId = match[1];
+        
+        const ls = document.getElementById(baseId + '-use-perm-manual') || document.getElementById(baseId + '-use-permission');
+        const os = document.getElementById(baseId + '-use-permission');
+        
+        if (!ls) return;
+        
+        console.log(`[DORA-Helper] Checking PDF ${baseId}. Version: ${vs.value}`);
+        
+        const targetWrapper = (os || ls).closest('.form-item');
+        if (!targetWrapper || !targetWrapper.parentNode) return;
+        
+        let warningDiv = targetWrapper.parentNode.querySelector('.dora-license-warning[data-for="' + baseId + '"]');
+        
+        if (vs.value.toLowerCase() === 'published version') {
+            const selectedVal = (os && os.value) ? os.value : ls.value;
+            console.log(`[DORA-Helper] Selected License: ${selectedVal}, Crossref: ${mappedCrossref}`);
+            
+            if (mappedCrossref && selectedVal !== mappedCrossref && !selectedVal.startsWith(mappedCrossref)) {
+                if (!warningDiv || warningDiv.dataset.mapped !== mappedCrossref) {
+                    if (!warningDiv) {
+                        warningDiv = createEl('div', 'dora-license-warning');
+                        warningDiv.dataset.for = baseId;
+                        warningDiv.style.cssText = 'color: #9b1c1c; font-size: 0.95em; font-weight: 500; margin-top: 10px; padding: 12px 16px; background-color: #fdf2f2; border: 1px solid #f8b4b4; border-radius: 6px; display: flex; width: fit-content; max-width: 800px; align-items: center; gap: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); line-height: 1.4;';
+                        targetWrapper.parentNode.insertBefore(warningDiv, targetWrapper.nextSibling);
+                    }
+                    warningDiv.dataset.mapped = mappedCrossref;
+                    warningDiv.innerHTML = `
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0; color: #e02424;">
+                            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                            <line x1="12" y1="9" x2="12" y2="13"></line>
+                            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                        </svg>
+                        <div>Crossref gibt für diese Publikation abweichend die folgende Lizenz an: 
+                            <a href="${fullUrl}" target="_blank" style="color: #9b1c1c; text-decoration: underline; font-weight: 700; margin-left: 4px;">${mappedCrossref}</a>
+                        </div>`;
+                }
+                if (warningDiv.style.display !== 'flex') {
+                    warningDiv.style.display = 'flex';
+                }
+                console.log(`[DORA-Helper] Warning shown for ${baseId}`);
+            } else if (warningDiv) {
+                warningDiv.style.display = 'none';
+                console.log(`[DORA-Helper] Warning hidden (matched) for ${baseId}`);
+            }
+        } else if (warningDiv) {
+            warningDiv.style.display = 'none';
+            console.log(`[DORA-Helper] Warning hidden (not published version) for ${baseId}`);
+        }
+    }
+
+    function applyLicenseChecks(mappedCrossref, fullUrl) {
+        const selects = document.querySelectorAll('select[id*="-document-version"]');
+        selects.forEach(vs => {
+            setTimeout(() => evaluateLicenseForVersionSelect(vs, mappedCrossref, fullUrl), 500);
+        });
+    }
+
+    // Bind a global capture-phase listener ONE TIME to catch all changes
+    if (!window.doraLicenseCheckerGlobalBound) {
+        window.doraLicenseCheckerGlobalBound = true;
+        document.body.addEventListener('change', (e) => {
+            if (cachedCrossrefMapped) {
+                clearTimeout(window.doraLicenseCheckerThrottle);
+                window.doraLicenseCheckerThrottle = setTimeout(() => {
+                    applyLicenseChecks(cachedCrossrefMapped, cachedCrossrefLicenseUrl);
+                }, 150);
+            }
+        }, true); // TRUE = Capture Phase
+    }
+}
+
+function mapCrossrefLicenseToDora(url) {
+    if (!url) return null;
+    const lowerUrl = url.toLowerCase();
+    
+    if (lowerUrl.includes('creativecommons.org/licenses/by/4.0')) return 'CC BY 4.0';
+    if (lowerUrl.includes('creativecommons.org/licenses/by/3.0')) return 'CC BY 3.0';
+    if (lowerUrl.includes('creativecommons.org/licenses/by/2.5')) return 'CC BY 2.5';
+    if (lowerUrl.includes('creativecommons.org/licenses/by/2.0')) return 'CC BY 2.0';
+    if (lowerUrl.includes('creativecommons.org/licenses/by/1.0')) return 'CC BY 1.0';
+    
+    if (lowerUrl.includes('creativecommons.org/licenses/by-sa/4.0')) return 'CC BY-SA 4.0';
+    if (lowerUrl.includes('creativecommons.org/licenses/by-sa/3.0')) return 'CC BY-SA 3.0';
+    if (lowerUrl.includes('creativecommons.org/licenses/by-sa/2.5')) return 'CC BY-SA 2.5';
+    
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nc/4.0')) return 'CC BY-NC 4.0';
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nc/3.0')) return 'CC BY-NC 3.0';
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nc/2.5')) return 'CC BY-NC 2.5';
+    
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nc-nd/4.0')) return 'CC BY-NC-ND 4.0';
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nc-nd/3.0')) return 'CC BY-NC-ND 3.0';
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nc-nd/2.5')) return 'CC BY-NC-ND 2.5';
+    
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nc-sa/4.0')) return 'CC BY-NC-SA 4.0';
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nc-sa/3.0')) return 'CC BY-NC-SA 3.0';
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nc-sa/2.5')) return 'CC BY-NC-SA 2.5';
+    
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nd/4.0')) return 'CC BY-ND 4.0';
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nd/3.0')) return 'CC BY-ND 3.0';
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nd/2.5')) return 'CC BY-ND 2.5';
+    
+    if (lowerUrl.includes('creativecommons.org/publicdomain/zero/1.0')) return 'CC0';
+    
+    // Generic fallback for older/other versions
+    if (lowerUrl.includes('creativecommons.org/licenses/by/')) return 'CC BY';
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nc/')) return 'CC BY-NC';
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nc-nd/')) return 'CC BY-NC-ND';
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nc-sa/')) return 'CC BY-NC-SA';
+    if (lowerUrl.includes('creativecommons.org/licenses/by-nd/')) return 'CC BY-ND';
+    if (lowerUrl.includes('creativecommons.org/licenses/by-sa/')) return 'CC BY-SA';
+    
+    return null;
+}
 function isEditPage() {
     // Check for specific form IDs or Classes typical for DORA/Islandora Edit Forms
     if (document.getElementById('islandora-ingest-form')) return true;
@@ -3223,7 +3470,7 @@ function isEditPage() {
 
     // Check URL patterns
     const loc = window.location.href;
-    if (loc.includes('/ingest') || loc.includes('/edit') || loc.includes('/manage')) return true;
+    if (loc.includes('/ingest') || loc.includes('/edit') || loc.includes('/manage') || loc.includes('lib4ridora_pdf_management')) return true;
 
     return false;
 }
