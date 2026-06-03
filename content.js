@@ -11,6 +11,7 @@ let lastErrorsHash = "";      // Zum Vergleichen der Fehlerliste
 let lastMinimizedState = null; // Zum Vergleichen des Status
 let cachedCrossrefLicenseUrl = null;
 let cachedCrossrefMapped = null;
+let isKeywordManagerOpen = false;
 
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', startObserver);
@@ -1178,7 +1179,14 @@ function injectKeywordManager(topicContainer) {
     if (tagList) tagList.insertAdjacentElement('beforebegin', toolHeader);
     else topicContainer.appendChild(toolHeader);
 
-    sortBtn.addEventListener('click', () => loadKeywordsIntoManager(topicContainer));
+    sortBtn.addEventListener('click', () => {
+        isKeywordManagerOpen = true;
+        loadKeywordsIntoManager(topicContainer);
+    });
+
+    if (isKeywordManagerOpen) {
+        loadKeywordsIntoManager(topicContainer);
+    }
 }
 
 function loadKeywordsIntoManager(topicContainer) {
