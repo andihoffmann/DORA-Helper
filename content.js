@@ -2427,14 +2427,12 @@ function validateAuthorRows(errors, pubYear) {
     const isOldPsiPub = isPsiContext && !isNaN(pYearInt) && pYearInt < 2006;
 
     // 1. Specific Islandora Fieldpanel Logic
-    const authorsContainer = document.querySelector('.form-item-authors');
-    if (authorsContainer) {
-        let panes = authorsContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
-        if (panes.length === 0) {
-            panes = authorsContainer.querySelectorAll('table tbody tr:not(.tabledrag-hide)');
-        }
+    // Find all author panes/rows anywhere on the page to support alternate forms like lib4ridora_pdf_upload
+    let allPanes = document.querySelectorAll('.islandora-form-fieldpanel-pane, table tbody tr:not(.tabledrag-hide)');
+    let authorPanes = Array.from(allPanes).filter(pane => pane.querySelector('input[type="text"][name$="[valName]"]'));
 
-        panes.forEach((pane, idx) => {
+    if (authorPanes.length > 0) {
+        authorPanes.forEach((pane, idx) => {
             const nameInput = pane.querySelector('input[type="text"][name$="[valName]"]');
 
             // Corrected selectors based on HTML structure
@@ -2616,7 +2614,7 @@ function validateAuthorRows(errors, pubYear) {
                     const nameInput = cells[nameIdx].querySelector('input[type="text"]');
                     const deptInput = cells[deptIdx].querySelector('input, select');
 
-                    if (nameInput && deptInput && !nameInput.dataset.doraValidatorAttached) {
+                    if (nameInput && deptInput) {
                         if (!nameInput.dataset.doraValidatorAttached) {
                             nameInput.addEventListener('input', validateForm);
                             nameInput.dataset.doraValidatorAttached = "true";
@@ -3307,10 +3305,16 @@ function initPdfLicenseChecker() {
         });
     };
 
+    const decodedPid = pid ? decodeURIComponent(pid).toLowerCase() : '';
+    const isPubPid = decodedPid && 
+                    (decodedPid.startsWith('psi:') || decodedPid.startsWith('empa:') || decodedPid.startsWith('eawag:') || decodedPid.startsWith('wsl:')) && 
+                    !decodedPid.includes('publications') && 
+                    !decodedPid.includes('external');
+
     if (doi) {
         console.log(`DORA-Helper: Using DOI from sessionStorage: ${doi}`);
         checkLicenses(doi);
-    } else if (pid && decodeURIComponent(pid).startsWith('psi:') && !decodeURIComponent(pid).includes('publications') && !decodeURIComponent(pid).includes('external')) {
+    } else if (isPubPid) {
         // Fetch MODS to find DOI if not in sessionStorage
         const inst = window.location.pathname.split('/')[1] || 'psi';
         const modsUrl = `/${inst}/islandora/object/${pid}/datastream/MODS`;
