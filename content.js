@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.60
+// Version: 2.61
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -3306,10 +3306,10 @@ function initPdfLicenseChecker() {
     };
 
     const decodedPid = pid ? decodeURIComponent(pid).toLowerCase() : '';
-    const isPubPid = decodedPid && 
-                    (decodedPid.startsWith('psi:') || decodedPid.startsWith('empa:') || decodedPid.startsWith('eawag:') || decodedPid.startsWith('wsl:')) && 
-                    !decodedPid.includes('publications') && 
-                    !decodedPid.includes('external');
+    const isPubPid = decodedPid &&
+        (decodedPid.startsWith('psi:') || decodedPid.startsWith('empa:') || decodedPid.startsWith('eawag:') || decodedPid.startsWith('wsl:')) &&
+        !decodedPid.includes('publications') &&
+        !decodedPid.includes('external');
 
     if (doi) {
         console.log(`DORA-Helper: Using DOI from sessionStorage: ${doi}`);
