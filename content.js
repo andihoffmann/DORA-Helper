@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.63
+// Version: 2.64
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -72,8 +72,10 @@ function scanAndInject() {
         }
     }
 
+    const currentPidForStorage = window.location.href.match(/islandora\/object\/([^/]+)/) ? decodeURIComponent(window.location.href.match(/islandora\/object\/([^/]+)/)[1]) : 'ingest';
+
     if (urlDoi) {
-        sessionStorage.setItem('dora_helper_current_doi', urlDoi);
+        sessionStorage.setItem('dora_helper_current_doi_' + currentPidForStorage, urlDoi);
     }
 
     const doiInput = document.getElementById('edit-identifiers-doi');
@@ -82,19 +84,22 @@ function scanAndInject() {
             injectDOIButton(doiInput);
             doiInput.addEventListener('input', (e) => {
                 const val = e.target.value.trim();
-                if (val) sessionStorage.setItem('dora_helper_current_doi', val);
+                if (val) sessionStorage.setItem('dora_helper_current_doi_' + currentPidForStorage, val);
             });
         }
         const currentDoi = doiInput.value.trim();
         if (currentDoi) {
-            sessionStorage.setItem('dora_helper_current_doi', currentDoi);
-        }
-        if (currentDoi && currentDoi !== lastAutoFetchedDoi) {
-            lastAutoFetchedDoi = currentDoi;
-            showLoadingBox();
-            performFetch(currentDoi);
+            sessionStorage.setItem('dora_helper_current_doi_' + currentPidForStorage, currentDoi);
         }
     }
+
+    if (doiInput && doiInput.value.trim() && doiInput.value.trim() !== lastAutoFetchedDoi) {
+        const currentDoi = doiInput.value.trim();
+        lastAutoFetchedDoi = currentDoi;
+        showLoadingBox();
+        performFetch(currentDoi);
+    }
+
     const topicContainer = findKeywordContainer();
     if (topicContainer && !document.getElementById('dora-keyword-manager')) {
         injectKeywordManager(topicContainer);
@@ -3278,11 +3283,12 @@ function initPdfLicenseChecker() {
     }
     console.log(`DORA-Helper: Found ${versionSelects.length} PDF(s).`);
 
-    let doi = sessionStorage.getItem('dora_helper_current_doi');
-
     // Check if we are on the pdf management screen or ingest screen
     let objectIdMatch = window.location.href.match(/islandora\/object\/([^/]+)/);
     let pid = objectIdMatch ? objectIdMatch[1] : null;
+    let decodedPidForStorage = pid ? decodeURIComponent(pid) : 'ingest';
+
+    let doi = sessionStorage.getItem('dora_helper_current_doi_' + decodedPidForStorage);
 
     console.log(`DORA-Helper: initPdfLicenseChecker - Initial DOI: ${doi}, PID: ${pid}`);
 
@@ -3345,7 +3351,7 @@ function initPdfLicenseChecker() {
                 if (doiNodes.length > 0) {
                     doi = doiNodes[0].textContent.trim();
                     console.log(`DORA-Helper: Extracted DOI from MODS: ${doi}`);
-                    sessionStorage.setItem('dora_helper_current_doi', doi);
+                    sessionStorage.setItem('dora_helper_current_doi_' + decodedPidForStorage, doi);
                     checkLicenses(doi);
                 } else {
                     console.log("DORA-Helper: No DOI identifier found in MODS XML.");
