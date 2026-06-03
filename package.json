@@ -1,12 +1,13 @@
 {
   "name": "dora-helper",
-  "version": "2.61",
+  "version": "2.62",
   "description": "Metadaten-Validierung, DOI- & Buchkapitel-Import, PDF-Analyse und Open-Access-Checks für DORA.",
   "main": "background.js",
   "scripts": {
     "start": "web-ext run --start-url \"https://www.dora.lib4ri.ch\"",
     "build": "web-ext build --overwrite-dest",
-    "lint": "web-ext lint"
+    "lint": "web-ext lint",
+    "release": "node scripts/release.js"
   },
   "repository": {
     "type": "git",

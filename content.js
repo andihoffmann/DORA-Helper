@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.61
+// Version: 2.62
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -11,6 +11,7 @@ let lastErrorsHash = "";      // Zum Vergleichen der Fehlerliste
 let lastMinimizedState = null; // Zum Vergleichen des Status
 let cachedCrossrefLicenseUrl = null;
 let cachedCrossrefMapped = null;
+let cachedCrossrefDoi = null;
 let isKeywordManagerOpen = false;
 
 if (document.readyState === 'loading') {
@@ -3293,12 +3294,13 @@ function initPdfLicenseChecker() {
 
         console.log(`DORA-Helper: checkLicenses running for DOI: ${resolvedDoi}`);
 
-        if (cachedCrossrefMapped) {
+        if (cachedCrossrefMapped && cachedCrossrefDoi === resolvedDoi) {
             console.log(`DORA-Helper: Using cached Crossref license: ${cachedCrossrefMapped}`);
             applyLicenseChecks(cachedCrossrefMapped, cachedCrossrefLicenseUrl);
             return;
         }
 
+        cachedCrossrefDoi = resolvedDoi;
         console.log(`DORA-Helper: Fetching Crossref data from background for DOI: ${resolvedDoi}`);
         chrome.runtime.sendMessage({ action: "fetchData", doi: resolvedDoi }, (response) => {
             console.log("DORA-Helper: Crossref background response:", response);
