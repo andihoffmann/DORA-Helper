@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.64
+// Version: 2.65
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -2443,7 +2443,15 @@ function validateAuthorRows(errors, pubYear) {
     // 1. Specific Islandora Fieldpanel Logic
     // Find all author panes/rows anywhere on the page to support alternate forms like lib4ridora_pdf_upload
     let allPanes = document.querySelectorAll('.islandora-form-fieldpanel-pane, table tbody tr:not(.tabledrag-hide)');
-    let authorPanes = Array.from(allPanes).filter(pane => pane.querySelector('input[type="text"][name$="[valName]"]'));
+    let processedNameInputs = new Set();
+    let authorPanes = Array.from(allPanes).filter(pane => {
+        const nameInput = pane.querySelector('input[type="text"][name$="[valName]"]');
+        if (nameInput && !processedNameInputs.has(nameInput)) {
+            processedNameInputs.add(nameInput);
+            return true;
+        }
+        return false;
+    });
 
     if (authorPanes.length > 0) {
         authorPanes.forEach((pane, idx) => {
@@ -2458,6 +2466,8 @@ function validateAuthorRows(errors, pubYear) {
             // Get First and Last Name for lookup
             const familyInput = pane.querySelector('input[name$="[family]"]');
             const givenInput = pane.querySelector('input[name$="[given]"]');
+
+            const authorDisplay = familyInput && familyInput.value.trim() ? familyInput.value.trim() : `Author ${idx + 1}`;
 
             if (nameInput) {
                 // Attach listeners
@@ -2475,28 +2485,75 @@ function validateAuthorRows(errors, pubYear) {
                 // Rule 4a: Check Name content
                 if (/nomatch/i.test(nameVal) || /4ri/i.test(nameVal)) {
                     markError(nameInput, true, 'Darf nicht "nomatch" oder "4RI" enthalten.');
-                    errors.push(`<b>Author ${idx + 1} (Name)</b>: Darf nicht "nomatch" oder "4RI" enthalten.`);
+                    errors.push(`<b>${authorDisplay} (Name)</b>: Darf nicht "nomatch" oder "4RI" enthalten.`);
                 } else {
                     markError(nameInput, false);
                 }
-                // Rule 4b: Dependency (If name is present, at least Group or Lab should be present)
-                if (nameVal) {
-                    const hasAffiliation = (groupInput && groupInput.value.trim()) || (labInput && labInput.value.trim());
-                    if (!hasAffiliation) {
-                        // Mark Group as the primary missing field
-                        if (groupInput) markError(groupInput, true, 'Affiliation (Group/Lab) ist erforderlich.');
-                        errors.push(`<b>Author ${idx + 1}</b>: Affiliation fehlt.`);
-                    } else {
-                        if (groupInput) markError(groupInput, false);
-                    }
+                    // Rule 4b: Dependency (If name is present, at least Group or Lab should be present)
+                    if (nameVal) {
+                        const hasAffiliation = (groupInput && groupInput.value.trim()) || (labInput && labInput.value.trim());
+                        if (!hasAffiliation) {
+                            // Check if author valName is linked. If so, autofill probably failed to resolve the unit.
+                            let autofillFailed = false;
+                            if (nameInput) {
+                                const authorPidName = nameInput.name.replace('[valName]', '[pid]');
+                                const authorPidInput = pane.querySelector(`input[name="${authorPidName}"]`);
+                                if (authorPidInput && authorPidInput.value.trim()) {
+                                    autofillFailed = true;
+                                }
+                            }
 
-                    // Rule 4c: Historical Affiliation Check (Only for PSI)
-                    // Check if URL contains /psi/
-                    if (window.location.href.includes('/psi/') && typeof findPersonAffiliation === 'function' && familyInput) {
-                        const lastname = familyInput.value.trim();
-                        const firstname = givenInput ? givenInput.value.trim() : "";
+                            // Mark Group as the primary missing field
+                            if (groupInput) {
+                                if (autofillFailed) {
+                                    markError(groupInput, true, '🦄 Affiliation Autofill fehlgeschlagen. Bitte Einheit manuell in das Feld eingeben und aus der Liste auswählen.');
+                                    errors.push(`<b>${authorDisplay}</b>: 🦄 Affiliation Autofill fehlgeschlagen. Bitte Einheit manuell in das Feld eingeben und aus der Liste auswählen.`);
+                                } else {
+                                    markError(groupInput, true, 'Affiliation (Group/Lab) ist erforderlich.');
+                                    errors.push(`<b>${authorDisplay}</b>: Affiliation fehlt.`);
+                                }
+                            } else {
+                                errors.push(`<b>${authorDisplay}</b>: Affiliation fehlt.`);
+                            }
+                        } else {
+                            if (groupInput) markError(groupInput, false);
+                        }
 
-                        console.log(`Checking affiliation for: ${lastname}, ${firstname} (${pubYear})`);
+                        // Rule 4b2: Check if unit inputs are properly linked (must have a pid)
+                        const unlinkedFields = new Set();
+                        [
+                            { el: groupInput, name: 'Group', suffix: '[affiliation]' },
+                            { el: sectionInput, name: 'Section', suffix: '[section_name]' },
+                            { el: labInput, name: 'Laboratory', suffix: '[department_name]' },
+                            { el: divisionInput, name: 'Division', suffix: '[division_name]' }
+                        ].forEach(item => {
+                            if (item.el && item.el.value.trim()) {
+                                // Find corresponding hidden pid field
+                                const pidName = item.el.name.replace(item.suffix, '[pid]');
+                                // The pid field might be anywhere in the pane (usually in a preceding td)
+                                const pidInput = pane.querySelector(`input[name="${pidName}"]`);
+                                
+                                if (pidInput && !pidInput.value.trim()) {
+                                    markError(item.el, true, 'Eintrag ist nicht verlinkt. Bitte aus der Liste auswählen.', true);
+                                    errors.push(`<b>${authorDisplay} (${item.name})</b>: "${item.el.value}" ist nicht verlinkt. Bitte aus der Liste auswählen.`);
+                                    unlinkedFields.add(item.el);
+                                }
+                            }
+                        });
+
+                        // Rule 4c: Historical Affiliation Check (Only for PSI)
+                        const clearStammdatenError = (el) => {
+                            if (el && (!el.classList.contains('dora-error') || el.title.includes('Stammdaten'))) {
+                                markError(el, false);
+                            }
+                        };
+
+                        // Check if URL contains /psi/
+                        if (window.location.href.includes('/psi/') && typeof findPersonAffiliation === 'function' && familyInput) {
+                            const lastname = familyInput.value.trim();
+                            const firstname = givenInput ? givenInput.value.trim() : "";
+
+                            console.log(`Checking affiliation for: ${lastname}, ${firstname} (${pubYear})`);
 
                         const personData = findPersonAffiliation(lastname, firstname, pubYear, nameVal);
                         console.log("Person Data:", personData);
@@ -2507,29 +2564,29 @@ function validateAuthorRows(errors, pubYear) {
                                 // Use looser matching: check if validName is contained in deptVal OR deptVal is contained in validName
 
                                 // Check Group
-                                if (groupInput) {
+                                if (groupInput && !unlinkedFields.has(groupInput)) {
                                     const groupVal = groupInput.value.trim();
                                     if (groupVal && !personData.units.some(u => groupVal.includes(u) || u.includes(groupVal))) {
                                         markError(groupInput, true, `Warnung: "${groupVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein.`);
-                                        errors.push(`<b>Author ${idx + 1} (Group)</b>: "${groupVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein. <br>Erwartet: ${personData.expectedGroup || 'N/A'}`);
+                                        errors.push(`<b>${authorDisplay} (Group)</b>: "${groupVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein. <br>Erwartet: ${personData.expectedGroup || 'N/A'}`);
                                     } else {
-                                        markError(groupInput, false);
+                                        clearStammdatenError(groupInput);
                                     }
                                 }
 
                                 // Check Laboratory
-                                if (labInput) {
+                                if (labInput && !unlinkedFields.has(labInput)) {
                                     const labVal = labInput.value.trim();
                                     if (labVal && !personData.units.some(u => labVal.includes(u) || u.includes(labVal))) {
                                         markError(labInput, true, `Warnung: "${labVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein.`);
-                                        errors.push(`<b>Author ${idx + 1} (Lab)</b>: "${labVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein. <br>Erwartet: ${personData.expectedLab || 'N/A'}`);
+                                        errors.push(`<b>${authorDisplay} (Lab)</b>: "${labVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein. <br>Erwartet: ${personData.expectedLab || 'N/A'}`);
                                     } else {
-                                        markError(labInput, false);
+                                        clearStammdatenError(labInput);
                                     }
                                 }
 
                                 // Check Division
-                                if (divisionInput) {
+                                if (divisionInput && !unlinkedFields.has(divisionInput)) {
                                     const divVal = divisionInput.value.trim();
 
                                     // Special Exception: If Group is "0000 PSI", do not flag Division errors
@@ -2537,18 +2594,18 @@ function validateAuthorRows(errors, pubYear) {
 
                                     if (!is0000PSI && divVal && !personData.units.some(u => divVal.includes(u) || u.includes(divVal))) {
                                         markError(divisionInput, true, `Warnung: "${divVal}" stimmt nicht mit den Stammdaten für ${pubYear} überein.`, true);
-                                        errors.push(`<b>Author ${idx + 1} (Division)</b>: Die Division wurde mittlerweile umbenannt, hat aber Gültigkeit für den Eintrag.`);
+                                        errors.push(`<b>${authorDisplay} (Division)</b>: Die Division wurde mittlerweile umbenannt, hat aber Gültigkeit für den Eintrag.`);
                                     } else {
-                                        markError(divisionInput, false);
+                                        clearStammdatenError(divisionInput);
                                     }
                                 }
 
                             } else {
                                 // Person found but not for this year
                                 console.log("Person found but not for year " + pubYear);
-                                if (groupInput) markError(groupInput, false);
-                                if (labInput) markError(labInput, false);
-                                if (divisionInput) markError(divisionInput, false);
+                                if (groupInput && !unlinkedFields.has(groupInput)) clearStammdatenError(groupInput);
+                                if (labInput && !unlinkedFields.has(labInput)) clearStammdatenError(labInput);
+                                if (divisionInput && !unlinkedFields.has(divisionInput)) clearStammdatenError(divisionInput);
                             }
                         } else {
                             // Person not found in DB
@@ -2558,25 +2615,25 @@ function validateAuthorRows(errors, pubYear) {
                             const pYear = parseInt(pubYear, 10);
 
                             if (!isNaN(pYear) && pYear >= 2006 && (currentYear - pYear >= 3)) {
-                                errors.push(`<b>Author ${idx + 1}</b>: Person "${lastname}, ${firstname}" nicht in den Stammdaten gefunden.`);
+                                errors.push(`<b>${authorDisplay}</b>: Person "${lastname}, ${firstname}" nicht in den Stammdaten gefunden.`);
                             }
-                            if (groupInput) markError(groupInput, false);
-                            if (labInput) markError(labInput, false);
-                            if (divisionInput) markError(divisionInput, false);
+                            if (groupInput && !unlinkedFields.has(groupInput)) clearStammdatenError(groupInput);
+                            if (labInput && !unlinkedFields.has(labInput)) clearStammdatenError(labInput);
+                            if (divisionInput && !unlinkedFields.has(divisionInput)) clearStammdatenError(divisionInput);
                         }
                     } else {
-                        if (groupInput) markError(groupInput, false);
-                        if (labInput) markError(labInput, false);
-                        if (divisionInput) markError(divisionInput, false);
+                        if (groupInput && !unlinkedFields.has(groupInput)) clearStammdatenError(groupInput);
+                        if (labInput && !unlinkedFields.has(labInput)) clearStammdatenError(labInput);
+                        if (divisionInput && !unlinkedFields.has(divisionInput)) clearStammdatenError(divisionInput);
                     }
 
                     // Rule 4d: Completeness (If Group is set, Lab and Division should be set)
                     if (groupInput && groupInput.value.trim()) {
                         if (isOldPsiPub) {
                             const groupVal = groupInput.value.trim();
-                            if (!groupVal.includes('0000 PSI')) {
+                            if (!groupVal.includes('0000 PSI') && !unlinkedFields.has(groupInput)) {
                                 markError(groupInput, true, 'Für Publikationen vor 2006 wird "0000 PSI" erwartet.');
-                                errors.push(`<b>Author ${idx + 1} (Group)</b>: Für Publikationen vor 2006 wird "0000 PSI" erwartet.`);
+                                errors.push(`<b>${authorDisplay} (Group)</b>: Für Publikationen vor 2006 wird "0000 PSI" erwartet.`);
                             }
                         } else {
                             const groupVal = groupInput.value.trim();
@@ -2586,8 +2643,8 @@ function validateAuthorRows(errors, pubYear) {
                             if (labInput) {
                                 if (!labInput.value.trim() && !isSpecialGroup) {
                                     markError(labInput, true, 'Laboratory sollte ausgefüllt sein, wenn Group vorhanden ist.');
-                                    errors.push(`<b>Author ${idx + 1} (Lab)</b>: Laboratory fehlt (Group ist gesetzt).`);
-                                } else if (!labInput.title.includes('Stammdaten')) {
+                                    errors.push(`<b>${authorDisplay} (Lab)</b>: Laboratory fehlt (Group ist gesetzt).`);
+                                } else if (!labInput.title.includes('Stammdaten') && !unlinkedFields.has(labInput)) {
                                     markError(labInput, false);
                                 }
                             }
@@ -2595,8 +2652,8 @@ function validateAuthorRows(errors, pubYear) {
                             if (divisionInput) {
                                 if (!divisionInput.value.trim() && !isSpecialGroup) {
                                     markError(divisionInput, true, 'Division sollte ausgefüllt sein, wenn Group vorhanden ist.');
-                                    errors.push(`<b>Author ${idx + 1} (Division)</b>: Division fehlt (Group ist gesetzt).`);
-                                } else if (!divisionInput.title.includes('Stammdaten') && !divisionInput.title.includes('umbenannt')) {
+                                    errors.push(`<b>${authorDisplay} (Division)</b>: Division fehlt (Group ist gesetzt).`);
+                                } else if (!divisionInput.title.includes('Stammdaten') && !divisionInput.title.includes('umbenannt') && !unlinkedFields.has(divisionInput)) {
                                     markError(divisionInput, false);
                                 }
                             }
@@ -2605,6 +2662,15 @@ function validateAuthorRows(errors, pubYear) {
                 } else {
                     // Reset if no name
                     if (groupInput) markError(groupInput, false);
+                }
+
+                // Highlight the entire pane if it contains any errors
+                if (pane.querySelector('.dora-error')) {
+                    pane.style.setProperty('outline', '2px solid #e53e3e', 'important');
+                    pane.style.setProperty('background-color', '#fff5f5', 'important');
+                } else {
+                    pane.style.removeProperty('outline');
+                    pane.style.removeProperty('background-color');
                 }
             }
         });
@@ -2659,6 +2725,15 @@ function validateAuthorRows(errors, pubYear) {
                         } else {
                             markError(deptInput, false);
                         }
+                    }
+
+                    // Highlight the entire row if it contains any errors
+                    if (row.querySelector('.dora-error')) {
+                        row.style.setProperty('outline', '2px solid #e53e3e', 'important');
+                        row.style.setProperty('background-color', '#fff5f5', 'important');
+                    } else {
+                        row.style.removeProperty('outline');
+                        row.style.removeProperty('background-color');
                     }
                 }
             });
