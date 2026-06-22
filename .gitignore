@@ -14,3 +14,5 @@ pdf-analyzer/requirements.txt
 PSI data files/psi_data_latest.js
 pdf-analyzer/main.py
 .gitignore
+test-unpaywall.js
+.gitignore

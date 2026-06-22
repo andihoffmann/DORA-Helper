@@ -159,11 +159,8 @@ async function fetchMetadata(doi) {
             issns = unpaywallData.journal_issns.split(',');
         }
 
-        // 3. Fetch DOAJ (if ISSNs found)
-        let doajData = null;
-        if (issns.length > 0) {
-            doajData = await fetchDoajMetadata(issns);
-        }
+        // 3. Fetch DOAJ status (from Unpaywall directly instead of DOAJ API due to Cloudflare bot protection)
+        let doajData = { in_doaj: unpaywallData.journal_is_in_doaj === true };
 
         // 4. Extract Crossref License
         // Crossref licenses are in message.license [ { URL: "...", start: ... } ]
