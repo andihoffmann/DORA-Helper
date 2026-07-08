@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.67
+// Version: 2.68
 
 let observerTimeout = null;
 let dragSrcEl = null;
@@ -3830,15 +3830,16 @@ function initBatchQcDashboard(pids) {
     middle.style.cssText = 'flex: 2.8; border-right: 1px solid #e2e8f0; display: flex; flex-direction: column; background: #fff; position: relative;';
 
     const middleToolbar = document.createElement('div');
-    middleToolbar.style.cssText = 'padding: 10px 16px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center;';
+    middleToolbar.style.cssText = 'padding: 10px 16px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: flex-end; align-items: center;';
 
     const approveBtn = document.createElement('button');
     approveBtn.textContent = '✅ Schnell-Freigabe (QC = Yes)';
-    approveBtn.style.cssText = 'background: #22c55e; color: white; border: none; padding: 8px 18px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 13px; box-shadow: 0 2px 4px rgba(34, 197, 94, 0.2); transition: background 0.15s;';
+    approveBtn.style.cssText = 'background: #22c55e; color: white; border: none; padding: 10px 24px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 14px; box-shadow: 0 4px 6px rgba(34, 197, 94, 0.25); transition: background 0.15s, transform 0.1s;';
     approveBtn.onmouseenter = () => approveBtn.style.background = '#16a34a';
     approveBtn.onmouseleave = () => approveBtn.style.background = '#22c55e';
+    approveBtn.onmousedown = () => approveBtn.style.transform = 'scale(0.97)';
+    approveBtn.onmouseup = () => approveBtn.style.transform = 'scale(1)';
     approveBtn.onclick = () => approveCurrentForm();
-    middleToolbar.appendChild(approveBtn);
 
     // Fetch actual initials for approveBtn label dynamically
     chrome.storage.local.get({ qcInitials: '' }, function (result) {
@@ -3859,8 +3860,13 @@ function initBatchQcDashboard(pids) {
     const middleIframe = document.createElement('iframe');
     middleIframe.style.cssText = 'flex: 1; border: none; width: 100%;';
 
+    const middleBottomToolbar = document.createElement('div');
+    middleBottomToolbar.style.cssText = 'padding: 12px 16px; background: #ffffff; border-top: 1px solid #e2e8f0; display: flex; justify-content: center; align-items: center; box-shadow: 0 -2px 10px rgba(0,0,0,0.05); z-index: 10;';
+    middleBottomToolbar.appendChild(approveBtn);
+
     middle.appendChild(middleToolbar);
     middle.appendChild(middleIframe);
+    middle.appendChild(middleBottomToolbar);
 
     // Right (PDF)
     const right = document.createElement('div');
@@ -4683,6 +4689,11 @@ function initBatchQcDashboard(pids) {
                     // Opt-in Auto-Submit (hier scrollen wir nur hin, damit der User nochmal prüfen kann)
                     submitBtn.scrollIntoView({ behavior: "smooth", block: "center" });
                     submitBtn.style.border = "3px solid #28a745";
+                    
+                    // Automatisch absenden nach kurzem Feedback
+                    setTimeout(() => {
+                        submitBtn.click();
+                    }, 300);
                 } else {
                     alert("Speichern-Button nicht gefunden!");
                 }
