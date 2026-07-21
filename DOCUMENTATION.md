@@ -22,6 +22,9 @@ The **DORA Lib4ri Assistant** is a powerful browser extension designed to stream
 ### 1. Metadata Auto-Fetch & Cross-Check
 When an edit page is opened in DORA, the assistant automatically scans for a DOI and fetches data from **Crossref**, **Unpaywall**, **Scopus**, and **DOAJ**.
 
+![Metadata Auto-Fetch Result Box](./images/metadata_autofetch_ui.png)
+
+
 *   **Result Box**: A floating panel on the right displays:
     *   **Open Access Status** (Gold, Green, Hybrid, Bronze, Closed).
     *   **License Information** (e.g., CC-BY) with direct links.
@@ -38,6 +41,9 @@ When an edit page is opened in DORA, the assistant automatically scans for a DOI
 
 ### 2. Advanced PDF Analysis & Extraction
 Extract **Page Count** and **Keywords** directly from PDFs and discover missing full-texts.
+
+![PDF Analysis Tool](./images/pdf_analysis_ui.png)
+
 
 *   **Zotero-style Page Scanning**: If Unpaywall has no PDF, the assistant scans the publisher's page via meta-tags (`citation_pdf_url`) and JSON-LD to find direct links.
 *   **Lightning Analysis (⚡)**: Click the lightning bolt next to any PDF link (even on publisher sites) to analyze it via our Hugging Face backend.
@@ -64,6 +70,9 @@ The assistant provides intelligent autocomplete suggestions from the DORA Solr i
 ### 4. Integrated Keyword Manager
 Replaces the standard keyword input with a sophisticated management tool.
 
+![Integrated Keyword Manager](./images/keyword_manager_ui.png)
+
+
 *   **Edit & Sort**: Click to load keywords into a draggable list.
 *   **Drag & Drop**: Easily reorder keywords for the final record.
 *   **Auto-Formatting**: Corrects case based on a customizable exception list (e.g., `dna -> DNA`, `ph -> pH`).
@@ -81,6 +90,9 @@ Commonly used tags can be inserted with a single click below the "Additional Inf
 
 ### 6. Real-time Validation & Error Summary
 The assistant validates form fields as you type, highlighting issues with a **red border** (errors) or **dotted line** (warnings).
+
+![Real-time Validation and Errors](./images/validation_errors_ui.png)
+
 
 *   **Validation Rules**:
     *   **Volume**: Mandatory for published journal articles (with exceptions for Book Chapters).

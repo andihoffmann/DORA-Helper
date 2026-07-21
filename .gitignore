@@ -16,3 +16,10 @@ pdf-analyzer/main.py
 .gitignore
 test-unpaywall.js
 .gitignore
+DOCUMENTATION.md
+images/keyword_manager_ui.png
+images/metadata_autofetch_ui.png
+images/pdf_analysis_ui.png
+images/validation_errors_ui.png
+DOCUMENTATION.md
+DOCUMENTATION.md

@@ -583,7 +583,13 @@ function renderResultBox(data) {
                 // A. Affiliation Check
                 const affRow = createEl('div', '', '');
                 const affInd = createEl('span', '', scopus.isLib4Ri ? '✅ ' : '⚠️ ');
-                const affText = createEl('span', '', scopus.isLib4Ri ? 'Corr. Author: Lib4Ri' : 'Corr. Author: Extern/Möglicherweise nicht gefunden');
+                const affText = createEl('span', '');
+                if (scopus.isLib4Ri) {
+                    affText.appendChild(document.createTextNode('Corr. Author: '));
+                    affText.appendChild(createEl('b', '', '4RI'));
+                } else {
+                    affText.textContent = 'Corr. Author: Extern/Möglicherweise nicht gefunden';
+                }
                 if (!scopus.isLib4Ri) affText.title = scopus.affiliation || "Keine Info";
                 affRow.appendChild(affInd);
                 affRow.appendChild(affText);
@@ -1151,6 +1157,8 @@ function insertHybridTag() {
 function injectKeywordManager(topicContainer) {
     const toolHeader = createEl('div');
     toolHeader.id = 'dora-keyword-manager';
+    toolHeader.style.maxWidth = 'max-content';
+    toolHeader.style.minWidth = '300px';
 
     // Header Row
     const headRow = createEl('div');
@@ -2256,6 +2264,8 @@ function validateForm() {
     const seriesTitleEl = document.getElementById('edit-host-series-titleinfo-title');
     const pubTypeEl = document.getElementById('edit-publication-type');
     const bookTitleEl = document.getElementById('edit-host-booktitle'); // Book Title
+    const docAvailabilityEl = getField('Document Availability');
+    const conditionsReuseEl = getField('Conditions of Reuse');
 
     // Improved Year Selector: Try multiple IDs
     let pubYearEl = document.getElementById('edit-origininfodate-0-dateissued') ||
@@ -2296,7 +2306,7 @@ function validateForm() {
         }
     };
 
-    [statusEl, volumeEl, startPageEl, endPageEl, titleEl, confNameEl, procTitleEl, seriesTitleEl, bookTitleEl, pubYearEl].forEach(el => attachListener(el));
+    [statusEl, volumeEl, startPageEl, endPageEl, titleEl, confNameEl, procTitleEl, seriesTitleEl, bookTitleEl, pubYearEl, docAvailabilityEl, conditionsReuseEl].forEach(el => attachListener(el));
 
     // Rule 1: Volume required if Published (BUT NOT for Book Chapter or Conference Item)
     const pubTypeVal = pubTypeEl ? pubTypeEl.value.toLowerCase() : '';
@@ -2353,6 +2363,77 @@ function validateForm() {
 
         markError(startPageEl, !!startPageError, startPageError || '');
     }
+
+    // Rule: Document Availability & Conditions of Reuse (Metadata Form)
+    if (docAvailabilityEl && conditionsReuseEl) {
+        let availText = docAvailabilityEl.value;
+        if (docAvailabilityEl.tagName === 'SELECT') {
+            availText = docAvailabilityEl.options[docAvailabilityEl.selectedIndex]?.text || '';
+        }
+        availText = availText.toLowerCase();
+
+        let reuseText = '';
+        if (conditionsReuseEl.tagName === 'SELECT') {
+            reuseText = conditionsReuseEl.options[conditionsReuseEl.selectedIndex]?.text || '';
+        } else {
+            reuseText = conditionsReuseEl.value;
+        }
+        
+        const reuseVal = conditionsReuseEl.value;
+        const cleanReuseText = reuseText.trim().toLowerCase();
+        
+        const isLicenseSelected = reuseVal !== '' && 
+                                  reuseVal !== '_none' && 
+                                  reuseVal !== 'none' && 
+                                  cleanReuseText !== '' && 
+                                  !cleanReuseText.includes('- none -') && 
+                                  !cleanReuseText.includes('select') &&
+                                  !cleanReuseText.includes('unspecified');
+
+        if (isLicenseSelected && (availText.includes('intranet') || availText.includes('private'))) {
+            markError(docAvailabilityEl, true, 'Wenn eine Lizenz (Conditions of Reuse) ausgewählt ist, darf Document Availability nicht "Intranet" oder "Private" sein.');
+            errors.push('<b>Document Availability</b>: Darf nicht "Intranet" oder "Private" sein, wenn eine Lizenz ausgewählt ist.');
+        } else {
+            markError(docAvailabilityEl, false);
+        }
+    } else if (docAvailabilityEl) {
+        markError(docAvailabilityEl, false);
+    }
+
+    // Rule: Document Availability & Conditions of Reuse (PDF Upload Screen / Ingest)
+    const pdfAvailSelects = document.querySelectorAll('select[id*="-availability"]');
+    pdfAvailSelects.forEach(availSelect => {
+        const match = availSelect.id.match(/^(.*?)-availability/);
+        if (match) {
+            const baseId = match[1];
+            const licenseSelect = document.getElementById(baseId + '-use-perm-manual') || document.getElementById(baseId + '-use-permission');
+            if (licenseSelect) {
+                attachListener(availSelect);
+                attachListener(licenseSelect);
+
+                let availText = availSelect.options[availSelect.selectedIndex]?.text.toLowerCase() || '';
+                
+                let reuseText = licenseSelect.options[licenseSelect.selectedIndex]?.text || '';
+                const reuseVal = licenseSelect.value;
+                const cleanReuseText = reuseText.trim().toLowerCase();
+                
+                const isLicenseSelected = reuseVal !== '' && 
+                                          reuseVal !== '_none' && 
+                                          reuseVal !== 'none' && 
+                                          cleanReuseText !== '' && 
+                                          !cleanReuseText.includes('- none -') && 
+                                          !cleanReuseText.includes('select') &&
+                                          !cleanReuseText.includes('unspecified');
+
+                if (isLicenseSelected && (availText.includes('intranet') || availText.includes('private'))) {
+                    markError(availSelect, true, 'Wenn eine Lizenz ausgewählt ist, darf Document Availability nicht "Intranet" oder "Private" sein.');
+                    errors.push(`<b>Document Availability (PDF)</b>: Darf nicht "Intranet" oder "Private" sein, wenn eine Lizenz ausgewählt ist.`);
+                } else {
+                    markError(availSelect, false);
+                }
+            }
+        }
+    });
 
     // Rule 3: Sentence Case Checks
     checkSentenceCase(titleEl, 'Article Title', errors);
