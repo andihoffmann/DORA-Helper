@@ -29,14 +29,60 @@ jobs:
       - name: Install dependencies
         run: npm ci || npm install
 
+      # AMO schaltet Uploads bei Wartungsarbeiten ab und antwortet dann mit
+      # HTTP 503 ("Some features are temporarily disabled…"). Das erkennt man
+      # ohne Zugangsdaten am Upload-Endpunkt: 401 = Dienst nimmt Uploads an.
+      - name: Warten bis AMO Uploads annimmt
+        run: |
+          for versuch in $(seq 1 10); do
+            status=$(curl -s -o /tmp/amo.json -w '%{http_code}' \
+              -X POST https://addons.mozilla.org/api/v5/addons/upload/ || echo 000)
+
+            if [ "$status" != "503" ] && [ "$status" != "000" ]; then
+              echo "AMO nimmt Uploads an (HTTP $status)."
+              exit 0
+            fi
+
+            echo "Versuch $versuch/10 – AMO antwortet mit HTTP $status:"
+            cat /tmp/amo.json 2>/dev/null || true
+            echo
+
+            if [ "$versuch" -lt 10 ]; then sleep 180; fi
+          done
+
+          echo "AMO ist auch nach 30 Minuten noch im Wartungsmodus."
+          echo "Der Tag bleibt bestehen – den Workflow später einfach erneut ausführen (Re-run jobs)."
+          exit 1
+
       # Signieren (Ohne --id Flag, liest aus manifest.json)
+      # Zusätzlich bis zu drei Versuche, falls AMO kurzzeitig wegbricht.
       - name: Sign Extension
         run: |
-          npx web-ext sign \
-            --api-key="${{ secrets.AMO_JWT_ISSUER }}" \
-            --api-secret="${{ secrets.AMO_JWT_SECRET }}" \
-            --channel=unlisted \
-            --timeout=600000
+          set +e
+          for versuch in 1 2 3; do
+            echo "::group::Signier-Versuch $versuch von 3"
+            npx web-ext sign \
+              --api-key="${{ secrets.AMO_JWT_ISSUER }}" \
+              --api-secret="${{ secrets.AMO_JWT_SECRET }}" \
+              --channel=unlisted \
+              --timeout=600000
+            status=$?
+            echo "::endgroup::"
+
+            if [ $status -eq 0 ]; then
+              echo "Signieren erfolgreich."
+              exit 0
+            fi
+
+            if [ $versuch -lt 3 ]; then
+              echo "AMO nicht erreichbar (Exit $status) – neuer Versuch in 120 Sekunden."
+              sleep 120
+            fi
+          done
+
+          echo "Signieren nach drei Versuchen fehlgeschlagen."
+          echo "Falls AMO die Version bereits angenommen hat, muss die Versionsnummer erhöht werden."
+          exit 1
 
       # Debug: Zeige erstellte Dateien
       - name: List Artifacts
