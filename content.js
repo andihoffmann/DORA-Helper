@@ -5136,11 +5136,18 @@ async function applyFundingItem(item) {
 
     return { written, skipped, results, vocabulary: vocabulary };
 }
-function fundingAutocompleteBaseUrl() {
-    // Bevorzugt die URL aus dem Formular (enthaelt die richtige Instanz)
+// Mögliche Basis-URLs des Autocomplete-Callbacks, in der Reihenfolge des
+// Vertrauens: die URL aus dem Formular, danach die aus dem Seitenpfad
+// abgeleitete. Beide werden probiert, falls die erste nichts liefert.
+function fundingAutocompleteBaseUrls() {
+    const urls = [];
     const helper = document.querySelector('input.autocomplete[id*="award-title-autocomplete"]');
-    if (helper && helper.value) return helper.value.replace(/\/\d+\/?$/, '/0');
-    return `${getDoraBaseUrl()}/islandora/funding/autocomplete/atitle/0`;
+    if (helper && helper.value) urls.push(helper.value.replace(/\/\d+\/?$/, '/0'));
+
+    const derived = `${getDoraBaseUrl()}/islandora/funding/autocomplete/atitle/0`;
+    if (!urls.includes(derived)) urls.push(derived);
+
+    return urls;
 }
 
 // null  = Abfrage nicht moeglich/fehlgeschlagen
@@ -5186,11 +5193,31 @@ async function lookupDoraFundingEntry(item) {
     const number = String(item.awardNumber || '').trim();
     if (!number) return null;
 
-    const url = `${fundingAutocompleteBaseUrl().replace(/\/$/, '')}/${encodeURIComponent(number)}`;
-    const data = await fetchFundingAutocomplete(url);
-    if (data === null || data === undefined || typeof data !== 'object') return null;
+    // Der Callback antwortet je nach Instanz und Suchbegriff unterschiedlich;
+    // deshalb mehrere Kombinationen probieren, bevor "nicht gefunden" gilt.
+    const terms = [number];
+    if (item.acronym) terms.push(item.acronym);
 
-    const keys = Array.isArray(data) ? data.map(String) : Object.keys(data);
+    let keys = null;
+    let url = '';
+    let reachable = false;
+
+    outer:
+    for (const base of fundingAutocompleteBaseUrls()) {
+        for (const term of terms) {
+            url = `${base.replace(/\/$/, '')}/${encodeURIComponent(term)}`;
+            const data = await fetchFundingAutocomplete(url);
+            if (data === null || data === undefined || typeof data !== 'object') continue;
+
+            reachable = true;
+            const found = Array.isArray(data) ? data.map(String) : Object.keys(data);
+            if (found.some(k => String(k).split('||')[0].trim() === number)) { keys = found; break outer; }
+            if (keys === null) keys = found;   // erste auswertbare Antwort merken
+        }
+    }
+
+    if (!reachable) return null;
+    if (keys === null) keys = [];
 
     // Leere Antwort = Nummer ist im Vokabular nicht vorhanden
     if (keys.length === 0) {
@@ -5204,11 +5231,23 @@ async function lookupDoraFundingEntry(item) {
         return null;
     }
 
-    const hit = parsed.find(p => p[0].trim() === number);
-    if (!hit) {
+    const sameNumber = parsed.filter(p => p[0].trim() === number);
+    if (!sameNumber.length) {
         console.warn(`DORA Helper: ${number} nicht in der Autocomplete-Antwort`, url,
             keys.slice(0, 3).map(k => k.slice(0, 60)));
         return { found: false, candidates: keys.length };
+    }
+
+    // Nummernkreise von SNSF und FP7 überlappen (SNSF 236711 vs. FP7-Projekt
+    // 236711). Der Eintrag muss deshalb auch zum Foerderer passen.
+    const expected = item.funderKey === 'SNSF' ? ['3'] : ['1', '2', '4'];
+    const hit = sameNumber.find(p => expected.includes((p[2] || '').trim()));
+
+    if (!hit) {
+        const other = sameNumber[0];
+        const otherStream = DORA_FUNDING_STREAM_BY_INDEX[(other[2] || '').trim()] || 'unbekanntes Programm';
+        console.warn(`DORA Helper: ${number} steht in DORAs Liste als ${otherStream}, gesucht war ${item.funderName}`);
+        return { found: false, wrongFunder: true, otherStream: otherStream, otherTitle: other[1].trim() };
     }
 
     const streamIndex = (hit[2] || '').trim();
@@ -5346,8 +5385,15 @@ function injectFundingFormPanel() {
 
         summary.textContent = 'DORA-Auswahlliste wird geprüft …';
         summary.style.color = '#6c757d';
-        Promise.all(pending.map(i => lookupDoraFundingEntry(i).then(entry => { i.doraEntry = entry; })))
-            .then(() => draw(data));
+
+        // Nacheinander abfragen: gleichzeitige Requests auf dieselbe
+        // Drupal-Session behindern sich gegenseitig.
+        (async () => {
+            for (const item of pending) {
+                item.doraEntry = await lookupDoraFundingEntry(item);
+            }
+            draw(data);
+        })();
     };
     fundingPanelRender = render;
 
@@ -5479,8 +5525,11 @@ function renderFundingSuggestions(body, data) {
                 + (entry && entry.found === false ? ' – nicht in der Auswahlliste, Werte aus dem Bestand' : '');
             vocabLine.style.color = '#28a745';
         } else if (notInVocabulary) {
-            vocabLine.textContent = '🚫 Nicht in DORAs Funding-Auswahlliste – kann nicht eingetragen werden';
+            vocabLine.textContent = (entry && entry.wrongFunder)
+                ? `🚫 In DORAs Auswahlliste gehört ${item.awardNumber} zu einem Projekt von ${entry.otherStream} – nicht eintragbar`
+                : '🚫 Nicht in DORAs Funding-Auswahlliste – kann nicht eingetragen werden';
             vocabLine.style.color = '#6c757d';
+            if (entry && entry.wrongFunder) vocabLine.title = entry.otherTitle;
         } else if (checkFailed) {
             vocabLine.style.color = '#d69e2e';
             vocabLine.appendChild(document.createTextNode('🚫 Abgleich mit DORAs Auswahlliste fehlgeschlagen – kein Eintrag möglich. '));

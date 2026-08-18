@@ -864,11 +864,26 @@ const FUNDER_PROFILES = {
         crossrefIds: {
             '10.13039/501100000780': null,                              // European Commission
             '10.13039/100010661': 'Horizon 2020 Framework Programme',   // H2020
+            '10.13039/501100007601': null,                              // "Horizon 2020" bei Crossref, faktisch auch fuer Horizon-Europe-Projekte
             '10.13039/100011102': 'Seventh Framework Programme',        // FP7
-            '10.13039/100018693': 'Horizon Europe Framework Programme', // Horizon Europe
-            '10.13039/501100007601': null,                              // Horizon 2020 (alt)
-            '10.13039/100019180': null,                                 // HORIZON EUROPE (alt)
-            '10.13039/501100000781': null                               // ERC
+            '10.13039/100011103': null,                                 // FP6
+            '10.13039/501100000781': null,                              // ERC
+            // HORIZON EUROPE und seine Teilprogramme
+            '10.13039/100018693': 'Horizon Europe Framework Programme',
+            '10.13039/100018695': 'Horizon Europe Framework Programme', // Research Infrastructures
+            '10.13039/100018703': 'Horizon Europe Framework Programme', // European Innovation Council
+            '10.13039/100018704': 'Horizon Europe Framework Programme', // Innovation Ecosystems
+            '10.13039/100018705': 'Horizon Europe Framework Programme', // EIT
+            '10.13039/100019180': 'Horizon Europe Framework Programme', // ERC
+            '10.13039/100019185': 'Horizon Europe Framework Programme', // Global Challenges
+            '10.13039/100019186': 'Horizon Europe Framework Programme', // Innovative Europe
+            // Exekutivagenturen der EU - Programm ergibt sich aus der Projektnummer
+            '10.13039/501100000783': null,                              // REA
+            '10.13039/501100021050': null,                              // CINEA
+            '10.13039/100020631': null,                                 // EISMEA
+            '10.13039/501100012290': null,                              // INEA
+            '10.13039/100013284': null,                                 // EASME
+            '10.13039/501100000785': null                               // EACEA
         }
     }
 };
@@ -901,6 +916,11 @@ function funderProfileFromName(name) {
     if (/marie s?k?[łl]odowska|marie curie|\bmsca\b/.test(n)) return FUNDER_PROFILES.EC;
     if (/\b(7th|6th)\s*framework|framework program(me)?\b.*\beu\b|\beu\b.*framework program(me)?/.test(n)) return FUNDER_PROFILES.EC;
     if (/european union|\beuratom\b|\bec\b\s*research|\berc(ea)?\b/.test(n)) return FUNDER_PROFILES.EC;
+    // EU-Exekutivagenturen und Teilprogramme zahlen die Projekte aus
+    if (/executive agency/.test(n) && /european|innovation|research|climate|health|digital|networks|audiovisual|small and medium/.test(n)) return FUNDER_PROFILES.EC;
+    if (/\b(rea|hadea|cinea|eismea|ercea|inea|easme|eacea)\b/.test(n)) return FUNDER_PROFILES.EC;
+    if (/european institute of innovation|innovation council|research infrastructures|framework programme/.test(n)
+        && !/national|swiss|deutsche|german/.test(n)) return FUNDER_PROFILES.EC;
     return null;
 }
 
