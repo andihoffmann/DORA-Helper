@@ -14,6 +14,43 @@ let cachedCrossrefMapped = null;
 let cachedCrossrefDoi = null;
 let isKeywordManagerOpen = false;
 
+// Erkennt Eingabefelder des Funding-Bereichs (Drupal/Islandora-Formular)
+const FUNDING_FIELD_HINT = /fund|award|grant|f(oe|ö)rder|atitle|anumber|fstream/i;
+
+// Der Funding-Bereich in DORA: "Funding (only EC and SNSF Projects)"
+// funder_name/funding_stream sind <select>, funder_identifier ist hidden,
+// award_number ist readonly und wird sonst vom Autocomplete gefuellt.
+const FUNDING_CONTAINER_SELECTORS = [
+    '.form-item-extension-funding-references',
+    '[class*="funding-references"]',
+    '[class*="form-item-extension-funding"]'
+];
+
+// Rollen-Erkennung pro Zeile: spezifische Muster zuerst
+const FUNDING_ROLE_PATTERNS = {
+    awardNumber: [/\banumber\b/i, /award[\s_-]?number/i, /grant[\s_-]?number/i, /project[\s_-]?number/i, /\[number\]/i, /\bcode\b/i],
+    funderIdentifier: [/\bfid\b/i, /funder[\s_-]?identifier/i, /funder[\s_-]?id\b/i, /\bidentifier\b/i],
+    fundingStream: [/\bfstream\b/i, /funding[\s_-]?stream/i, /\bstream\b/i, /programme?\b/i],
+    funderName: [/\bfname\b/i, /funder[\s_-]?name/i, /\bfunder\b/i, /\bagency\b/i, /f(oe|ö)rder(er|organisation)/i],
+    awardTitle: [/\batitle\b/i, /award[\s_-]?title/i, /project[\s_-]?title/i, /\btitle\b/i]
+};
+
+let cachedFundingSuggestions = null;
+let fundingPanelRender = null;   // Re-Render des Formular-Panels (Sammel-Eintrag)
+let fundingPanelLastState = null; // Diagnose: nur bei Zustandswechsel loggen
+let lastOaIsHybrid = null;       // Ergebnis des OA-Abgleichs für den #hybrid-Tag
+
+// Drupals Autocomplete-Callback des Award-Title-Feldes liefert Schluessel im
+// Format "641939||HypoTRAIN - Hyporheic Zone Processes …||2" und findet auch
+// ueber die Award-Nummer. Der dritte Teil ist der Funding-Stream (Reihenfolge
+// der Select-Optionen). Damit laesst sich exakt der DORA-Eintrag uebernehmen.
+const DORA_FUNDING_STREAM_BY_INDEX = {
+    '1': 'Seventh Framework Programme',
+    '2': 'Horizon 2020 Framework Programme',
+    '3': 'SNSF',
+    '4': 'Horizon Europe Framework Programme'
+};
+
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', startObserver);
 } else {
@@ -107,6 +144,7 @@ function scanAndInject() {
     injectTagButtons();
     injectBulkDataTool();
     injectDoraAutocompletes();
+    injectFundingFormPanel();
 
     validateForm();
     if (typeof initAiMetadataCheck === 'function') {
@@ -765,18 +803,9 @@ function renderResultBox(data) {
         btnContainer.appendChild(importBtn);
     }
 
-    // Hybrid Button
-    if (isHybrid) {
-        const hybridBtn = createEl('button', 'dora-box-btn btn-hybrid-action');
-        hybridBtn.id = 'dora-add-hybrid-btn';
-        hybridBtn.title = "Fügt #hybrid in Additional Information ein";
-        const icon = createEl('span', '', '📝');
-        icon.style.marginRight = '5px';
-        hybridBtn.appendChild(icon);
-        hybridBtn.appendChild(document.createTextNode(' #hybrid setzen'));
-        hybridBtn.addEventListener('click', insertHybridTag);
-        btnContainer.appendChild(hybridBtn);
-    }
+    // Der #hybrid-Button sitzt bei den übrigen Tags unter "Additional
+    // Information"; hier wird er nur als erkannt markiert.
+    markHybridTagButton(isHybrid);
 
     // NEW: PDF Action Row (Zeile für PDF-Aktionen)
     const pdfActionRow = createEl('div', '', '');
@@ -882,25 +911,37 @@ function renderResultBox(data) {
     box.appendChild(dropZone);
 }
 
-async function addMissingRows(containerSelector, requiredCount) {
+async function addMissingRows(containerRef, requiredCount) {
     // Loop to ensure we reach the required count
     // We use a safe limit (requiredCount + 2) to prevent infinite loops if something breaks
     let safetyLimit = requiredCount + 5;
+
+    // containerRef is either a CSS selector or a resolver function (needed where
+    // the wrapper itself has no stable selector, e.g. the funding fieldpanel).
+    const resolveWrapper = () => typeof containerRef === 'function'
+        ? containerRef()
+        : document.querySelector(containerRef);
 
     while (safetyLimit > 0) {
         safetyLimit--;
 
         // 1. FRESH QUERY: Always re-query the container because Drupal AJAX replaces it
-        let container = document.querySelector(containerSelector + ' .islandora-form-fieldpanel-panel');
+        const wrapperEl = resolveWrapper();
+        if (!wrapperEl) {
+            console.warn('DORA Helper: Container not found ' + containerRef);
+            return;
+        }
+
+        let container = wrapperEl.querySelector('.islandora-form-fieldpanel-panel');
         let rowSelector = '.islandora-form-fieldpanel-pane';
 
         // Fallback for standard Drupal multi-value tables
         if (!container) {
-            container = document.querySelector(containerSelector + ' table');
+            container = wrapperEl.querySelector('table');
             if (container) {
                 rowSelector = 'tbody tr:not(.tabledrag-hide)';
             } else {
-                console.warn('DORA Helper: Container not found ' + containerSelector);
+                console.warn('DORA Helper: No fieldpanel/table inside container', wrapperEl);
                 return;
             }
         }
@@ -914,14 +955,13 @@ async function addMissingRows(containerSelector, requiredCount) {
 
         // 3. FIND BUTTON
         // Look in the parent/wrapper since table add buttons are usually outside the table itself
-        const wrapper = document.querySelector(containerSelector);
         let addButton = container.querySelector('.fieldpanel-add.form-submit');
-        if (!addButton && wrapper) {
-            addButton = wrapper.querySelector('.fieldpanel-add.form-submit, input[type="submit"][value="Add"], input[type="submit"][name$="[add]"]');
+        if (!addButton) {
+            addButton = wrapperEl.querySelector('.fieldpanel-add.form-submit, input[type="submit"][value="Add"], input[type="submit"][name$="[add]"]');
         }
 
         if (!addButton) {
-            console.warn('DORA Helper: "Add" button missing in ' + containerSelector);
+            console.warn('DORA Helper: "Add" button missing in', wrapperEl);
             return;
         }
 
@@ -933,8 +973,9 @@ async function addMissingRows(containerSelector, requiredCount) {
         // 5. WAIT FOR AJAX
         await new Promise(resolve => {
             const observer = new MutationObserver((mutations, obs) => {
-                let checkContainer = document.querySelector(containerSelector + ' .islandora-form-fieldpanel-panel');
-                if (!checkContainer) checkContainer = document.querySelector(containerSelector + ' table');
+                const currentWrapper = resolveWrapper();
+                let checkContainer = currentWrapper && currentWrapper.querySelector('.islandora-form-fieldpanel-panel');
+                if (!checkContainer && currentWrapper) checkContainer = currentWrapper.querySelector('table');
 
                 if (checkContainer) {
                     const newCount = checkContainer.querySelectorAll(rowSelector).length;
@@ -948,7 +989,7 @@ async function addMissingRows(containerSelector, requiredCount) {
             // Ideally we'd observe the parent of the container, but the container itself usually mutates children.
             // If the container ITSELF is replaced, the observer might die. 
             // Better: Observe the wrapper if possible, or just accept the timeout fallback.
-            const observeTarget = document.querySelector(containerSelector).parentNode || document.body;
+            const observeTarget = wrapperEl.parentNode || document.body;
             observer.observe(observeTarget, { childList: true, subtree: true });
 
             // Timeout: 2.5 seconds (AJAX should be faster)
@@ -1353,6 +1394,13 @@ function injectTagButtons() {
     const isWSL = window.location.href.toLowerCase().includes('/wsl');
 
     const tags = [
+        {
+            label: '#hybrid', id: 'dora-tag-hybrid',
+            title: 'Hybrid Open Access: Artikel in einem Subskriptionsjournal, der einzeln OA gestellt wurde.',
+            // Orange wie bisher in der Result-Box
+            customStyle: 'background-color: #f97316; border-color: #ea580c; color: #ffffff;',
+            insert: insertHybridTag
+        },
         { label: '#other_journal_contribution', title: 'Editorials, Letters, Introductions, Commentary, Book Reviews, etc. (nur Journal Articles). Bei Unsicherheiten lieber taggen! Short communication nicht taggen.' },
         { label: '#present_address', title: 'Keine 4RI-Affiliation, aber "Present address" vorhanden. Bitte mit Initialen und Nachnamen angeben.', prompt: true },
         { label: '#corporate', title: 'Unter den Autoren befindet sich eine Körperschaft.' },
@@ -1366,12 +1414,17 @@ function injectTagButtons() {
         const btn = createEl('button', 'dora-box-btn btn-secondary');
         btn.innerText = tag.label;
         btn.title = tag.title;
+        if (tag.id) btn.id = tag.id;
         let baseStyle = 'padding: 2px 8px; font-size: 0.85em; background: #e2e8f0; border: 1px solid #cbd5e0; border-radius: 3px; cursor: pointer; color: #2d3748; width: auto;';
         if (tag.customStyle) baseStyle += tag.customStyle;
         btn.style.cssText = baseStyle;
 
         btn.onclick = (e) => {
             e.preventDefault();
+
+            // Eigene Einfüge-Logik (z.B. #hybrid: ans Ende, ohne Dublette)
+            if (tag.insert) { tag.insert(); return; }
+
             let valueToInsert = tag.label;
 
             if (tag.prompt) {
@@ -1388,6 +1441,24 @@ function injectTagButtons() {
     });
 
     addInfoArea.parentNode.appendChild(container);
+
+    // Falls der DOI-Abgleich schon gelaufen ist, Markierung nachziehen
+    if (lastOaIsHybrid !== null) markHybridTagButton(lastOaIsHybrid);
+}
+
+// Markiert den #hybrid-Tag, wenn der Abgleich Hybrid-OA erkannt hat
+function markHybridTagButton(isHybrid) {
+    lastOaIsHybrid = !!isHybrid;
+    const btn = document.getElementById('dora-tag-hybrid');
+    if (!btn) return;
+
+    if (isHybrid) {
+        btn.style.boxShadow = '0 0 0 2px #fed7aa';
+        btn.title = 'Hybrid Open Access laut Abgleich (Unpaywall) – Tag setzen.';
+    } else {
+        btn.style.boxShadow = '';
+        btn.title = 'Hybrid Open Access: Artikel in einem Subskriptionsjournal, der einzeln OA gestellt wurde.';
+    }
 }
 
 function insertAtCursor(myField, myValue) {
@@ -3247,8 +3318,6 @@ async function applyConferenceData(data) {
 }
 
 
-
-
 // --- UTILS ---
 function findField(labelPart) {
     const labels = document.querySelectorAll('label');
@@ -4056,7 +4125,6 @@ function initBatchQcDashboard(pids) {
         rightIframe.src = `${viewerUrl}?file=${encodeURIComponent(absolutePdfUrl)}`;
 
 
-
         // Inject script into iframe to hide header/footer (Bound BEFORE setting src to avoid race conditions!)
         middleIframe.onload = () => {
             try {
@@ -4784,5 +4852,761 @@ function initBatchQcDashboard(pids) {
                 alert("Fehler beim Approve-Vorgang. " + e.message);
             }
         });
+    }
+}
+
+
+// =====================================================================
+// PROJEKT- / FUNDING-VERKNUEPFUNG (Crossref + OpenAIRE -> DORA-Formular)
+// ---------------------------------------------------------------------
+// Scopus liefert Foerderangaben nur so gut, wie das Acknowledgement
+// formuliert ist. Crossref (Verlagsangabe) und OpenAIRE (Projektregister
+// von SNSF/EU) sind deutlich verlaesslicher und werden hier ueber die DOI
+// abgefragt, mit dem Formularinhalt abgeglichen und auf Klick eingetragen.
+// =====================================================================
+
+
+// DOI aus dem Formular, sonst aus dem laufenden Abruf bzw. der Session
+function getCurrentDoiForFunding() {
+    const doiInput = document.getElementById('edit-identifiers-doi') || findField('DOI');
+    const fromForm = doiInput && doiInput.value ? doiInput.value.trim() : '';
+    if (fromForm) return fromForm;
+
+    if (lastAutoFetchedDoi) return lastAutoFetchedDoi;
+
+    const pidMatch = window.location.href.match(/islandora\/object\/([^/]+)/);
+    const pid = pidMatch ? decodeURIComponent(pidMatch[1]) : 'ingest';
+    return sessionStorage.getItem('dora_helper_current_doi_' + pid) || '';
+}
+
+function fundingLabelText(el) {
+    let label = (el.labels && el.labels.length) ? el.labels[0] : null;
+    if (!label) {
+        const item = el.closest('.form-item');
+        if (item) label = item.querySelector('label');
+    }
+    return label ? (label.textContent || '') : '';
+}
+
+// Container des Funding-Bereichs finden (ID/Klassen sind je nach Institut
+// und Formularversion unterschiedlich, daher heuristisch statt hart kodiert)
+function findFundingContainer() {
+    const cached = document.querySelector('[data-dora-funding-container]');
+    if (cached && document.body.contains(cached)) return cached;
+
+    let container = null;
+
+    // 1. Bekannte DORA-Struktur
+    for (const selector of FUNDING_CONTAINER_SELECTORS) {
+        const hit = document.querySelector(selector);
+        if (hit) { container = hit; break; }
+    }
+
+    // 2. Ueber die Feldnamen des Funding-Bereichs zum umschliessenden Fieldpanel
+    if (!container) {
+        const anyField = document.querySelector('[name^="extension[funding_references]"], [id^="edit-extension-funding-references-"]');
+        if (anyField) {
+            let node = anyField.parentElement;
+            while (node && node !== document.body) {
+                if (node.querySelector('.islandora-form-fieldpanel-panel')) { container = node; break; }
+                node = node.parentElement;
+            }
+            if (!container) container = anyField.closest('.form-item') || anyField.parentElement;
+        }
+    }
+
+    // 3. Heuristik fuer abweichende Formularversionen
+    const candidates = container ? [] : Array.from(document.querySelectorAll('input:not([type="hidden"]), select, textarea'))
+        .filter(el => FUNDING_FIELD_HINT.test(`${el.name || ''} ${el.id || ''}`));
+
+    if (!container && candidates.length) {
+        let node = candidates[0].parentElement;
+        while (node && node !== document.body) {
+            const covered = candidates.filter(c => node.contains(c)).length;
+            // Der Wrapper muss das gesamte Fieldpanel umfassen, nicht nur eine
+            // einzelne Zeile - sonst fehlt der "Add"-Button beim Anlegen.
+            const isWrapper = !!node.querySelector('.islandora-form-fieldpanel-panel')
+                || node.matches('fieldset')
+                || (node.matches('.form-item') && !!node.querySelector('table'));
+            if (covered === candidates.length && isWrapper) { container = node; break; }
+            node = node.parentElement;
+        }
+        if (!container) container = candidates[0].closest('.form-item, fieldset') || candidates[0].parentElement;
+    }
+
+    if (!container) {
+        // Fallback: ueber Beschriftungen
+        const labels = Array.from(document.querySelectorAll('label, legend, .fieldset-legend, summary'));
+        const hit = labels.find(l => /funding|f(ö|oe)rder|grant|award/i.test(l.textContent || ''));
+        if (hit) container = hit.closest('.form-item, fieldset, .islandora-form-fieldpanel') || hit.parentElement;
+    }
+
+    if (container) container.setAttribute('data-dora-funding-container', '1');
+    return container;
+}
+
+function getFundingPanes(container) {
+    if (!container) return [];
+    let panes = Array.from(container.querySelectorAll('.islandora-form-fieldpanel-pane'));
+    if (panes.length === 0) panes = Array.from(container.querySelectorAll('table tbody tr:not(.tabledrag-hide)'));
+    if (panes.length === 0) panes = [container]; // Einzelzeiliges Formular
+    return panes;
+}
+
+// Ordnet die Felder einer Zeile den MODS-Rollen zu (greedy, spezifisch zuerst)
+function resolveFundingInputs(pane) {
+    const inputs = Array.from(pane.querySelectorAll('input:not([type="submit"]):not([type="checkbox"]):not([disabled]), select, textarea'))
+        .filter(el => !el.classList.contains('autocomplete')); // Drupals Hilfsfeld mit der Autocomplete-URL
+    const scored = [];
+
+    inputs.forEach(el => {
+        const haystack = `${el.name || ''} ${el.id || ''} ${fundingLabelText(el)}`;
+        Object.keys(FUNDING_ROLE_PATTERNS).forEach(role => {
+            // Versteckte Felder nur fuer den Funder Identifier zulassen
+            if (el.type === 'hidden' && role !== 'funderIdentifier') return;
+            FUNDING_ROLE_PATTERNS[role].forEach((re, rank) => {
+                if (re.test(haystack)) scored.push({ el, role, rank });
+            });
+        });
+    });
+
+    scored.sort((a, b) => a.rank - b.rank);
+
+    const result = {};
+    const usedEls = new Set();
+    scored.forEach(s => {
+        if (result[s.role] || usedEls.has(s.el)) return;
+        result[s.role] = s.el;
+        usedEls.add(s.el);
+    });
+    return result;
+}
+
+function setFundingValue(el, value) {
+    if (!el || value === null || value === undefined || value === '') return false;
+    if (el.tagName === 'SELECT') {
+        const option = Array.from(el.options).find(o =>
+            o.value === value || (o.textContent || '').trim() === value);
+        if (!option) return false;
+        el.value = option.value;
+    } else {
+        el.value = value;
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+}
+
+// Bereits im Formular erfasste Foerderungen auslesen
+function readExistingFunding() {
+    const container = findFundingContainer();
+    if (!container) return [];
+
+    return getFundingPanes(container).map(pane => {
+        const fields = resolveFundingInputs(pane);
+        const value = role => (fields[role] && fields[role].value ? fields[role].value.trim() : '');
+        return {
+            pane: pane,
+            fields: fields,
+            awardNumber: value('awardNumber'),
+            awardTitle: value('awardTitle'),
+            funderName: value('funderName'),
+            fundingStream: value('fundingStream'),
+            isEmpty: !value('awardNumber') && !value('awardTitle') && !value('funderName')
+        };
+    });
+}
+
+// Vergleichsschluessel: im Formular steht die Nummer teils in Rohform
+// ("200021E_203578"), in DORA/OpenAIRE aber immer als nackter Code ("203578").
+function normalizeAwardNumberForKey(awardNumber) {
+    const raw = String(awardNumber || '');
+    const groups = raw.match(/\d+/g) || [];
+    const long = groups.filter(g => g.length >= 5);
+    if (long.length) return long[long.length - 1];
+    return groups.join('');
+}
+
+function fundingKey(funderName, awardNumber) {
+    return `${(funderName || '').toLowerCase().slice(0, 12)}::${normalizeAwardNumberForKey(awardNumber)}`;
+}
+
+// Traegt einen Vorschlag ins Formular ein (leere Zeile nutzen, sonst anlegen)
+// Schreibt ein Feld und prueft nach, ob der Wert stehen geblieben ist.
+// Das Award-Title-Feld haengt an einem Autocomplete-Widget, das Werte
+// ausserhalb seines Vokabulars beim change-Event wieder verwirft.
+async function writeFundingField(el, value) {
+    if (!el) return 'missing';
+    if (value === null || value === undefined || value === '') return 'empty';
+
+    const matches = () => {
+        if (el.tagName === 'SELECT') {
+            const option = Array.from(el.options).find(o => o.value === el.value);
+            return !!option && (el.value === value || (option.textContent || '').trim() === value);
+        }
+        return el.value === value;
+    };
+
+    if (!setFundingValue(el, value)) return 'no-option';
+    await new Promise(r => setTimeout(r, 120));
+    if (matches()) return 'ok';
+
+    // Zweiter Versuch ohne change-Event
+    el.value = value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 120));
+    if (matches()) return 'repaired';
+
+    // Letzter Versuch ganz ohne Events
+    el.value = value;
+    await new Promise(r => setTimeout(r, 120));
+    return matches() ? 'repaired-silent' : 'rejected';
+}
+
+async function applyFundingItem(item) {
+    let container = findFundingContainer();
+    if (!container) throw new Error('Funding-Bereich im Formular nicht gefunden.');
+
+    // Beleg holen, dass DORA das Projekt kennt (Auswahlliste oder Bestand).
+    const vocabulary = item.doraEntry !== undefined ? item.doraEntry : await lookupDoraFundingEntry(item);
+    item.doraEntry = vocabulary;
+
+    const canonical = fundingCanonicalValues(item);
+    if (!canonical) {
+        // Ohne Beleg wird nichts geschrieben - das Titelfeld akzeptiert nur
+        // bekannte Projekte, Teilzeilen waeren unbrauchbar.
+        return {
+            blocked: vocabulary ? 'not-in-vocabulary' : 'check-failed',
+            vocabulary: vocabulary, written: [], skipped: [], results: {}
+        };
+    }
+
+    let rows = readExistingFunding();
+    let target = rows.find(r => r.isEmpty);
+
+    if (!target) {
+        await addMissingRows(() => findFundingContainer(), rows.length + 1);
+        rows = readExistingFunding();
+        target = rows.find(r => r.isEmpty) || rows[rows.length - 1];
+    }
+    if (!target) throw new Error('Keine Zeile zum Befuellen gefunden.');
+
+    const results = {};
+    const write = async (role, value) => {
+        results[role] = target.fields[role]
+            ? await writeFundingField(target.fields[role], value)
+            : 'missing';
+    };
+
+    // Reihenfolge: Der Funder steuert Stream-Auswahl und Autocomplete-Liste
+    await write('funderName', item.funderName);
+    await new Promise(r => setTimeout(r, 120));
+
+    await write('fundingStream', (canonical && canonical.stream) || item.fundingStream);
+    await write('awardTitle', (canonical && canonical.title) || item.awardTitle);
+
+    // award_number ist readonly (wird sonst durch die Autocomplete-Auswahl
+    // gefuellt); per Skript gesetzte Werte werden trotzdem mit abgeschickt.
+    await write('awardNumber', (canonical && canonical.number) || item.awardNumber);
+    await write('funderIdentifier', item.funderIdentifier);
+
+    // Nachkontrolle: Formular-JS kann Felder verzoegert zuruecksetzen
+    await new Promise(r => setTimeout(r, 350));
+    const recheck = {
+        funderName: item.funderName,
+        fundingStream: (canonical && canonical.stream) || item.fundingStream,
+        awardTitle: (canonical && canonical.title) || item.awardTitle,
+        awardNumber: (canonical && canonical.number) || item.awardNumber,
+        funderIdentifier: item.funderIdentifier
+    };
+    for (const role of Object.keys(recheck)) {
+        const el = target.fields[role];
+        const value = recheck[role];
+        if (!el || !value || results[role] === 'missing' || results[role] === 'empty') continue;
+        if (el.value !== value && !(el.tagName === 'SELECT' && el.value === value)) {
+            const status = await writeFundingField(el, value);
+            results[role] = status === 'ok' ? 'repaired' : status;
+        }
+    }
+
+    const written = Object.keys(results).filter(r => /^(ok|repaired)/.test(results[r]));
+    const skipped = Object.keys(results).filter(r => results[r] === 'missing' || results[r] === 'no-option' || results[r] === 'rejected');
+
+    console.log('DORA Helper: Funding eingetragen', item.awardNumber, results);
+
+    return { written, skipped, results, vocabulary: vocabulary };
+}
+function fundingAutocompleteBaseUrl() {
+    // Bevorzugt die URL aus dem Formular (enthaelt die richtige Instanz)
+    const helper = document.querySelector('input.autocomplete[id*="award-title-autocomplete"]');
+    if (helper && helper.value) return helper.value.replace(/\/\d+\/?$/, '/0');
+    return `${getDoraBaseUrl()}/islandora/funding/autocomplete/atitle/0`;
+}
+
+// null  = Abfrage nicht moeglich/fehlgeschlagen
+// found:false = Vokabular kennt die Nummer nicht
+// Holt die Autocomplete-Antwort: zuerst direkt aus dem Seitenkontext (gleiche
+// Origin und Session wie das Formular selbst), danach ueber den Hintergrund-
+// dienst. Gibt null zurueck, wenn beide Wege scheitern.
+async function fetchFundingAutocomplete(url) {
+    try {
+        const res = await fetch(url, { credentials: 'same-origin', cache: 'no-cache' });
+        if (res.ok) {
+            const text = await res.text();
+            try {
+                return JSON.parse(text);
+            } catch (e) {
+                console.warn('DORA Helper: Funding-Autocomplete lieferte kein JSON', url, text.slice(0, 120));
+            }
+        } else {
+            console.warn('DORA Helper: Funding-Autocomplete HTTP ' + res.status, url);
+        }
+    } catch (e) {
+        console.warn('DORA Helper: Funding-Autocomplete direkt fehlgeschlagen', e.message, url);
+    }
+
+    return new Promise(resolve => {
+        const timeout = setTimeout(() => {
+            console.warn('DORA Helper: Funding-Autocomplete Timeout (Hintergrunddienst)', url);
+            resolve(null);
+        }, 8000);
+        chrome.runtime.sendMessage({ action: 'searchAutocomplete', url: url }, (response) => {
+            clearTimeout(timeout);
+            if (!response || !response.success) {
+                console.warn('DORA Helper: Funding-Autocomplete über Hintergrunddienst fehlgeschlagen',
+                    (response && response.error) || 'keine Antwort', url);
+                return resolve(null);
+            }
+            resolve(response.data);
+        });
+    });
+}
+
+async function lookupDoraFundingEntry(item) {
+    const number = String(item.awardNumber || '').trim();
+    if (!number) return null;
+
+    const url = `${fundingAutocompleteBaseUrl().replace(/\/$/, '')}/${encodeURIComponent(number)}`;
+    const data = await fetchFundingAutocomplete(url);
+    if (data === null || data === undefined || typeof data !== 'object') return null;
+
+    const keys = Array.isArray(data) ? data.map(String) : Object.keys(data);
+
+    // Leere Antwort = Nummer ist im Vokabular nicht vorhanden
+    if (keys.length === 0) {
+        console.warn('DORA Helper: Funding-Autocomplete lieferte keine Treffer für ' + number, url);
+        return { found: false, candidates: 0 };
+    }
+
+    const parsed = keys.map(k => k.split('||')).filter(p => p.length >= 2);
+    if (parsed.length === 0) {
+        console.warn('DORA Helper: Funding-Autocomplete in unbekanntem Format', keys.slice(0, 3));
+        return null;
+    }
+
+    const hit = parsed.find(p => p[0].trim() === number);
+    if (!hit) {
+        console.warn(`DORA Helper: ${number} nicht in der Autocomplete-Antwort`, url,
+            keys.slice(0, 3).map(k => k.slice(0, 60)));
+        return { found: false, candidates: keys.length };
+    }
+
+    const streamIndex = (hit[2] || '').trim();
+    return {
+        found: true,
+        number: hit[0].trim(),
+        title: hit[1].trim(),
+        stream: DORA_FUNDING_STREAM_BY_INDEX[streamIndex] || null,
+        streamIndex: streamIndex
+    };
+}
+
+// Debug-Hilfe: Struktur des Funding-Bereichs in die Zwischenablage kopieren
+function copyFundingStructure() {
+    const container = findFundingContainer();
+    if (!container) {
+        const fieldsets = Array.from(document.querySelectorAll('fieldset legend, .form-item > label'))
+            .map(l => (l.textContent || '').trim()).filter(Boolean).slice(0, 60);
+        navigator.clipboard.writeText('KEIN FUNDING-CONTAINER GEFUNDEN\nVorhandene Beschriftungen:\n' + fieldsets.join('\n'));
+        return false;
+    }
+    const skeleton = Array.from(container.querySelectorAll('input, select, textarea'))
+        .map(el => `${el.tagName.toLowerCase()} name="${el.name || ''}" id="${el.id || ''}" type="${el.type || ''}" label="${fundingLabelText(el).trim()}"`)
+        .join('\n');
+    navigator.clipboard.writeText(`Container: ${container.id || container.className}\n${skeleton}`);
+    return true;
+}
+
+// --- UI direkt am Funding-Feld des Formulars ---
+// Das Panel haengt unter dem Funding-Fieldpanel, nicht in der Result-Box:
+// dort steht es im Arbeitskontext und nimmt keinen Platz in der Box weg.
+function injectFundingFormPanel() {
+    const container = findFundingContainer();
+    const doi = getCurrentDoiForFunding();
+
+    // Diagnose: einmal pro Zustandswechsel melden, warum nichts erscheint
+    const state = `${!!container}|${!!doi}`;
+    if (fundingPanelLastState !== state) {
+        fundingPanelLastState = state;
+        if (!container) console.warn('DORA Helper: Funding-Panel - Funding-Bereich nicht gefunden (Selektoren: '
+            + FUNDING_CONTAINER_SELECTORS.join(', ') + ')');
+        else if (!doi) console.warn('DORA Helper: Funding-Panel - keine DOI im Formular gefunden.');
+        else console.log('DORA Helper: Funding-Panel wird eingehängt an', container);
+    }
+
+    if (!container || !doi) return;
+
+    // Ausserhalb des einklappbaren Fieldpanels einhaengen, damit das Panel
+    // auch bei zugeklapptem Funding-Bereich sichtbar bleibt.
+    const anchor = container.closest('.islandora-form-fieldpanel-container') || container;
+    const parent = anchor.parentNode;
+    if (!parent) return;
+
+    let panel = document.getElementById('dora-funding-panel');
+
+    // Drupal-AJAX ersetzt den Funding-Bereich - dann neu einhaengen
+    if (panel && panel.dataset.doi === doi && document.body.contains(panel)) {
+        if (panel.previousElementSibling !== anchor) {
+            parent.insertBefore(panel, anchor.nextSibling);
+        }
+        return;
+    }
+    if (panel) panel.remove();
+
+    panel = createEl('div');
+    panel.id = 'dora-funding-panel';
+    panel.dataset.doi = doi;
+    panel.style.cssText = 'margin:4px 0 10px 0; padding:4px 8px; border:1px solid #dee2e6; '
+        + 'border-left:3px solid #0073e6; border-radius:3px; background:#f8f9fa; font-size:12px; line-height:1.3;';
+
+    const header = createEl('div');
+    header.style.cssText = 'display:flex; align-items:center; gap:6px; cursor:pointer;';
+
+    const caret = createEl('span', '', '▾');
+    caret.style.color = '#6c757d';
+    const title = createEl('span', '', '🔗 Projekte aus Crossref & OpenAIRE');
+    title.style.cssText = 'font-weight:bold; color:#495057;';
+    const summary = createEl('span', '', 'wird abgefragt …');
+    summary.style.color = '#6c757d';
+
+    header.appendChild(caret);
+    header.appendChild(title);
+    header.appendChild(summary);
+    panel.appendChild(header);
+
+    const body = createEl('div');
+    body.style.cssText = 'margin-top:4px;';
+    panel.appendChild(body);
+
+    header.addEventListener('click', () => {
+        const hidden = body.style.display === 'none';
+        body.style.display = hidden ? '' : 'none';
+        caret.textContent = hidden ? '▾' : '▸';
+    });
+
+    // Direkt unter den Funding-Bereich haengen
+    parent.insertBefore(panel, anchor.nextSibling);
+
+    const draw = (data) => {
+        const items = data.items || [];
+        const total = items.length;
+        const existingKeys = new Set(readExistingFunding().filter(r => !r.isEmpty)
+            .map(r => fundingKey(r.funderName, r.awardNumber)));
+        const notRecordable = items.filter(i => !isFundingItemRecordable(i)).length;
+        const missing = items.filter(i => !existingKeys.has(fundingKey(i.funderName, i.awardNumber))
+            && isFundingItemRecordable(i));
+
+        if (total === 0) summary.textContent = 'keine SNSF-/EU-Projekte gefunden';
+        else if (missing.length === 0) summary.textContent = notRecordable
+            ? `${total} Projekt(e) – ${notRecordable} nicht eintragbar`
+            : `${total} Projekt(e), alle bereits erfasst`;
+        else summary.textContent = `${missing.length} von ${total} fehlen`
+            + (notRecordable ? ` · ${notRecordable} nicht eintragbar` : '');
+        summary.style.color = missing.length ? '#d69e2e' : '#28a745';
+
+        // Fehlende Projekte deutlich hervorheben
+        panel.style.background = missing.length ? '#fffbea' : '#f8f9fa';
+        panel.style.borderLeftColor = missing.length ? '#d69e2e' : '#0073e6';
+
+        // Ohne fehlende Projekte eingeklappt starten
+        if (missing.length === 0) {
+            body.style.display = 'none';
+            caret.textContent = '▸';
+        }
+
+        renderFundingSuggestions(body, data);
+    };
+
+    // Erst DORAs Auswahlliste prüfen, dann zeichnen - sonst stimmen Zähler,
+    // Buttons und Sammelaktion für die ersten Sekunden nicht.
+    const render = (data) => {
+        const items = data.items || [];
+        const pending = items.filter(i => i.doraEntry === undefined);
+        if (pending.length === 0) return draw(data);
+
+        summary.textContent = 'DORA-Auswahlliste wird geprüft …';
+        summary.style.color = '#6c757d';
+        Promise.all(pending.map(i => lookupDoraFundingEntry(i).then(entry => { i.doraEntry = entry; })))
+            .then(() => draw(data));
+    };
+    fundingPanelRender = render;
+
+    if (cachedFundingSuggestions && cachedFundingSuggestions.doi === doi) {
+        render(cachedFundingSuggestions.data);
+        return;
+    }
+
+    body.textContent = 'Crossref & OpenAIRE werden abgefragt …';
+    body.style.color = '#6c757d';
+
+    chrome.runtime.sendMessage({ action: 'fetchFunding', doi: doi }, (response) => {
+        body.style.color = '';
+        if (!response || !response.success) {
+            summary.textContent = 'Abfrage fehlgeschlagen';
+            summary.style.color = '#e53e3e';
+            body.textContent = (response && response.error) || 'keine Antwort vom Hintergrunddienst';
+            return;
+        }
+        cachedFundingSuggestions = { doi: doi, data: response.data };
+        render(response.data);
+    });
+}
+
+// Werte, die tatsaechlich ins Formular geschrieben werden - und zugleich der
+// Nachweis, dass DORA das Projekt kennt. Zwei gleichwertige Belege:
+//   1. Treffer in der Funding-Auswahlliste (Autocomplete des Titelfelds)
+//   2. Die Nummer ist im DORA-Bestand bereits mit diesem Foerderer in Gebrauch
+// Ohne einen der beiden Belege wird nichts angeboten und nichts geschrieben.
+function fundingCanonicalValues(item) {
+    const entry = item.doraEntry;
+    if (entry && entry.found) {
+        return {
+            source: 'vocabulary',
+            number: entry.number,
+            title: entry.title,
+            stream: entry.stream || item.fundingStream
+        };
+    }
+    if (item.doraOccurrences > 0 && item.awardTitle && item.fundingStream) {
+        // Aus dem Produktivindex uebernommen (Hauskonvention der bestehenden Datensaetze)
+        return {
+            source: 'index',
+            number: item.awardNumber,
+            title: item.awardTitle,
+            stream: item.fundingStream,
+            occurrences: item.doraOccurrences
+        };
+    }
+    return null;
+}
+
+function isFundingItemRecordable(item) {
+    return !!fundingCanonicalValues(item);
+}
+
+function renderFundingSuggestions(body, data) {
+    body.replaceChildren();
+    body.style.color = '';
+
+    const existing = readExistingFunding().filter(r => !r.isEmpty);
+    const existingKeys = new Set(existing.map(r => fundingKey(r.funderName, r.awardNumber)));
+    const containerFound = !!findFundingContainer();
+
+    const items = data.items || [];
+    const missing = items.filter(i => !existingKeys.has(fundingKey(i.funderName, i.awardNumber)) && isFundingItemRecordable(i));
+
+    if (items.length === 0) {
+        const none = createEl('div', '', existing.length
+            ? `Keine Projekte in Crossref/OpenAIRE gefunden (${existing.length} im Datensatz).`
+            : 'Keine verknüpften SNSF-/EU-Projekte in Crossref oder OpenAIRE gefunden.');
+        none.style.color = '#6c757d';
+        body.appendChild(none);
+    }
+
+    const rowsWrap = createEl('div');
+    rowsWrap.style.cssText = 'display:flex; flex-direction:column; gap:3px;';
+
+    items.forEach(item => {
+        const isPresent = existingKeys.has(fundingKey(item.funderName, item.awardNumber));
+        const entry = item.doraEntry;                 // undefined = noch nicht geprüft
+        const canonical = fundingCanonicalValues(item);
+        const recordable = !!canonical;
+        const notInVocabulary = !recordable && !!(entry && entry.found === false);
+        const checkFailed = !recordable && entry === null;
+
+        const row = createEl('div');
+        row.style.cssText = 'display:flex; align-items:flex-start; gap:4px; line-height:1.25;';
+
+        const icon = createEl('span', '', isPresent ? '✅' : (recordable ? (item.confidence === 'high' ? '➕' : '❓') : '🚫'));
+        row.appendChild(icon);
+
+        const textWrap = createEl('div');
+        textWrap.style.flex = '1';
+
+        const stream = (canonical && canonical.stream) || item.fundingStream || (item.funderKey === 'SNSF' ? 'SNSF' : 'EC');
+        const head = createEl('div', '', `${stream} ${item.awardNumber}`);
+        head.style.fontWeight = 'bold';
+        head.style.color = (isPresent || notInVocabulary) ? '#6c757d' : '#212529';
+        textWrap.appendChild(head);
+
+        const titleText = (canonical && canonical.title) || item.awardTitle;
+        const titleLine = createEl('div', '', titleText || '(kein Projekttitel ermittelbar)');
+        titleLine.style.color = notInVocabulary ? '#6c757d' : '#495057';
+        if (!titleText) titleLine.style.color = '#d69e2e';
+        textWrap.appendChild(titleLine);
+
+        const meta = createEl('div', '', '');
+        meta.style.cssText = 'color:#6c757d; font-size:0.95em;';
+        const parts = [item.sources.join(' + ')];
+        if (item.textMined) parts.push('nur Text-Mining');
+        if (item.rawAwardNumbers && item.rawAwardNumbers.some(r => r !== item.awardNumber)) {
+            parts.push('Crossref: ' + item.rawAwardNumbers.join(', '));
+        }
+        if (item.promotedFrom) parts.push(`Crossref nennt: „${item.promotedFrom}"`);
+        if (item.doraOccurrences) parts.push(`${item.doraOccurrences}× in DORA`);
+        meta.textContent = parts.join(' · ');
+        textWrap.appendChild(meta);
+
+        // Status gegenüber DORAs Funding-Auswahlliste
+        const vocabLine = createEl('div', '');
+        vocabLine.style.cssText = 'font-size:0.95em;';
+        if (canonical && canonical.source === 'vocabulary') {
+            vocabLine.textContent = '✓ In DORAs Funding-Auswahlliste';
+            vocabLine.style.color = '#28a745';
+        } else if (canonical) {
+            // Beleg aus dem Produktivindex statt aus der Auswahlliste
+            vocabLine.textContent = `✓ In DORA bereits verwendet (${canonical.occurrences} Datensätze)`
+                + (entry && entry.found === false ? ' – nicht in der Auswahlliste, Werte aus dem Bestand' : '');
+            vocabLine.style.color = '#28a745';
+        } else if (notInVocabulary) {
+            vocabLine.textContent = '🚫 Nicht in DORAs Funding-Auswahlliste – kann nicht eingetragen werden';
+            vocabLine.style.color = '#6c757d';
+        } else if (checkFailed) {
+            vocabLine.style.color = '#d69e2e';
+            vocabLine.appendChild(document.createTextNode('🚫 Abgleich mit DORAs Auswahlliste fehlgeschlagen – kein Eintrag möglich. '));
+            const retry = createEl('a', '', 'erneut prüfen');
+            retry.href = '#';
+            retry.style.color = '#0073e6';
+            retry.addEventListener('click', async (e) => {
+                e.preventDefault();
+                retry.textContent = 'prüfe …';
+                item.doraEntry = await lookupDoraFundingEntry(item);
+                const cached = cachedFundingSuggestions && cachedFundingSuggestions.data;
+                if (fundingPanelRender && cached) fundingPanelRender(cached);
+                else renderFundingSuggestions(body, { items: items, unsupported: data.unsupported, errors: data.errors });
+            });
+            vocabLine.appendChild(retry);
+        }
+        if (vocabLine.textContent) textWrap.appendChild(vocabLine);
+
+        if (item.projectUrl) {
+            const link = createEl('a', '', 'OpenAIRE ↗');
+            link.href = item.projectUrl;
+            link.target = '_blank';
+            link.style.cssText = 'color:#0073e6; font-size:0.95em;';
+            textWrap.appendChild(link);
+        }
+
+        row.appendChild(textWrap);
+
+        if (!isPresent && recordable && containerFound) {
+            const btn = createEl('button', 'dora-box-btn btn-secondary', 'Eintragen');
+            btn.style.cssText = 'width:auto; padding:2px 6px; font-size:11px; flex:0 0 auto;';
+            btn.addEventListener('click', async () => {
+                btn.disabled = true;
+                btn.textContent = '…';
+                try {
+                    const res = await applyFundingItem(item);
+
+                    if (res.blocked) {
+                        btn.remove();
+                        icon.textContent = '🚫';
+                        vocabLine.textContent = res.blocked === 'not-in-vocabulary'
+                            ? '🚫 Nicht in DORAs Funding-Auswahlliste – kann nicht eingetragen werden'
+                            : '🚫 Abgleich mit DORAs Auswahlliste fehlgeschlagen – kein Eintrag möglich';
+                        vocabLine.style.color = '#d69e2e';
+                        return;
+                    }
+
+                    btn.textContent = '✔';
+                    icon.textContent = '✅';
+                    head.style.color = '#6c757d';
+
+                    // Felder, die das Formular verworfen oder nicht angeboten hat
+                    const problems = Object.keys(res.results || {})
+                        .filter(r => ['rejected', 'missing', 'no-option'].includes(res.results[r]));
+                    if (problems.length) {
+                        const warn = createEl('div', '', 'Vom Formular nicht übernommen: '
+                            + problems.map(r => `${r} (${res.results[r]})`).join(', '));
+                        warn.style.cssText = 'color:#d69e2e;';
+                        textWrap.appendChild(warn);
+                    }
+                    if (!res.vocabulary) {
+                        const warn = createEl('div', '', '⚠️ DORA-Auswahlliste nicht erreichbar – Titel aus OpenAIRE/Crossref eingetragen.');
+                        warn.style.cssText = 'color:#d69e2e;';
+                        textWrap.appendChild(warn);
+                    }
+                } catch (e) {
+                    btn.disabled = false;
+                    btn.textContent = 'Eintragen';
+                    alert('Eintragen fehlgeschlagen: ' + e.message);
+                }
+            });
+            row.appendChild(btn);
+        }
+
+        rowsWrap.appendChild(row);
+    });
+
+    body.appendChild(rowsWrap);
+
+    // Sammel-Button nur fuer sichere, eintragbare Treffer
+    const bulk = missing.filter(i => i.confidence === 'high' && i.complete);
+    if (bulk.length > 1 && containerFound) {
+        const allBtn = createEl('button', 'dora-box-btn btn-secondary', `Alle ${bulk.length} fehlenden eintragen`);
+        allBtn.style.cssText = 'margin-top:4px; font-size:11px; padding:3px 6px;';
+        allBtn.addEventListener('click', async () => {
+            allBtn.disabled = true;
+            allBtn.textContent = 'Wird eingetragen …';
+            let ok = 0;
+            for (const item of bulk) {
+                try {
+                    const res = await applyFundingItem(item);
+                    if (!res.blocked) ok++;
+                } catch (e) { console.warn('Funding-Eintrag fehlgeschlagen', e); }
+            }
+            allBtn.textContent = `${ok}/${bulk.length} eingetragen`;
+            const cached = cachedFundingSuggestions && cachedFundingSuggestions.data;
+            if (cached) {
+                if (fundingPanelRender) fundingPanelRender(cached);
+                else renderFundingSuggestions(body, cached);
+            }
+        });
+        body.appendChild(allBtn);
+    }
+
+    if (!containerFound && missing.length) {
+        const hint = createEl('div', '', '⚠️ Funding-Felder im Formular nicht erkannt – Eintragen nicht möglich.');
+        hint.style.cssText = 'color:#d69e2e; margin-top:4px;';
+        const dbg = createEl('button', 'dora-box-btn btn-secondary', 'Formularstruktur kopieren');
+        dbg.style.cssText = 'margin-top:3px; font-size:11px; padding:2px 6px;';
+        dbg.addEventListener('click', () => {
+            dbg.textContent = copyFundingStructure() ? 'In Zwischenablage ✔' : 'Nichts gefunden – Labels kopiert';
+        });
+        body.appendChild(hint);
+        body.appendChild(dbg);
+    }
+
+    if (data.unsupported && data.unsupported.length) {
+        const note = createEl('div', '', 'Weitere Förderer (in DORA nicht erfasst): '
+            + data.unsupported.map(u => u.name + (u.awards.length ? ` [${u.awards.join(', ')}]` : '')).join('; '));
+        note.style.cssText = 'color:#6c757d; margin-top:4px; font-size:0.95em;';
+        body.appendChild(note);
+    }
+
+    if (data.errors && data.errors.length) {
+        const err = createEl('div', '', data.errors.join(' | '));
+        err.style.cssText = 'color:#d69e2e; margin-top:3px;';
+        body.appendChild(err);
     }
 }

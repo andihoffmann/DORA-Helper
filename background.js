@@ -68,6 +68,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    if (request.action === "fetchFunding") {
+        fetchFundingSuggestions(request.doi)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
     if (request.action === "performAiMetadataCheck") {
         performAiMetadataCheck(request.modsXml, request.formData)
             .then(data => sendResponse({ success: true, data: data }))
@@ -708,7 +715,10 @@ async function fetchDoraAutocomplete(url) {
             name: e.name,
             stack: e.stack
         });
-        return [];
+        // Weiterwerfen, damit der Aufrufer einen Fehlschlag von einem leeren
+        // Trefferset unterscheiden kann (sonst sieht ein Timeout aus wie
+        // "nicht im Vokabular").
+        throw e;
     }
 }
 
@@ -820,4 +830,501 @@ async function performAiMetadataCheck(modsXml, formData) {
     } catch (e) {
         throw new Error("Failed to perform AI check: " + e.message);
     }
+}
+
+// =====================================================================
+// FUNDING / PROJEKT-VERKNUEPFUNG (Crossref Funder Registry + OpenAIRE)
+// ---------------------------------------------------------------------
+// DORA speichert Foerderung als DataCite-artige fundingReferences:
+//   funderName / funderIdentifier / fundingStream / awardNumber / awardTitle
+// Im Bestand existieren ausschliesslich SNSF und European Commission,
+// daher werden nur diese beiden Foerderer zum Eintragen vorgeschlagen.
+// =====================================================================
+
+const DORA_SOLR_SELECT = 'http://lib-dora-prod1.emp-eaw.ch:8080/solr/collection1/select';
+const SOLR_FUNDING_PREFIX = 'mods_extension_fundingReferences_fundingReference_';
+
+// Kanonische Schreibweisen, wie sie in DORA verwendet werden
+const FUNDER_PROFILES = {
+    SNSF: {
+        key: 'SNSF',
+        funderName: 'Swiss National Science Foundation',
+        funderIdentifier: 'http://dx.doi.org/10.13039/501100001711',
+        defaultStream: 'SNSF',
+        // Crossref Funder-DOIs (ohne Praefix) -> ggf. direkter Stream
+        crossrefIds: {
+            '10.13039/501100001711': null
+        }
+    },
+    EC: {
+        key: 'EC',
+        funderName: 'European Commission',
+        funderIdentifier: 'http://dx.doi.org/10.13039/501100000780',
+        defaultStream: null, // Stream haengt vom Rahmenprogramm ab
+        crossrefIds: {
+            '10.13039/501100000780': null,                              // European Commission
+            '10.13039/100010661': 'Horizon 2020 Framework Programme',   // H2020
+            '10.13039/100011102': 'Seventh Framework Programme',        // FP7
+            '10.13039/100018693': 'Horizon Europe Framework Programme', // Horizon Europe
+            '10.13039/501100007601': null,                              // Horizon 2020 (alt)
+            '10.13039/100019180': null,                                 // HORIZON EUROPE (alt)
+            '10.13039/501100000781': null                               // ERC
+        }
+    }
+};
+
+// OpenAIRE funding_level_0 -> DORA fundingStream
+const OPENAIRE_STREAM_MAP = {
+    'H2020': 'Horizon 2020 Framework Programme',
+    'FP7': 'Seventh Framework Programme',
+    'HE': 'Horizon Europe Framework Programme',
+    'HORIZON': 'Horizon Europe Framework Programme'
+};
+
+function funderProfileFromCrossrefDoi(doi) {
+    if (!doi) return null;
+    const clean = String(doi).replace(/^https?:\/\/(dx\.)?doi\.org\//i, '').trim();
+    for (const profile of Object.values(FUNDER_PROFILES)) {
+        if (Object.prototype.hasOwnProperty.call(profile.crossrefIds, clean)) {
+            return { profile: profile, stream: profile.crossrefIds[clean] || profile.defaultStream };
+        }
+    }
+    return null;
+}
+
+function funderProfileFromName(name) {
+    if (!name) return null;
+    const n = String(name).toLowerCase();
+    if (/schweizerischer nationalfonds|swiss national science|\bsnsf\b|\bsnf\b/.test(n)) return FUNDER_PROFILES.SNSF;
+    if (/european commission|horizon 2020|horizon europe|\bh2020\b|\bfp7\b|seventh framework|european research council|\berc\b/.test(n)) return FUNDER_PROFILES.EC;
+    // Crossref benennt EU-Foerderung uneinheitlich und oft ohne Funder-DOI
+    if (/marie s?k?[łl]odowska|marie curie|\bmsca\b/.test(n)) return FUNDER_PROFILES.EC;
+    if (/\b(7th|6th)\s*framework|framework program(me)?\b.*\beu\b|\beu\b.*framework program(me)?/.test(n)) return FUNDER_PROFILES.EC;
+    if (/european union|\beuratom\b|\bec\b\s*research|\berc(ea)?\b/.test(n)) return FUNDER_PROFILES.EC;
+    return null;
+}
+
+// Stream aus dem Foerdernamen, soweit eindeutig (sonst klaert ihn die
+// Projektnummer ueber OpenAIRE bzw. den DORA-Bestand)
+function streamFromFunderName(name) {
+    const n = String(name || '').toLowerCase();
+    if (/\b7th\s*framework|seventh framework|\bfp7\b/.test(n)) return 'Seventh Framework Programme';
+    if (/horizon 2020|\bh2020\b/.test(n)) return 'Horizon 2020 Framework Programme';
+    if (/horizon europe/.test(n)) return 'Horizon Europe Framework Programme';
+    return null;
+}
+
+// SNSF-Nummern kommen bei Crossref oft als "200021E_203578", "PZ00P2_174192"
+// oder "SNF 182124". In DORA steht immer nur der nackte Code.
+function normalizeAwardNumber(raw, funderKey) {
+    if (!raw) return null;
+    let s = String(raw).trim();
+    s = s.replace(/^(grant|award|project|no\.?|nr\.?|#)\s*/i, '');
+    s = s.replace(/^(snsf|snf|sfn)[\s:_-]*/i, '');
+
+    // Immer ganze Ziffernbloecke betrachten - ein Laengenfenster wuerde aus
+    // "10003256" faelschlich "0003256" herausschneiden.
+    const groups = s.match(/\d+/g) || [];
+    const long = groups.filter(g => g.length >= 5);
+
+    if (funderKey === 'SNSF') {
+        // Praefixe stehen vorn ("200021E_203578"), die Nummer hinten
+        if (long.length) return long[long.length - 1];
+    }
+    if (funderKey === 'EC') {
+        // Grant Agreement Number steht vorn ("654360 NFFA-Europe")
+        const ec = groups.find(g => g.length >= 6 && g.length <= 9);
+        if (ec) return ec;
+        if (long.length) return long[0];
+    }
+    if (long.length) return long[long.length - 1];
+    const generic = groups.find(g => g.length >= 4);
+    return generic || s;
+}
+
+// Prueft, ob die Award-Angabe wirklich diese Projektnummer meint und nicht
+// Teil einer zusammengesetzten Kennung ist. CNPq meldet z.B. "#140439/2011-0",
+// die DFG "510228793 / C04-CRC1633" - dort waere die herausgeloeste Zahl nur
+// zufaellig identisch mit einer SNSF-/EC-Projektnummer.
+function awardStringMatchesCode(rawAward, code) {
+    let s = String(rawAward || '').trim();
+
+    // Fuehrende Satzzeichen und Beschriftungen (auch Programmnamen)
+    s = s.replace(/^[^0-9A-Za-z]+/, '');
+    let previous;
+    do {
+        previous = s;
+        s = s.replace(/^(grant|award|project|agreement|number|no|nr|snsf|snf|sfn|fp7|h2020|horizon\s*(2020|europe)|erc|msca)(?:[\s.:_-]+|\b)/i, '');
+    } while (s !== previous);
+
+    const idx = s.indexOf(code);
+    if (idx < 0) return false;
+
+    const head = s.slice(0, idx);
+    const tail = s.slice(idx + code.length);
+    const digitGroups = t => (String(t).match(/\d+/g) || []);
+
+    // Hinter der Nummer folgt eine zweite Kennung = zusammengesetzter
+    // Bezeichner eines anderen Systems: "#140439/2011-0" (CNPq),
+    // "510228793 / C04-CRC1633", "248198858/GRK 2032" (DFG), "760010/2022".
+    // Ausnahme: die SNSF-Fortsetzungsangabe "/1", "/3".
+    const afterSlash = tail.match(/\/\s*(.*)$/);
+    if (afterSlash && (afterSlash[1].match(/\d+/g) || []).some(g => g.length >= 3)) return false;
+
+    const afterDash = tail.match(/^\s*[\-–—‐]\s*(\d+)/);
+    if (afterDash && afterDash[1].length >= 3) return false;
+
+    if (!head.trim()) return true;
+
+    // Beschriftungen ohne Ziffern vor dem Instrumentenpraefix entfernen
+    // ("Sinergia CRSII5_202296", "R'equip grant 206021-170731")
+    const headCore = head.trim().split(/\s+/).filter(t => /\d/.test(t)).join(' ');
+    if (!headCore) return true;
+
+    // SNSF-Instrumentenpraefix: genau ein Token, optional mit Trennzeichen
+    // ("200021E_", "31BD30 _", "CRSK-3_", "501100001711-", "PR00P3")
+    if (/^[A-Za-z0-9]{2,14}\s*[_\-–—‐]?\s*$/.test(headCore)) return true;
+
+    // Call-Kennungen enthalten hoechstens Jahreszahlen ("ERC-2020-StG ",
+    // "H2020-MSCA-IF-2020 ", "10.3030/"), aber keine zweite Projektnummer.
+    return !digitGroups(headCore).some(g => g.length >= 5);
+}
+
+// --- Crossref: message.funder ---
+function extractCrossrefFunders(crossrefMessage) {
+    const out = [];
+    if (!crossrefMessage || !Array.isArray(crossrefMessage.funder)) return out;
+
+    crossrefMessage.funder.forEach(f => {
+        const byDoi = funderProfileFromCrossrefDoi(f.DOI);
+        const profile = byDoi ? byDoi.profile : funderProfileFromName(f.name);
+        const awards = Array.isArray(f.award) ? f.award : [];
+
+        if (!profile) {
+            // DORA kennt nur SNSF/EC - alles andere nur als Hinweis melden
+            out.push({
+                supported: false,
+                rawFunderName: f.name || '',
+                awards: awards.map(a => String(a))
+            });
+            return;
+        }
+
+        const base = {
+            supported: true,
+            funderKey: profile.key,
+            funderName: profile.funderName,
+            funderIdentifier: profile.funderIdentifier,
+            fundingStream: (byDoi && byDoi.stream) || streamFromFunderName(f.name) || profile.defaultStream,
+            rawFunderName: f.name || ''
+        };
+
+        if (awards.length === 0) {
+            out.push(Object.assign({}, base, { awardNumber: null, rawAwardNumber: null }));
+            return;
+        }
+
+        awards.forEach(a => {
+            const number = normalizeAwardNumber(a, profile.key);
+            // Award-Nummern sind bei SNSF/EC immer numerisch; Angaben wie
+            // "PSIFELLOW" sind Akronyme des Projekts, keine eigene Foerderung.
+            if (!/^\d{5,9}$/.test(String(number || ''))) return;
+            // Zusammengesetzte Kennungen anderer Foerderer nicht als Projekt-
+            // nummer interpretieren (z.B. CNPq "#140439/2011-0")
+            if (!awardStringMatchesCode(a, number)) {
+                console.warn('DORA Helper: Award-Angabe verworfen (keine reine Projektnummer):', a);
+                return;
+            }
+            out.push(Object.assign({}, base, {
+                awardNumber: number,
+                rawAwardNumber: String(a)
+            }));
+        });
+    });
+
+    return out;
+}
+
+// --- OpenAIRE: verknuepfte Projekte zur DOI ---
+// Der Graph-API-v1 bietet keinen Endpunkt fuer Projekt-Relationen eines
+// Publikations-Records, deshalb der (weiterhin aktive) Legacy-Suchendpunkt.
+async function fetchOpenAireProjects(doi) {
+    const url = `https://api.openaire.eu/search/publications?doi=${encodeURIComponent(doi)}&format=json`;
+    const res = await fetch(url, { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`OpenAIRE HTTP ${res.status}`);
+    const json = await res.json();
+
+    const asArray = v => (v === undefined || v === null) ? [] : (Array.isArray(v) ? v : [v]);
+    const val = v => (v && typeof v === 'object') ? (v['$'] || '') : (v || '');
+
+    const results = asArray(json && json.response && json.response.results && json.response.results.result);
+    if (results.length === 0) return [];
+
+    const entity = results[0] && results[0].metadata && results[0].metadata['oaf:entity']
+        && results[0].metadata['oaf:entity']['oaf:result'];
+    const rels = asArray(entity && entity.rels && entity.rels.rel)
+        .filter(r => r && r.to && r.to['@type'] === 'project');
+
+    return rels.map(rel => {
+        const funding = asArray(rel.funding)[0] || {};
+        const funder = funding.funder || {};
+        const shortName = funder['@shortname'] || '';
+        const level0 = (funding.funding_level_0 && funding.funding_level_0['@name']) || '';
+        const level1 = (funding.funding_level_1 && funding.funding_level_1['@name']) || '';
+
+        let profile = null;
+        if (/^SNSF$/i.test(shortName)) profile = FUNDER_PROFILES.SNSF;
+        else if (/^EC$/i.test(shortName)) profile = FUNDER_PROFILES.EC;
+        else profile = funderProfileFromName(funder['@name']);
+
+        const code = val(rel.code);
+        const acronym = val(rel.acronym);
+        const title = val(rel.title);
+
+        const hasCode = code && code !== 'unidentified';
+        const hasTitle = title && title !== 'unidentified';
+
+        return {
+            supported: !!profile,
+            funderKey: profile ? profile.key : null,
+            funderName: profile ? profile.funderName : (funder['@name'] || ''),
+            funderIdentifier: profile ? profile.funderIdentifier : null,
+            // SNSF hat in DORA immer den Stream "SNSF", EC den Namen des Rahmenprogramms
+            fundingStream: (profile && profile.key === 'SNSF')
+                ? 'SNSF'
+                : (OPENAIRE_STREAM_MAP[level0.toUpperCase()] || null),
+            awardNumber: hasCode ? normalizeAwardNumber(code, profile ? profile.key : null) : null,
+            rawAwardNumber: hasCode ? code : null,
+            // DORA-Konvention fuer EU-Projekte: "AKRONYM - Titel"
+            awardTitle: (acronym && hasTitle) ? `${acronym} - ${title}` : (hasTitle ? title : ''),
+            acronym: acronym || null,
+            projectTitle: hasTitle ? title : '',
+            fundingSubStream: level1 || null,
+            openaireId: rel.to['$'] || null,
+            inferred: rel['@inferred'] === true || rel['@inferred'] === 'true',
+            trust: parseFloat(rel['@trust'] || '0') || 0,
+            rawFunderName: funder['@name'] || ''
+        };
+    }).filter(p => p.awardNumber || p.awardTitle);
+}
+
+// --- OpenAIRE-Projektregister ueber den Code (fuer Crossref-only Awards) ---
+async function lookupOpenAireProjectByCode(code, funderShortName) {
+    try {
+        const url = `https://api.openaire.eu/graph/v1/projects?code=${encodeURIComponent(code)}`
+            + (funderShortName ? `&fundingShortName=${encodeURIComponent(funderShortName)}` : '')
+            + '&pageSize=5';
+        const res = await fetch(url, { cache: 'no-cache' });
+        if (!res.ok) return null;
+        const json = await res.json();
+        const hit = (json.results || []).find(p => String(p.code) === String(code));
+        if (!hit) return null;
+
+        const funding = (hit.fundings && hit.fundings[0]) || {};
+        const streamId = (funding.fundingStream && funding.fundingStream.id) || '';
+        const level0 = streamId.split('::')[1] || '';
+
+        return {
+            awardTitle: hit.acronym ? `${hit.acronym} - ${hit.title}` : (hit.title || ''),
+            acronym: hit.acronym || null,
+            projectTitle: hit.title || '',
+            fundingStream: /^SNSF$/i.test(funding.shortName || '')
+                ? 'SNSF'
+                : (OPENAIRE_STREAM_MAP[level0.toUpperCase()] || null),
+            openaireId: hit.id || null
+        };
+    } catch (e) {
+        console.warn('OpenAIRE project lookup failed:', e);
+        return null;
+    }
+}
+
+// --- DORA-Bestand: kanonische Schreibweise einer Award-Nummer ---
+// Liefert Titel/Stream so, wie sie in DORA bereits verwendet werden.
+async function lookupDoraFunding(awardNumber, funderName) {
+    try {
+        const fields = ['funderName', 'funderIdentifier', 'fundingStream', 'awardNumber', 'awardTitle']
+            .map(f => SOLR_FUNDING_PREFIX + f + '_ms');
+        const q = `${SOLR_FUNDING_PREFIX}awardNumber_ms:"${awardNumber}"`;
+        const url = `${DORA_SOLR_SELECT}?q=${encodeURIComponent(q)}&rows=5&wt=json&fl=${encodeURIComponent(fields.join(','))}`;
+
+        const res = await fetch(url, { cache: 'no-cache' });
+        if (!res.ok) return null;
+        const json = await res.json();
+        const docs = (json.response && json.response.docs) || [];
+
+        for (const doc of docs) {
+            const numbers = doc[SOLR_FUNDING_PREFIX + 'awardNumber_ms'] || [];
+            // Die Multi-Value-Felder eines Records sind positionsgleich indexiert
+            const idx = numbers.findIndex(n => String(n) === String(awardNumber));
+            if (idx === -1) continue;
+
+            const pick = f => {
+                const arr = doc[SOLR_FUNDING_PREFIX + f + '_ms'] || [];
+                return arr.length === numbers.length ? (arr[idx] || null) : (arr[0] || null);
+            };
+
+            const name = pick('funderName');
+            if (funderName && name && name !== funderName) continue;
+
+            return {
+                funderName: name,
+                funderIdentifier: pick('funderIdentifier'),
+                fundingStream: pick('fundingStream'),
+                awardTitle: pick('awardTitle'),
+                occurrences: json.response.numFound
+            };
+        }
+        return null;
+    } catch (e) {
+        console.warn('DORA Solr funding lookup failed:', e);
+        return null;
+    }
+}
+
+// Ergebnis-Cache: verhindert wiederholte Abfragen derselben DOI
+// (Re-Render der Box, Batch-QC, Zurueckspringen) - OpenAIRE ist ratenbegrenzt.
+const fundingCache = new Map();
+const FUNDING_CACHE_MAX = 200;
+
+async function fetchFundingSuggestions(doi) {
+    const key = String(doi || '').trim().toLowerCase();
+    if (fundingCache.has(key)) return fundingCache.get(key);
+
+    const result = await computeFundingSuggestions(doi);
+    if (fundingCache.size >= FUNDING_CACHE_MAX) {
+        fundingCache.delete(fundingCache.keys().next().value);
+    }
+    fundingCache.set(key, result);
+    return result;
+}
+
+
+// --- Beide Quellen zusammenfuehren ---
+async function computeFundingSuggestions(doi) {
+    const [crossrefRes, openaireRes] = await Promise.allSettled([
+        fetch(`https://api.crossref.org/works/${doi}`, { cache: 'no-cache' })
+            .then(r => r.ok ? r.json() : null)
+            .then(j => extractCrossrefFunders(j && j.message)),
+        fetchOpenAireProjects(doi)
+    ]);
+
+    const crossrefItems = crossrefRes.status === 'fulfilled' ? (crossrefRes.value || []) : [];
+    const openaireItems = openaireRes.status === 'fulfilled' ? (openaireRes.value || []) : [];
+
+    const errors = [];
+    if (crossrefRes.status === 'rejected') errors.push('Crossref: ' + (crossrefRes.reason && crossrefRes.reason.message));
+    if (openaireRes.status === 'rejected') errors.push('OpenAIRE: ' + (openaireRes.reason && openaireRes.reason.message));
+
+    // Nicht eintragbare Foerderer (alles ausser SNSF/EC) nur als Hinweis
+    const unsupported = [];
+    [].concat(crossrefItems, openaireItems).forEach(i => {
+        if (i.supported) return;
+        const label = (i.rawFunderName || i.funderName || '').trim();
+        if (!label) return;
+        const existing = unsupported.find(u => u.name === label);
+        const awards = i.awards || (i.rawAwardNumber ? [i.rawAwardNumber] : []);
+        if (existing) awards.forEach(a => { if (!existing.awards.includes(a)) existing.awards.push(a); });
+        else unsupported.push({ name: label, awards: awards.slice() });
+    });
+
+    // Merge-Key: Foerderer + normalisierte Award-Nummer
+    const merged = new Map();
+    const keyOf = i => `${i.funderKey}::${i.awardNumber}`;
+
+    openaireItems.filter(i => i.supported && i.awardNumber).forEach(i => {
+        merged.set(keyOf(i), {
+            funderKey: i.funderKey,
+            funderName: i.funderName,
+            funderIdentifier: i.funderIdentifier,
+            fundingStream: i.fundingStream,
+            awardNumber: i.awardNumber,
+            awardTitle: i.awardTitle,
+            acronym: i.acronym,
+            projectTitle: i.projectTitle,
+            openaireId: i.openaireId,
+            sources: ['OpenAIRE'],
+            openaireInferred: i.inferred,
+            openaireTrust: i.trust,
+            rawAwardNumbers: [i.rawAwardNumber].filter(Boolean)
+        });
+    });
+
+    crossrefItems.filter(i => i.supported && i.awardNumber).forEach(i => {
+        const existing = merged.get(keyOf(i));
+        if (existing) {
+            if (!existing.sources.includes('Crossref')) existing.sources.push('Crossref');
+            if (!existing.fundingStream && i.fundingStream) existing.fundingStream = i.fundingStream;
+            if (i.rawAwardNumber && !existing.rawAwardNumbers.includes(i.rawAwardNumber)) {
+                existing.rawAwardNumbers.push(i.rawAwardNumber);
+            }
+        } else {
+            merged.set(keyOf(i), {
+                funderKey: i.funderKey,
+                funderName: i.funderName,
+                funderIdentifier: i.funderIdentifier,
+                fundingStream: i.fundingStream,
+                awardNumber: i.awardNumber,
+                awardTitle: '',
+                acronym: null,
+                projectTitle: '',
+                openaireId: null,
+                sources: ['Crossref'],
+                rawAwardNumbers: [i.rawAwardNumber].filter(Boolean)
+            });
+        }
+    });
+
+    const items = Array.from(merged.values());
+
+    // Anreichern: fehlende Titel/Streams aus DORA-Bestand bzw. OpenAIRE-Projektregister
+    await Promise.all(items.map(async item => {
+        const dora = await lookupDoraFunding(item.awardNumber, item.funderName);
+        if (dora) {
+            item.doraOccurrences = dora.occurrences;
+            if (!item.sources.includes('DORA')) item.sources.push('DORA');
+            // Hauskonvention hat Vorrang
+            if (dora.awardTitle) item.awardTitle = dora.awardTitle;
+            if (dora.fundingStream) item.fundingStream = dora.fundingStream;
+            if (dora.funderIdentifier) item.funderIdentifier = dora.funderIdentifier;
+        }
+
+        if (!item.awardTitle || !item.fundingStream) {
+            const project = await lookupOpenAireProjectByCode(item.awardNumber, item.funderKey);
+            if (project) {
+                if (!item.awardTitle && project.awardTitle) item.awardTitle = project.awardTitle;
+                if (!item.fundingStream && project.fundingStream) item.fundingStream = project.fundingStream;
+                if (!item.acronym && project.acronym) item.acronym = project.acronym;
+                if (!item.projectTitle && project.projectTitle) item.projectTitle = project.projectTitle;
+                if (!item.openaireId && project.openaireId) item.openaireId = project.openaireId;
+                if (!item.sources.includes('OpenAIRE')) item.sources.push('OpenAIRE');
+            }
+        }
+
+        // Konfidenz: DORA bestaetigt nur die Schreibweise, nicht die Zugehoerigkeit
+        // des Papers zum Projekt - deshalb zaehlt dafuer nur Crossref/OpenAIRE.
+        const hasCrossref = item.sources.includes('Crossref');
+        const hasOpenAire = item.sources.includes('OpenAIRE');
+        // Rein aus dem Volltext gemined (OpenAIRE-Inferenz ohne Verlagsangabe)
+        item.textMined = !!item.openaireInferred && !hasCrossref;
+
+        if (!item.awardTitle) {
+            item.confidence = 'low';
+        } else if (hasCrossref || (hasOpenAire && !item.openaireInferred)) {
+            item.confidence = 'high';
+        } else {
+            item.confidence = 'medium';
+        }
+
+        item.complete = !!(item.funderName && item.awardNumber && item.awardTitle && item.fundingStream);
+        item.projectUrl = item.openaireId
+            ? `https://explore.openaire.eu/search/project?projectId=${encodeURIComponent(item.openaireId)}`
+            : null;
+    }));
+
+    const rank = { high: 0, medium: 1, low: 2 };
+    items.sort((a, b) => (rank[a.confidence] - rank[b.confidence])
+        || String(a.awardNumber).localeCompare(String(b.awardNumber)));
+
+    return { items: items, unsupported: unsupported, errors: errors };
 }

@@ -35,11 +35,52 @@ When an edit page is opened in DORA, the assistant automatically scans for a DOI
     *   **License Match**: Flags discrepancies between Unpaywall and Crossref license data.
 *   **Quick Actions**:
     *   `Metadaten importieren`: (Book Chapters/Proceedings) Imports title, host title, pages, year, publisher, authors, editors, and abstract.
-    *   `#hybrid setzen`: Quickly adds the `#hybrid` tag to the "Additional Information" field.
 
 ---
 
-### 2. Advanced PDF Analysis & Extraction
+### 2. Projekt- & Funding-Verknüpfung (Crossref + OpenAIRE)
+
+Die Förderangaben aus Scopus hängen stark von der Formulierung im Acknowledgement ab. Der Assistent fragt deshalb über die DOI zusätzlich **Crossref** (Verlagsangabe aus der Funder Registry) und **OpenAIRE** (Projektregister von SNSF und EU) ab und gleicht die Treffer mit dem Formular ab.
+
+*   **Panel "🔗 Projekte aus Crossref & OpenAIRE"**: sitzt direkt unter dem Formularbereich *Funding (only EC and SNSF Projects)* – im Arbeitskontext, nicht in der Result-Box. Die Kopfzeile zeigt „x von y fehlen" und lässt sich zuklappen; sind alle Projekte erfasst, startet es eingeklappt.
+    *   `✅` bereits im Datensatz erfasst
+    *   `➕` fehlt und ist belegt (Verlagsangabe oder registrierte Projektrelation) → Button **Eintragen**
+    *   `❓` nur per OpenAIRE-Textmining abgeleitet oder ohne Projekttitel → bitte vor dem Übernehmen prüfen
+    *   `🚫` DORA kennt das Projekt nicht → **kein Button**. Zwei Fälle, beide im Klartext benannt: „Nicht in DORAs Funding-Auswahlliste – kann nicht eingetragen werden" bzw. „Abgleich mit DORAs Auswahlliste fehlgeschlagen – kein Eintrag möglich" (mit *erneut prüfen*). Solche Projekte zählen nicht als „fehlend", sondern als „nicht eintragbar".
+*   **Eintragen**: Nutzt eine leere Zeile im Bereich *Funding (only EC and SNSF Projects)* oder legt per Drupal-AJAX eine neue an und füllt sie in der Reihenfolge, die das Formular erwartet:
+    1.  *Funder Name* (Select) – steuert die abhängigen Felder, danach kurze Wartezeit
+    2.  *Funder* / Funding Stream (Select)
+    3.  *Project Title and Number* – der Titel kommt aus DORAs eigener Auswahlliste (siehe unten), nicht aus OpenAIRE.
+    4.  *Award Number* (readonly, wird sonst vom Autocomplete gefüllt) und das versteckte *funder_identifier*
+    Jedes Feld wird nach dem Schreiben kontrolliert und – falls das Widget den Wert verworfen hat – ohne Events erneut gesetzt; was endgültig nicht durchgeht, meldet die Zeile im Klartext. Es wird nie etwas ohne Klick geschrieben und keine bestehende Zeile überschrieben.
+*   **`Alle N fehlenden eintragen`**: Sammelaktion, nur für vollständige Treffer mit hoher Konfidenz.
+
+**Datenkonventionen** (aus dem DORA-Bestand abgeleitet):
+
+| Feld | SNSF | European Commission |
+| --- | --- | --- |
+| `funderName` | Swiss National Science Foundation | European Commission |
+| `funderIdentifier` | `http://dx.doi.org/10.13039/501100001711` | `http://dx.doi.org/10.13039/501100000780` |
+| `fundingStream` | SNSF | Horizon 2020 / Horizon Europe / Seventh Framework Programme |
+| `awardNumber` | nackter Code (`200021E_203578` → `203578`) | Grant Agreement Number |
+| `awardTitle` | Projekttitel | `AKRONYM - Titel` |
+
+*   **Nur SNSF und EU**: In DORA existieren ausschliesslich diese beiden Förderer. Weitere in Crossref/OpenAIRE gefundene Geldgeber (z.B. DFG, BAFU) werden nur als Hinweiszeile angezeigt, nicht eingetragen.
+*   **Förderer ohne Funder-DOI**: Crossref führt EU-Förderung oft als Freitext unter wechselnden Namen („Marie Skłodowska-Curie", „EU 7th Framework Program", „EU-H2020 Research and Innovation Program"). Diese Schreibweisen werden bei der Förderer-Erkennung mit abgedeckt. Eine Zuordnung allein über die Codegleichheit findet **nicht** statt – Projektnummern kollidieren zwischen Förderorganisationen (CNPq `#140439/2011-0` trifft z.B. auf SNSF 140439).
+*   **Formatprüfung der Award-Angabe**: Übernommen wird nur, was tatsächlich eine SNSF-/EC-Projektnummer ist:
+    *   erlaubt sind vorangestellte Beschriftungen ohne Ziffern („Grant agreement No 101002207"), nachgestellte Akronyme („654360 NFFA-Europe") und – bei SNSF üblich – das direkt angehängte **Instrumentenpräfix**: `200021E_203578`, `PZ00P2_174192`, `CRSII5_186422`, `CRSK-2_195953`, `IZSEZ0_180186`, `20FI21-189381`, `51NF40-205606`
+    *   abgelehnt werden zusammengesetzte Kennungen fremder Förderer, bei denen **hinter** der Zahl eine weitere Zahl steht: `#140439/2011-0` (CNPq), `302760/2022-9`, `510228793 / C04-CRC1633` und `248198858/GRK 2032` (DFG)
+    *   reine Akronyme ohne Nummer („PSIFELLOW") erzeugen keinen eigenen Eintrag
+*   **Zwei gleichwertige Belege** – ohne einen davon wird weder ein Button angeboten noch ein Feld beschrieben:
+    1.  **Treffer in DORAs Funding-Auswahlliste** (Autocomplete des Titelfelds) → Zeile zeigt „✓ In DORAs Funding-Auswahlliste"
+    2.  **Die Nummer ist im DORA-Bestand bereits mit diesem Förderer in Gebrauch** (Solr) → „✓ In DORA bereits verwendet (n Datensätze)". Dieser zweite Beleg ist wichtig, weil der Autocomplete-Callback im eingeloggten Formular nicht immer dieselben Treffer liefert wie erwartet; die Werte stammen dann aus dem Produktivbestand.
+*   **Abgleich mit der DORA-Auswahlliste**: Das Award-Title-Feld ist ein Autocomplete auf ein kontrolliertes Vokabular; ohne bestätigten Treffer wird kein einziges Feld beschrieben. Der Assistent fragt dessen Callback mit der **Award-Nummer** ab (die Suche greift auch auf Nummern) und liest den Eintrag im Format `nummer||titel||stream-index` (1 = Seventh Framework Programme, 2 = Horizon 2020, 3 = SNSF, 4 = Horizon Europe). Titel, Nummer und Stream werden daraus übernommen – dadurch steht exakt das im Formular, was auch die manuelle Auswahl erzeugt hätte. Die Liste wird direkt aus dem Seitenkontext geholt (Fallback: Hintergrunddienst), die Prüfung läuft vor dem Zeichnen des Panels, damit Zähler, Buttons und Sammelaktion von Anfang an stimmen; jede Zeile zeigt „✓ In DORA-Auswahlliste" bzw. den Hinweis, dass das Projekt dort fehlt und deshalb nicht erfasst wird.
+*   **Hauskonvention gewinnt**: Ist die Award-Nummer bereits in DORA vergeben, werden Titel und Stream aus dem Bestand (Solr) übernommen, damit die Schreibweise über alle Datensätze identisch bleibt.
+*   **Nummern-Abgleich**: SNSF-Nummern aus Crossref (`PZ00P2_174192`, `SNF 182124`, `200021E_203578`) werden auf den reinen Code normalisiert, damit Dubletten sicher erkannt werden. Dabei zählen immer **ganze Ziffernblöcke** – längere Nummern wie `10003256` bleiben unverändert und werden nicht auf die letzten Stellen gekürzt.
+
+---
+
+### 3. Advanced PDF Analysis & Extraction
 Extract **Page Count** and **Keywords** directly from PDFs and discover missing full-texts.
 
 ![PDF Analysis Tool](./images/pdf_analysis_ui.png)
@@ -53,7 +94,7 @@ Extract **Page Count** and **Keywords** directly from PDFs and discover missing 
 
 ---
 
-### 3. Autocomplete for Form Fields
+### 4. Autocomplete for Form Fields
 The assistant provides intelligent autocomplete suggestions from the DORA Solr index.
 
 **Supported Fields:**
@@ -67,7 +108,7 @@ The assistant provides intelligent autocomplete suggestions from the DORA Solr i
 
 ---
 
-### 4. Integrated Keyword Manager
+### 5. Integrated Keyword Manager
 Replaces the standard keyword input with a sophisticated management tool.
 
 ![Integrated Keyword Manager](./images/keyword_manager_ui.png)
@@ -80,15 +121,16 @@ Replaces the standard keyword input with a sophisticated management tool.
 
 ---
 
-### 5. Smart Tags for "Additional Information"
+### 6. Smart Tags for "Additional Information"
 Commonly used tags can be inserted with a single click below the "Additional Information" field.
 
-*   **Available Tags**: `#other_journal_contribution`, `#present_address` (with name prompt), `#corporate`, `#green`, and `#CERC` (context-aware for WSL).
+*   **Available Tags**: `#hybrid` (orange), `#other_journal_contribution`, `#present_address` (with name prompt), `#corporate`, `#green`, and `#CERC` (context-aware for WSL).
+*   **`#hybrid`**: steht bei den übrigen Tags unter dem Feld (nicht mehr in der Result-Box). Erkennt der DOI-Abgleich Hybrid OA, bekommt der Button einen orangen Ring und der Tooltip nennt die Quelle. Der Tag wird ans Ende des Feldes gesetzt und nie doppelt eingefügt.
 *   **Consistency**: Ensures tags are formatted correctly every time.
 
 ---
 
-### 6. Real-time Validation & Error Summary
+### 7. Real-time Validation & Error Summary
 The assistant validates form fields as you type, highlighting issues with a **red border** (errors) or **dotted line** (warnings).
 
 ![Real-time Validation and Errors](./images/validation_errors_ui.png)
