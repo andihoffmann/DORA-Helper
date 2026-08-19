@@ -125,7 +125,7 @@ Replaces the standard keyword input with a sophisticated management tool.
 Commonly used tags can be inserted with a single click below the "Additional Information" field.
 
 *   **Available Tags**: `#hybrid` (orange), `#other_journal_contribution`, `#present_address` (with name prompt), `#corporate`, `#green`, and `#CERC` (context-aware for WSL).
-*   **`#hybrid`**: steht bei den übrigen Tags unter dem Feld (nicht mehr in der Result-Box). Erkennt der DOI-Abgleich Hybrid OA, bekommt der Button einen orangen Ring und der Tooltip nennt die Quelle. Der Tag wird ans Ende des Feldes gesetzt und nie doppelt eingefügt.
+*   **`#hybrid`**: steht bei den übrigen Tags unter dem Feld (nicht mehr in der Result-Box). Im Normalfall sieht er aus wie die anderen Tags; meldet der DOI-Abgleich Hybrid OA, färbt er sich orange und bekommt einen weichen Schein — die Farbe ist also das Signal, nicht Dekoration. Der Tag wird ans Ende des Feldes gesetzt und nie doppelt eingefügt.
 *   **Consistency**: Ensures tags are formatted correctly every time.
 
 ---

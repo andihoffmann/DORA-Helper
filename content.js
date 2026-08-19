@@ -39,6 +39,11 @@ let cachedFundingSuggestions = null;
 let fundingPanelRender = null;   // Re-Render des Formular-Panels (Sammel-Eintrag)
 let fundingPanelLastState = null; // Diagnose: nur bei Zustandswechsel loggen
 let lastOaIsHybrid = null;       // Ergebnis des OA-Abgleichs für den #hybrid-Tag
+// #hybrid-Tag: neutral wie die übrigen Tags, orange mit Schein nur dann,
+// wenn der DOI-Abgleich Hybrid Open Access gemeldet hat.
+const HYBRID_STYLE_NEUTRAL = 'background: #e2e8f0; border: 1px solid #cbd5e0; border-radius: 3px; color: #2d3748; font-weight: 400; box-shadow: none;';
+const HYBRID_STYLE_AKTIV = 'background: #f97316; border: 1px solid transparent; border-radius: 3px; color: #ffffff; font-weight: 600; '
+    + 'box-shadow: 0 0 0 5px rgba(249, 115, 22, .30), 0 2px 6px rgba(124, 45, 18, .5);';
 
 // Drupals Autocomplete-Callback des Award-Title-Feldes liefert Schluessel im
 // Format "641939||HypoTRAIN - Hyporheic Zone Processes …||2" und findet auch
@@ -1397,8 +1402,7 @@ function injectTagButtons() {
         {
             label: '#hybrid', id: 'dora-tag-hybrid',
             title: 'Hybrid Open Access: Artikel in einem Subskriptionsjournal, der einzeln OA gestellt wurde.',
-            // Orange wie bisher in der Result-Box
-            customStyle: 'background-color: #f97316; border-color: #ea580c; color: #ffffff;',
+            // Aussehen steuert markHybridTagButton (neutral bzw. orange)
             insert: insertHybridTag
         },
         { label: '#other_journal_contribution', title: 'Editorials, Letters, Introductions, Commentary, Book Reviews, etc. (nur Journal Articles). Bei Unsicherheiten lieber taggen! Short communication nicht taggen.' },
@@ -1452,13 +1456,13 @@ function markHybridTagButton(isHybrid) {
     const btn = document.getElementById('dora-tag-hybrid');
     if (!btn) return;
 
-    if (isHybrid) {
-        btn.style.boxShadow = '0 0 0 2px #fed7aa';
-        btn.title = 'Hybrid Open Access laut Abgleich (Unpaywall) – Tag setzen.';
-    } else {
-        btn.style.boxShadow = '';
-        btn.title = 'Hybrid Open Access: Artikel in einem Subskriptionsjournal, der einzeln OA gestellt wurde.';
-    }
+    // Grundstil beibehalten, nur Farbgebung und Schein austauschen
+    btn.style.cssText = btn.style.cssText.replace(/(background|border|color|font-weight|box-shadow)[^;]*;\s*/g, '')
+        + (isHybrid ? HYBRID_STYLE_AKTIV : HYBRID_STYLE_NEUTRAL);
+
+    btn.title = isHybrid
+        ? 'Hybrid Open Access laut Abgleich (Unpaywall) – Tag setzen.'
+        : 'Hybrid Open Access: Artikel in einem Subskriptionsjournal, der einzeln OA gestellt wurde.';
 }
 
 function insertAtCursor(myField, myValue) {
@@ -5216,13 +5220,16 @@ async function lookupDoraFundingEntry(item) {
         }
     }
 
+    // Diagnose fuer die Anzeige: was wurde abgefragt, was kam zurueck
+    const debug = { url: url, count: keys ? keys.length : 0, sample: (keys || []).slice(0, 3).map(k => String(k).slice(0, 80)) };
+
     if (!reachable) return null;
     if (keys === null) keys = [];
 
     // Leere Antwort = Nummer ist im Vokabular nicht vorhanden
     if (keys.length === 0) {
         console.warn('DORA Helper: Funding-Autocomplete lieferte keine Treffer für ' + number, url);
-        return { found: false, candidates: 0 };
+        return { found: false, candidates: 0, debug: debug };
     }
 
     const parsed = keys.map(k => k.split('||')).filter(p => p.length >= 2);
@@ -5235,7 +5242,7 @@ async function lookupDoraFundingEntry(item) {
     if (!sameNumber.length) {
         console.warn(`DORA Helper: ${number} nicht in der Autocomplete-Antwort`, url,
             keys.slice(0, 3).map(k => k.slice(0, 60)));
-        return { found: false, candidates: keys.length };
+        return { found: false, candidates: keys.length, debug: debug };
     }
 
     // Nummernkreise von SNSF und FP7 überlappen (SNSF 236711 vs. FP7-Projekt
@@ -5247,7 +5254,7 @@ async function lookupDoraFundingEntry(item) {
         const other = sameNumber[0];
         const otherStream = DORA_FUNDING_STREAM_BY_INDEX[(other[2] || '').trim()] || 'unbekanntes Programm';
         console.warn(`DORA Helper: ${number} steht in DORAs Liste als ${otherStream}, gesucht war ${item.funderName}`);
-        return { found: false, wrongFunder: true, otherStream: otherStream, otherTitle: other[1].trim() };
+        return { found: false, wrongFunder: true, otherStream: otherStream, otherTitle: other[1].trim(), debug: debug };
     }
 
     const streamIndex = (hit[2] || '').trim();
@@ -5446,6 +5453,32 @@ function fundingCanonicalValues(item) {
     return null;
 }
 
+// Zeigt auf Wunsch, was tatsaechlich abgefragt wurde und was zurueckkam -
+// damit sich ein unerwartetes "nicht gefunden" ohne Konsole klaeren laesst.
+function appendLookupDetails(container, debug) {
+    const toggle = createEl('a', '', ' Details');
+    toggle.href = '#';
+    toggle.style.cssText = 'color:#0073e6; margin-left:4px;';
+
+    const box = createEl('div');
+    box.style.cssText = 'display:none; margin-top:3px; padding:4px 6px; background:#fff; '
+        + 'border:1px solid #dee2e6; border-radius:3px; font-family:monospace; font-size:11px; '
+        + 'white-space:pre-wrap; word-break:break-all; color:#495057;';
+    const zeilen = ['Abfrage: ' + debug.url, 'Treffer in der Antwort: ' + debug.count];
+    if (debug.sample && debug.sample.length) zeilen.push(...debug.sample);
+    box.textContent = zeilen.join('\n');
+
+    toggle.addEventListener('click', (e) => {
+        e.preventDefault();
+        const hidden = box.style.display === 'none';
+        box.style.display = hidden ? 'block' : 'none';
+        toggle.textContent = hidden ? ' Details ausblenden' : ' Details';
+    });
+
+    container.appendChild(toggle);
+    container.appendChild(box);
+}
+
 function isFundingItemRecordable(item) {
     return !!fundingCanonicalValues(item);
 }
@@ -5530,6 +5563,7 @@ function renderFundingSuggestions(body, data) {
                 : '🚫 Nicht in DORAs Funding-Auswahlliste – kann nicht eingetragen werden';
             vocabLine.style.color = '#6c757d';
             if (entry && entry.wrongFunder) vocabLine.title = entry.otherTitle;
+            if (entry && entry.debug) appendLookupDetails(vocabLine, entry.debug);
         } else if (checkFailed) {
             vocabLine.style.color = '#d69e2e';
             vocabLine.appendChild(document.createTextNode('🚫 Abgleich mit DORAs Auswahlliste fehlgeschlagen – kein Eintrag möglich. '));
