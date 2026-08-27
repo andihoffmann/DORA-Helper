@@ -1,6 +1,6 @@
 {
   "name": "dora-helper",
-  "version": "2.74",
+  "version": "2.75",
   "description": "Metadaten-Validierung, DOI- & Buchkapitel-Import, PDF-Analyse und Open-Access-Checks für DORA.",
   "main": "background.js",
   "scripts": {
