@@ -1188,7 +1188,14 @@ async function lookupOpenAireProjectByCode(code, funderShortName) {
 
 // --- DORA-Bestand: kanonische Schreibweise einer Award-Nummer ---
 // Liefert Titel/Stream so, wie sie in DORA bereits verwendet werden.
+const doraFundingLookupCache = new Map();   // "nummer::foerderer" -> Ergebnis
+
 async function lookupDoraFunding(awardNumber, funderName) {
+    // Dieselbe Nummer kommt über viele Datensätze hinweg vor; ein Treffer je
+    // Sitzung genügt, damit Solr nicht wiederholt dieselbe Frage beantwortet.
+    const cacheSchluessel = `${awardNumber}::${funderName || ''}`;
+    if (doraFundingLookupCache.has(cacheSchluessel)) return doraFundingLookupCache.get(cacheSchluessel);
+
     try {
         const fields = ['funderName', 'funderIdentifier', 'fundingStream', 'awardNumber', 'awardTitle']
             .map(f => SOLR_FUNDING_PREFIX + f + '_ms');
@@ -1214,18 +1221,21 @@ async function lookupDoraFunding(awardNumber, funderName) {
             const name = pick('funderName');
             if (funderName && name && name !== funderName) continue;
 
-            return {
+            const ergebnis = {
                 funderName: name,
                 funderIdentifier: pick('funderIdentifier'),
                 fundingStream: pick('fundingStream'),
                 awardTitle: pick('awardTitle'),
                 occurrences: json.response.numFound
             };
+            doraFundingLookupCache.set(cacheSchluessel, ergebnis);
+            return ergebnis;
         }
+        doraFundingLookupCache.set(cacheSchluessel, null);
         return null;
     } catch (e) {
         console.warn('DORA Solr funding lookup failed:', e);
-        return null;
+        return null;   // Fehlschläge nicht merken, beim nächsten Mal erneut versuchen
     }
 }
 

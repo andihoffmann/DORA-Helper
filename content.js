@@ -55,6 +55,50 @@ const SUPPLEMENT_REPO_RE = /(figshare\.com|zenodo\.org|datadryad\.org|dryad|osf
 const SUPPLEMENT_BLOCK_RE = /just a moment|attention required|access denied|are you a robot|captcha|cf-browser-verification|cloudflare|request unsuccessful|403 forbidden/i;
 
 let supplementCacheByDoi = new Map();   // doi -> { items, quellen }
+
+// Schont die DORA-Instanz: die einmal erfolgreiche Basis-URL wird gemerkt,
+// Vokabular-Antworten werden sitzungsübergreifend zwischengespeichert.
+let fundingAutocompleteBaseWorking = null;
+const VOCAB_STORE_KEY = 'doraVocabCache';
+const VOCAB_STORE_TTL = 7 * 24 * 60 * 60 * 1000;        // Treffer: eine Woche
+// Fehlanzeigen kürzer halten: DORAs Auswahlliste wächst, ein heute unbekanntes
+// Projekt kann morgen darin stehen.
+const VOCAB_STORE_TTL_NEGATIV = 24 * 60 * 60 * 1000;
+const VOCAB_STORE_MAX = 400;
+let vocabStoreMemory = null;
+
+function vocabStoreLaden() {
+    if (vocabStoreMemory) return Promise.resolve(vocabStoreMemory);
+    return new Promise(resolve => {
+        try {
+            chrome.storage.local.get({ [VOCAB_STORE_KEY]: {} }, (items) => {
+                vocabStoreMemory = (items && items[VOCAB_STORE_KEY]) || {};
+                resolve(vocabStoreMemory);
+            });
+        } catch (e) {
+            vocabStoreMemory = {};
+            resolve(vocabStoreMemory);
+        }
+    });
+}
+
+function vocabStoreSchreiben(schluessel, wert) {
+    if (!vocabStoreMemory) vocabStoreMemory = {};
+    vocabStoreMemory[schluessel] = { wert: wert, zeit: Date.now() };
+
+    // Älteste Einträge verwerfen, damit der Speicher nicht wächst
+    const schluesselListe = Object.keys(vocabStoreMemory);
+    if (schluesselListe.length > VOCAB_STORE_MAX) {
+        schluesselListe
+            .sort((a, b) => (vocabStoreMemory[a].zeit || 0) - (vocabStoreMemory[b].zeit || 0))
+            .slice(0, schluesselListe.length - VOCAB_STORE_MAX)
+            .forEach(k => delete vocabStoreMemory[k]);
+    }
+
+    try {
+        chrome.storage.local.set({ [VOCAB_STORE_KEY]: vocabStoreMemory });
+    } catch (e) { /* ohne Speicher weiterarbeiten */ }
+}
 // #hybrid-Tag: neutral wie die übrigen Tags, orange mit Schein nur dann,
 // wenn der DOI-Abgleich Hybrid Open Access gemeldet hat.
 const HYBRID_STYLE_NEUTRAL = 'background: #e2e8f0; border: 1px solid #cbd5e0; border-radius: 3px; color: #2d3748; font-weight: 400; box-shadow: none;';
@@ -5165,8 +5209,14 @@ async function applyFundingItem(item) {
 // abgeleitete. Beide werden probiert, falls die erste nichts liefert.
 function fundingAutocompleteBaseUrls() {
     const urls = [];
+    // Was schon einmal funktioniert hat, zuerst - spart die Fehlversuche
+    if (fundingAutocompleteBaseWorking) urls.push(fundingAutocompleteBaseWorking);
+
     const helper = document.querySelector('input.autocomplete[id*="award-title-autocomplete"]');
-    if (helper && helper.value) urls.push(helper.value.replace(/\/\d+\/?$/, '/0'));
+    if (helper && helper.value) {
+        const ausFormular = helper.value.replace(/\/\d+\/?$/, '/0');
+        if (!urls.includes(ausFormular)) urls.push(ausFormular);
+    }
 
     const derived = `${getDoraBaseUrl()}/islandora/funding/autocomplete/atitle/0`;
     if (!urls.includes(derived)) urls.push(derived);
@@ -5217,8 +5267,17 @@ async function lookupDoraFundingEntry(item) {
     const number = String(item.awardNumber || '').trim();
     if (!number) return null;
 
-    // Der Callback antwortet je nach Instanz und Suchbegriff unterschiedlich;
-    // deshalb mehrere Kombinationen probieren, bevor "nicht gefunden" gilt.
+    // 1. Zwischenspeicher: dieselbe Projektnummer taucht über viele Datensätze
+    //    hinweg auf (NCCR, CMS-Publikationen ...). Das spart DORA die Anfrage.
+    const speicherSchluessel = `${item.funderKey || '?'}::${number}`;
+    const speicher = await vocabStoreLaden();
+    const gemerkt = speicher[speicherSchluessel];
+    if (gemerkt) {
+        const gueltigkeit = (gemerkt.wert && gemerkt.wert.found) ? VOCAB_STORE_TTL : VOCAB_STORE_TTL_NEGATIV;
+        if ((Date.now() - (gemerkt.zeit || 0)) < gueltigkeit) return gemerkt.wert;
+    }
+
+    // 2. Abfrage: Nummer zuerst; das Akronym nur, wenn die Liste leer blieb
     const terms = [number];
     if (item.acronym) terms.push(item.acronym);
 
@@ -5235,8 +5294,15 @@ async function lookupDoraFundingEntry(item) {
 
             reachable = true;
             const found = Array.isArray(data) ? data.map(String) : Object.keys(data);
-            if (found.some(k => String(k).split('||')[0].trim() === number)) { keys = found; break outer; }
-            if (keys === null) keys = found;   // erste auswertbare Antwort merken
+            if (found.some(k => String(k).split('||')[0].trim() === number)) {
+                keys = found;
+                fundingAutocompleteBaseWorking = base;   // diese URL liefert
+                break outer;
+            }
+            if (keys === null) keys = found;
+            // Antwortete der Endpunkt mit Einträgen, ist die Nummer dort schlicht
+            // nicht enthalten - dann bringt ein zweiter Suchbegriff nichts.
+            if (found.length) break;
         }
     }
 
@@ -5249,7 +5315,9 @@ async function lookupDoraFundingEntry(item) {
     // Leere Antwort = Nummer ist im Vokabular nicht vorhanden
     if (keys.length === 0) {
         console.warn('DORA Helper: Funding-Autocomplete lieferte keine Treffer für ' + number, url);
-        return { found: false, candidates: 0, debug: debug };
+        const ergebnis = { found: false, candidates: 0, debug: debug };
+        vocabStoreSchreiben(speicherSchluessel, ergebnis);
+        return ergebnis;
     }
 
     const parsed = keys.map(k => k.split('||')).filter(p => p.length >= 2);
@@ -5262,7 +5330,9 @@ async function lookupDoraFundingEntry(item) {
     if (!sameNumber.length) {
         console.warn(`DORA Helper: ${number} nicht in der Autocomplete-Antwort`, url,
             keys.slice(0, 3).map(k => k.slice(0, 60)));
-        return { found: false, candidates: keys.length, debug: debug };
+        const ergebnis = { found: false, candidates: keys.length, debug: debug };
+        vocabStoreSchreiben(speicherSchluessel, ergebnis);
+        return ergebnis;
     }
 
     // Nummernkreise von SNSF und FP7 überlappen (SNSF 236711 vs. FP7-Projekt
@@ -5278,13 +5348,15 @@ async function lookupDoraFundingEntry(item) {
     }
 
     const streamIndex = (hit[2] || '').trim();
-    return {
+    const ergebnis = {
         found: true,
         number: hit[0].trim(),
         title: hit[1].trim(),
         stream: DORA_FUNDING_STREAM_BY_INDEX[streamIndex] || null,
         streamIndex: streamIndex
     };
+    vocabStoreSchreiben(speicherSchluessel, ergebnis);
+    return ergebnis;
 }
 
 // Debug-Hilfe: Struktur des Funding-Bereichs in die Zwischenablage kopieren
