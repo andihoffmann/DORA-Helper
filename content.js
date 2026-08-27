@@ -39,6 +39,22 @@ let cachedFundingSuggestions = null;
 let fundingPanelRender = null;   // Re-Render des Formular-Panels (Sammel-Eintrag)
 let fundingPanelLastState = null; // Diagnose: nur bei Zustandswechsel loggen
 let lastOaIsHybrid = null;       // Ergebnis des OA-Abgleichs für den #hybrid-Tag
+
+const SUPPLEMENT_TEXT_RE = /supplement|supporting[\s_-]?information|electronic[\s_-]?supplementary|zusatzmaterial|\besm\b|supp?[\s_-]?mat|_si_\d|\bsi[_-]\d{3}/i;
+// Nur echte Navigationsziele ausschliessen - "/journal" darf nicht auf
+// figshares Pfad "/journal_contribution/..." zutreffen.
+const SUPPLEMENT_SKIP_RE = /supplement(ary)?[\s_-]?(issue|series)|\/journals?(\/|$)|\/issues?(\/|$)/i;
+const SUPPLEMENT_EXT_RE = /\.(pdf|docx?|xlsx?|csv|zip|txt|pptx?|tif{1,2}|mp4|xml)(\?|$)/i;
+// Verlage verlinken Zusatzmaterial oft direkt ins Repositorium (ACS z.B. nach
+// figshare). Solche Links tragen das Wort "supplement" nicht im Pfad.
+const SUPPLEMENT_REPO_RE = /(figshare\.com|zenodo\.org|datadryad\.org|dryad|osf\.io|pangaea\.de|dataverse\.|researchdata\.|opendata\.eawag|eric\.eawag|envidat\.ch)/i;
+
+// Verlage antworten auf automatisierte Abrufe teils mit einer Sperrseite
+// (HTTP 403 oder eine Challenge mit HTTP 200) - das ist etwas anderes als
+// "es gibt kein Supplement".
+const SUPPLEMENT_BLOCK_RE = /just a moment|attention required|access denied|are you a robot|captcha|cf-browser-verification|cloudflare|request unsuccessful|403 forbidden/i;
+
+let supplementCacheByDoi = new Map();   // doi -> { items, quellen }
 // #hybrid-Tag: neutral wie die übrigen Tags, orange mit Schein nur dann,
 // wenn der DOI-Abgleich Hybrid Open Access gemeldet hat.
 const HYBRID_STYLE_NEUTRAL = 'background: #e2e8f0; border: 1px solid #cbd5e0; border-radius: 3px; color: #2d3748; font-weight: 400; box-shadow: none;';
@@ -872,6 +888,8 @@ function renderResultBox(data) {
     // 5b. Parallel: Deep Scan on Publisher Site (Zotero/Meta-Tags)
     if (meta.DOI) {
         findPublisherPdf(meta.DOI, pdfActionRow, pdfUrl);
+        // Supplements: Datenpublikationen und Supporting Information
+        pdfActionRow.appendChild(createSupplementButton(meta.DOI, { fontSize: '12px' }));
     }
 
     // 6. PDF Drop Zone (Moved to bottom of result box)
@@ -3559,6 +3577,7 @@ function initPdfLicenseChecker() {
     if (doi) {
         console.log(`DORA-Helper: Using DOI from sessionStorage: ${doi}`);
         checkLicenses(doi);
+        injectSupplementButtonsIntoUploadForm(doi);
     } else if (isPubPid) {
         // Fetch MODS to find DOI if not in sessionStorage
         const inst = window.location.pathname.split('/')[1] || 'psi';
@@ -3582,6 +3601,7 @@ function initPdfLicenseChecker() {
                     console.log(`DORA-Helper: Extracted DOI from MODS: ${doi}`);
                     sessionStorage.setItem('dora_helper_current_doi_' + decodedPidForStorage, doi);
                     checkLicenses(doi);
+                    injectSupplementButtonsIntoUploadForm(doi);
                 } else {
                     console.log("DORA-Helper: No DOI identifier found in MODS XML.");
                 }
@@ -5692,4 +5712,337 @@ function renderFundingSuggestions(body, data) {
         err.style.cssText = 'color:#d69e2e; margin-top:3px;';
         body.appendChild(err);
     }
+}
+
+
+// =====================================================================
+// SUPPLEMENTS: DATENPUBLIKATIONEN UND SUPPORTING INFORMATION
+// ---------------------------------------------------------------------
+// Zwei Quellen: die Metadaten (OpenAIRE/Crossref, via Hintergrunddienst)
+// und die Verlagsseite, die im Browser des Nutzers mit dessen Sitzung
+// gelesen wird - dort liegt die eigentliche Supporting Information.
+// =====================================================================
+
+
+function formatFileSize(bytes) {
+    if (!bytes) return '';
+    if (bytes < 1024 * 1024) return Math.max(1, Math.round(bytes / 1024)) + ' KB';
+    return (bytes / 1024 / 1024).toFixed(1).replace('.', ',') + ' MB';
+}
+
+// Supplement-Links aus dem HTML der Verlagsseite lesen
+function extractSupplementsFromHtml(html, baseUrl) {
+    const gefunden = [];
+    const gesehen = new Set();
+
+    let doc;
+    try {
+        doc = new DOMParser().parseFromString(html, 'text/html');
+    } catch (e) {
+        return gefunden;
+    }
+
+    doc.querySelectorAll('a[href]').forEach(a => {
+        const href = a.getAttribute('href') || '';
+        const text = (a.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+
+        const trefferHref = SUPPLEMENT_TEXT_RE.test(href);
+        const trefferText = SUPPLEMENT_TEXT_RE.test(text);
+        const istRepo = SUPPLEMENT_REPO_RE.test(href);
+        if ((!trefferHref && !trefferText && !istRepo) || SUPPLEMENT_SKIP_RE.test(href + ' ' + text)) return;
+
+        // Supplements kommen auch ohne Dateiendung, etwa ACS mit
+        // ".../article-supplement/3756100/pdf/nn5c08710_si_001/".
+        const istDatei = SUPPLEMENT_EXT_RE.test(href) || SUPPLEMENT_EXT_RE.test(text)
+            || /\/(pdf|download|file)s?\//i.test(href);
+
+        let absolut;
+        try {
+            absolut = new URL(href, baseUrl).href;
+        } catch (e) {
+            return;
+        }
+        if (gesehen.has(absolut)) return;
+        gesehen.add(absolut);
+
+        // Endet der Pfad auf einen Schrägstrich, steckt der Name im letzten Segment
+        const segmente = absolut.split('?')[0].split('/').filter(Boolean);
+        const dateiname = decodeURIComponent(segmente[segmente.length - 1] || '');
+
+        gefunden.push({
+            source: 'Verlag',
+            type: istRepo ? 'dataset' : 'file',
+            title: (text && text.length > 2) ? text : (dateiname || 'Supplement'),
+            url: absolut,
+            fileName: istDatei ? dateiname : '',
+            isFile: istDatei,
+            istRepo: istRepo
+        });
+    });
+
+    // Dateien zuerst
+    gefunden.sort((a, b) => (b.isFile ? 1 : 0) - (a.isFile ? 1 : 0));
+
+    // Verlage nennen dasselbe Supplement oft zweimal: als Datei und als
+    // blossen DOI-Link (Beschriftung = die URL selbst). Dann genügt die Datei.
+    const hatDatei = gefunden.some(g => g.isFile);
+    const gefiltert = gefunden.filter(g =>
+        g.isFile || !(hatDatei && /doi\.org/.test(g.url) && g.title.replace(/\s/g, '') === g.url));
+
+    return gefiltert.slice(0, 12);
+}
+
+// Metadaten und Verlagsseite zusammenführen (pro DOI nur einmal)
+function loadSupplements(doi, callback) {
+    if (!doi) { callback({ items: [], geprueft: true }); return; }
+    if (supplementCacheByDoi.has(doi)) { callback(supplementCacheByDoi.get(doi)); return; }
+
+    const ergebnis = { items: [], geprueft: false, quellen: { meta: false, verlag: 'offen' } };
+    let offen = 2;
+
+    const fertig = () => {
+        if (--offen > 0) return;
+        ergebnis.geprueft = true;
+        supplementCacheByDoi.set(doi, ergebnis);
+        callback(ergebnis);
+    };
+
+    // 1. Datenpublikationen aus den Metadaten
+    chrome.runtime.sendMessage({ action: 'fetchSupplements', doi: doi }, (response) => {
+        if (response && response.success && response.data) {
+            ergebnis.quellen.meta = true;
+            (response.data.items || []).forEach(i => ergebnis.items.push(i));
+        }
+        fertig();
+    });
+
+    // 2. Supporting Information von der Verlagsseite
+    chrome.runtime.sendMessage({ action: 'fetchHtml', url: `https://doi.org/${doi}` }, (response) => {
+        const html = (response && response.data) || '';
+        const gesperrt = !!response && response.success
+            && (response.ok === false || SUPPLEMENT_BLOCK_RE.test(html.slice(0, 4000)));
+
+        if (!response || !response.success) {
+            ergebnis.quellen.verlag = 'fehler';
+            console.warn('DORA Helper: Verlagsseite nicht abrufbar', (response && response.error) || 'keine Antwort');
+        } else if (gesperrt) {
+            ergebnis.quellen.verlag = 'gesperrt';
+            console.warn(`DORA Helper: Verlagsseite blockiert den Abruf (HTTP ${response.status || '?'}) – Supporting Information kann nicht gelesen werden.`);
+        } else {
+            ergebnis.quellen.verlag = 'ok';
+        }
+
+        if (response && response.success && html && !gesperrt) {
+            const basis = response.finalUrl || `https://doi.org/${doi}`;
+            const gefunden = extractSupplementsFromHtml(response.data, basis)
+                .filter(i => !ergebnis.items.some(x => x.url === i.url));
+            gefunden.forEach(i => ergebnis.items.push(i));
+
+            // Verlinkte Repositorien (figshare, Zenodo …) in Dateilisten auflösen
+            const repoLinks = gefunden.filter(i => i.istRepo).slice(0, 4);
+            if (!repoLinks.length) { fertig(); return; }
+
+            let offeneRepos = repoLinks.length;
+            repoLinks.forEach(item => {
+                chrome.runtime.sendMessage({ action: 'resolveRepository', url: item.url }, (antwort) => {
+                    if (antwort && antwort.success && antwort.data) {
+                        if (antwort.data.repository) item.repository = antwort.data.repository;
+                        if (antwort.data.title && item.title.length < 4) item.title = antwort.data.title;
+                        if (antwort.data.license) item.license = antwort.data.license;
+                        if ((antwort.data.files || []).length) item.files = antwort.data.files;
+                    }
+                    if (--offeneRepos === 0) fertig();
+                });
+            });
+            return;
+        }
+        fertig();
+    });
+}
+
+// --- Kompakte Schaltfläche mit ausklappbarer Liste ---
+function createSupplementButton(doi, optionen) {
+    const opt = optionen || {};
+    const wrap = createEl('div');
+    wrap.className = 'dora-supplement-wrap';
+    wrap.style.cssText = 'display:inline-block; position:relative;';
+
+    const btn = createEl('button', 'dora-box-btn btn-secondary');
+    btn.type = 'button';
+    btn.style.cssText = 'width:auto; padding:2px 8px; font-size:' + (opt.fontSize || '11px') + '; '
+        + 'display:inline-flex; align-items:center; gap:4px; white-space:nowrap;';
+    btn.textContent = '📎 Supplement …';
+    btn.disabled = true;
+    btn.title = 'Sucht Supporting Information und verknüpfte Datenpublikationen';
+    wrap.appendChild(btn);
+
+    const liste = createEl('div');
+    liste.style.cssText = 'display:none; margin-top:4px; padding:6px 8px; background:#ffffff; '
+        + 'border:1px solid #cbd5e0; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,.12); '
+        + 'font-size:12px; max-width:420px; max-height:260px; overflow:auto;';
+    if (opt.floating) {
+        liste.style.position = 'absolute';
+        liste.style.zIndex = '10001';
+        liste.style.right = '0';
+        liste.style.minWidth = '320px';
+    }
+    wrap.appendChild(liste);
+
+    btn.addEventListener('click', () => {
+        const zu = liste.style.display === 'none';
+        liste.style.display = zu ? 'block' : 'none';
+    });
+
+    loadSupplements(doi, (ergebnis) => {
+        const items = ergebnis.items || [];
+        const verlag = (ergebnis.quellen && ergebnis.quellen.verlag) || 'offen';
+        const metaOk = !!(ergebnis.quellen && ergebnis.quellen.meta);
+
+        if (!items.length) {
+            if (verlag === 'gesperrt' || verlag === 'fehler') {
+                // Wichtig zu unterscheiden: hier ist nichts belegt, aber auch
+                // nichts ausgeschlossen - die Verlagsseite war nicht lesbar.
+                btn.textContent = '📎 nicht prüfbar';
+                btn.style.borderColor = '#d69e2e';
+                btn.style.color = '#8a5a10';
+                btn.title = verlag === 'gesperrt'
+                    ? 'Keine strukturierten Angaben in Crossref, OpenAIRE oder figshare — und die Verlagsseite hat den Abruf blockiert. '
+                    + 'Ob es Supporting Information gibt, ist damit offen: bitte auf der Artikelseite selbst nachsehen.'
+                    : 'Keine strukturierten Angaben gefunden, und die Verlagsseite war nicht erreichbar. '
+                    + 'Ob es Supporting Information gibt, ist damit offen.';
+            } else if (!metaOk) {
+                btn.textContent = '📎 nicht prüfbar';
+                btn.style.borderColor = '#d69e2e';
+                btn.style.color = '#8a5a10';
+                btn.title = 'Die Metadatenquellen haben nicht geantwortet.';
+            } else {
+                btn.textContent = '📎 kein Supplement';
+                btn.title = 'Geprüft: Crossref, OpenAIRE und figshare führen keines, und auf der Verlagsseite steht keines.';
+                btn.style.opacity = '.6';
+            }
+            return;
+        }
+
+        btn.disabled = false;
+        btn.textContent = `📎 ${items.length} Supplement${items.length > 1 ? 's' : ''}`;
+        btn.title = 'Anzeigen und herunterladen';
+        btn.style.borderColor = '#2b6cb0';
+        btn.style.color = '#2b6cb0';
+
+        renderSupplementList(liste, items, verlag);
+    });
+
+    return wrap;
+}
+
+function renderSupplementList(container, items, verlagStatus) {
+    container.replaceChildren();
+
+    if (verlagStatus === 'gesperrt' || verlagStatus === 'fehler') {
+        const hinweis = createEl('div', '', verlagStatus === 'gesperrt'
+            ? '⚠️ Die Verlagsseite hat den Abruf blockiert — dort kann weitere Supporting Information liegen.'
+            : '⚠️ Die Verlagsseite war nicht erreichbar — dort kann weitere Supporting Information liegen.');
+        hinweis.style.cssText = 'margin-bottom:5px; padding:4px 6px; background:#fdf3e3; color:#8a5a10; '
+            + 'border-radius:3px; font-size:11px;';
+        container.appendChild(hinweis);
+    }
+
+    items.forEach((item, index) => {
+        const block = createEl('div');
+        block.style.cssText = 'padding:5px 0;' + (index ? ' border-top:1px solid #edf2f7;' : '');
+
+        const kopf = createEl('div');
+        kopf.style.cssText = 'display:flex; gap:6px; align-items:baseline;';
+
+        const herkunft = createEl('span', '', item.source === 'Verlag' ? 'Verlag' : (item.repository || item.source));
+        herkunft.style.cssText = 'font-size:10px; text-transform:uppercase; letter-spacing:.04em; '
+            + 'color:#4a5568; background:#edf2f7; border-radius:3px; padding:1px 5px; white-space:nowrap;';
+        kopf.appendChild(herkunft);
+
+        // Repositorien liefern Titel teils mit Zeilenumbruechen
+        const beschriftung = String(item.title || item.fileName || item.url).replace(/\s+/g, ' ').trim();
+        const link = createEl('a', '', beschriftung);
+        link.href = item.url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.style.cssText = 'color:#2b6cb0; text-decoration:none; word-break:break-word;';
+        kopf.appendChild(link);
+        block.appendChild(kopf);
+
+        if (item.doi || item.license) {
+            const zeile = createEl('div');
+            zeile.style.cssText = 'display:flex; gap:6px; align-items:baseline; margin-left:2px;';
+
+            if (item.doi) {
+                const doiText = createEl('span', '', item.doi);
+                doiText.style.cssText = 'font-family:monospace; font-size:10.5px; color:#718096;';
+                zeile.appendChild(doiText);
+            }
+
+            if (item.license && item.license.name) {
+                const lizenz = item.license.url ? createEl('a', '', item.license.name) : createEl('span', '', item.license.name);
+                if (item.license.url) {
+                    lizenz.href = item.license.url;
+                    lizenz.target = '_blank';
+                    lizenz.rel = 'noopener';
+                }
+                lizenz.title = 'Lizenz der Datenpublikation';
+                lizenz.style.cssText = 'font-size:10px; padding:1px 5px; border-radius:3px; white-space:nowrap; '
+                    + 'text-decoration:none; background:#e6fffa; color:#234e52; border:1px solid #b2f5ea;';
+                zeile.appendChild(lizenz);
+            }
+
+            block.appendChild(zeile);
+        }
+
+        // Einzeldateien eines Repositoriums mit direktem Download
+        (item.files || []).slice(0, 8).forEach(f => {
+            const zeile = createEl('div');
+            zeile.style.cssText = 'margin:2px 0 0 10px; display:flex; gap:5px; align-items:baseline;';
+            const dl = createEl('a', '', '⬇ ' + f.name);
+            dl.href = f.url;
+            dl.target = '_blank';
+            dl.rel = 'noopener';
+            dl.setAttribute('download', f.name);
+            dl.style.cssText = 'color:#2b6cb0; text-decoration:none; word-break:break-all;';
+            zeile.appendChild(dl);
+            if (f.size) {
+                const groesse = createEl('span', '', formatFileSize(f.size));
+                groesse.style.cssText = 'color:#a0aec0; font-size:10.5px; white-space:nowrap;';
+                zeile.appendChild(groesse);
+            }
+            block.appendChild(zeile);
+        });
+
+        if ((item.files || []).length > 8) {
+            const rest = createEl('div', '', `… und ${item.files.length - 8} weitere Dateien`);
+            rest.style.cssText = 'margin-left:10px; color:#a0aec0; font-size:10.5px;';
+            block.appendChild(rest);
+        }
+
+        container.appendChild(block);
+    });
+}
+
+// Schaltfläche neben den PDF-Upload-Feldern
+function injectSupplementButtonsIntoUploadForm(doi) {
+    if (!doi) return;
+    const selects = document.querySelectorAll('select[id*="-document-version"]');
+    if (!selects.length) return;
+
+    const ersteZeile = selects[0].closest('tr, .islandora-form-fieldpanel-pane, .form-item') || selects[0].parentNode;
+    // Die Schaltfläche sitzt als Geschwister hinter der Zeile, deshalb wird die
+    // Zeile selbst markiert - sonst käme bei jedem Scan eine weitere dazu.
+    if (!ersteZeile || ersteZeile.dataset.doraSupplement) return;
+    ersteZeile.dataset.doraSupplement = '1';
+
+    const halter = createEl('div');
+    halter.style.cssText = 'margin:6px 0; display:flex; align-items:center; gap:6px;';
+    const hinweis = createEl('span', '', 'Zum Artikel:');
+    hinweis.style.cssText = 'font-size:11px; color:#718096;';
+    halter.appendChild(hinweis);
+    halter.appendChild(createSupplementButton(doi, { fontSize: '11px' }));
+
+    ersteZeile.parentNode.insertBefore(halter, ersteZeile.nextSibling);
 }

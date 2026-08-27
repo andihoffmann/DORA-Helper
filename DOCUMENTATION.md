@@ -80,7 +80,26 @@ Die Förderangaben aus Scopus hängen stark von der Formulierung im Acknowledgem
 
 ---
 
-### 3. Advanced PDF Analysis & Extraction
+### 3. Supplements: Supporting Information & Datenpublikationen
+
+Neben dem Volltext werden die **Zusatzmaterialien** eines Artikels gesucht und zum Download angeboten — als kompakte Schaltfläche `📎 n Supplements`, die bei Klick eine Liste ausklappt.
+
+*   **Zwei Quellen**, deren Treffer zusammengeführt werden:
+    *   **Verlagsseite**: Links, die als *Supporting Information*, *Supplementary material*, *Electronic Supplementary Material* o.ä. ausgewiesen sind — geprüft gegen die Schemata von ACS, Wiley, Elsevier, Springer, MDPI und Copernicus. Der Abruf läuft über die Sitzung des Nutzers, erreicht also auch Wiley und Elsevier. Erkannt werden auch Pfade **ohne Dateiendung** (ACS: `…/article-supplement/3756100/pdf/nn5c08710_si_001/`) und **Direktlinks ins Repositorium** — ACS verweist häufig nach figshare; solche Links werden über die figshare-/Zenodo-API in die einzelnen Dateien aufgelöst. Navigations-Links („supplement issue", Ausgaben-Archive) und das Artikel-PDF selbst bleiben draussen; nennt der Verlag dasselbe Supplement doppelt (als Datei und als blossen DOI-Link), bleibt die Datei.
+    *   **Metadaten**: verknüpfte Datenpublikationen aus **OpenAIRE** (`IsSupplementedBy`, rund 11 % der Artikel) und **Crossref** (`is-supplemented-by`, `has-part`, rund 0.3 %).
+    *   **Elsevier über die PII**: ScienceDirect sperrt automatisierte Abrufe, der Auslieferungs-CDN `ars.els-cdn.com` ist dagegen offen. Aus der PII (Crossref-Feld `alternative-id` bzw. die linkinghub-URL) werden die Dateien `1-s2.0-<PII>-mmc<N>.<endung>` per HEAD-Anfrage geprüft — Endungen in der Reihenfolge pdf, docx, xlsx, zip … , Abbruch beim ersten fehlenden Index. Beispiel `10.1016/j.fuel.2026.140882` → `mmc1.pdf` (1.6 MB).
+    *   **figshare-Suche über die Artikel-DOI**: figshare führt die Artikel-DOI als `resource_doi`. ACS (und weitere Verlage) legen ihre Supporting Information dort ab — dieser Weg findet sie **ohne** die Verlagsseite, was bei ACS entscheidend ist, weil deren Seiten automatisierte Abrufe blockieren. Beispiel `10.1021/acsnano.5c08710` → SI-DOI `…s001` mit `nn5c08710_si_001.pdf`.
+    *   Bei **Zenodo** und **figshare** werden zusätzlich die einzelnen Dateien samt Grösse und direkter Download-URL aufgelöst.
+*   **Wo**: in der Result-Box neben den PDF-Aktionen und im **PDF-Upload-Dialog** direkt bei der Versionsauswahl, damit die Datei beim Hochladen greifbar ist.
+*   **Lizenz**: Bei Zenodo und figshare wird die Lizenz der Datenpublikation als verlinktes Kürzel angezeigt (z.B. `CC BY-NC 4.0`).
+*   **Ergebnislage wird unterschieden** — „nichts gefunden" ist nicht dasselbe wie „nicht nachgesehen":
+    *   `📎 kein Supplement` — alle Quellen haben geantwortet und führen keines. Der Tooltip nennt die geprüften Quellen.
+    *   `📎 nicht prüfbar` (orange) — es gibt keine strukturierten Angaben **und** die Verlagsseite war nicht lesbar, etwa weil sie den Abruf blockiert (ACS antwortet mit HTTP 403 oder einer Cloudflare-Seite mit HTTP 200). Ob Supporting Information existiert, ist damit offen; der Tooltip sagt das und verweist auf die Artikelseite.
+    *   Werden Treffer gefunden, während die Verlagsseite blockiert war, steht über der Liste ein Hinweis, dass dort weitere Dateien liegen können.
+
+---
+
+### 4. Advanced PDF Analysis & Extraction
 Extract **Page Count** and **Keywords** directly from PDFs and discover missing full-texts.
 
 ![PDF Analysis Tool](./images/pdf_analysis_ui.png)
@@ -94,7 +113,7 @@ Extract **Page Count** and **Keywords** directly from PDFs and discover missing 
 
 ---
 
-### 4. Autocomplete for Form Fields
+### 5. Autocomplete for Form Fields
 The assistant provides intelligent autocomplete suggestions from the DORA Solr index.
 
 **Supported Fields:**
@@ -108,7 +127,7 @@ The assistant provides intelligent autocomplete suggestions from the DORA Solr i
 
 ---
 
-### 5. Integrated Keyword Manager
+### 6. Integrated Keyword Manager
 Replaces the standard keyword input with a sophisticated management tool.
 
 ![Integrated Keyword Manager](./images/keyword_manager_ui.png)
@@ -121,7 +140,7 @@ Replaces the standard keyword input with a sophisticated management tool.
 
 ---
 
-### 6. Smart Tags for "Additional Information"
+### 7. Smart Tags for "Additional Information"
 Commonly used tags can be inserted with a single click below the "Additional Information" field.
 
 *   **Available Tags**: `#hybrid` (orange), `#other_journal_contribution`, `#present_address` (with name prompt), `#corporate`, `#green`, and `#CERC` (context-aware for WSL).
@@ -130,7 +149,7 @@ Commonly used tags can be inserted with a single click below the "Additional Inf
 
 ---
 
-### 7. Real-time Validation & Error Summary
+### 8. Real-time Validation & Error Summary
 The assistant validates form fields as you type, highlighting issues with a **red border** (errors) or **dotted line** (warnings).
 
 ![Real-time Validation and Errors](./images/validation_errors_ui.png)

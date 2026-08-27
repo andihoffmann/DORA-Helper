@@ -47,9 +47,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         fetch(request.url, { credentials: 'include' })
             .then(response => {
                 const finalUrl = response.url;
-                return response.text().then(text => ({ text, finalUrl }));
+                // Status mitgeben: Verlage wie ACS antworten mit 403 und einer
+                // Sperrseite - ohne diese Angabe sieht das aus wie "nichts da".
+                return response.text().then(text => ({ text, finalUrl, status: response.status, ok: response.ok }));
             })
-            .then(result => sendResponse({ success: true, data: result.text, finalUrl: result.finalUrl }))
+            .then(result => sendResponse({
+                success: true, data: result.text, finalUrl: result.finalUrl,
+                status: result.status, ok: result.ok
+            }))
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
     }
@@ -70,6 +75,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.action === "fetchFunding") {
         fetchFundingSuggestions(request.doi)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
+    if (request.action === "fetchSupplements") {
+        fetchSupplements(request.doi)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
+    if (request.action === "resolveRepository") {
+        (async () => {
+            const repo = repositoryFromId(request.url);
+            if (!repo) return { repository: null, files: [] };
+            const inhalt = await fetchRepositoryFiles(repo);
+            return {
+                repository: repo.name, title: inhalt.title || '',
+                license: inhalt.license || null, files: inhalt.files || []
+            };
+        })()
             .then(data => sendResponse({ success: true, data: data }))
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
@@ -1347,4 +1374,300 @@ async function computeFundingSuggestions(doi) {
         || String(a.awardNumber).localeCompare(String(b.awardNumber)));
 
     return { items: items, unsupported: unsupported, errors: errors };
+}
+
+
+// =====================================================================
+// SUPPLEMENTS ZU EINEM ARTIKEL (Crossref + OpenAIRE + Repositorien)
+// ---------------------------------------------------------------------
+// Zwei Arten von "Supplement" kommen vor:
+//   1. Datenpublikationen (Zenodo, figshare, Dryad, ERIC ...) - stehen in
+//      den Metadaten von OpenAIRE (rund 11 % der Artikel) und selten in
+//      Crossref (rund 0.3 %).
+//   2. Die eigentliche Supporting Information des Verlags - die findet der
+//      Landing-Page-Scan im Content-Script.
+// Hier geht es um Punkt 1; bei Zenodo/figshare werden zusaetzlich die
+// einzelnen Dateien samt direkter Download-URL aufgeloest.
+// =====================================================================
+
+const supplementCache = new Map();
+const SUPPLEMENT_CACHE_MAX = 200;
+
+function repositoryFromId(id) {
+    const s = String(id || '');
+    if (/10\.5281\/zenodo\.(\d+)/i.test(s) || /zenodo\.org\/(records?|record)\/(\d+)/i.test(s)) {
+        const m = s.match(/10\.5281\/zenodo\.(\d+)/i) || s.match(/zenodo\.org\/(?:records?|record)\/(\d+)/i);
+        return { name: 'Zenodo', key: 'zenodo', id: m[1] };
+    }
+    if (/10\.6084\/m9\.figshare\.(\d+)/i.test(s)) {
+        return { name: 'figshare', key: 'figshare', id: s.match(/10\.6084\/m9\.figshare\.(\d+)/i)[1] };
+    }
+    if (/figshare\.com\/articles\/[^/]+\/[^/]+\/(\d+)/i.test(s)) {
+        return { name: 'figshare', key: 'figshare', id: s.match(/figshare\.com\/articles\/[^/]+\/[^/]+\/(\d+)/i)[1] };
+    }
+    if (/10\.5061\/dryad/i.test(s)) return { name: 'Dryad', key: 'dryad', id: null };
+    if (/10\.25678\//i.test(s)) return { name: 'Eawag ERIC', key: 'eric', id: null };
+    return null;
+}
+
+// Einzelne Dateien eines Repositoriums samt direkter URL
+// Zenodo liefert nur eine Kennung ("cc-by-4.0"), figshare Name und URL.
+function normalizeLicense(roh) {
+    if (!roh) return null;
+    if (typeof roh === 'object' && roh.name) {
+        return { name: roh.name, url: roh.url || null };
+    }
+    const id = String((roh && roh.id) || roh || '').trim();
+    if (!id) return null;
+
+    const cc = id.match(/^cc-([a-z-]+?)-?(\d\.\d)?$/i);
+    if (cc) {
+        const teile = cc[1].toLowerCase();
+        const istCC0 = teile === 'zero' || teile === '0';
+        // CC0 gibt es nur in Version 1.0
+        const version = cc[2] || (istCC0 ? '1.0' : '4.0');
+        const name = istCC0 ? 'CC0 ' + version : 'CC ' + teile.toUpperCase() + ' ' + version;
+        const pfad = istCC0 ? 'publicdomain/zero' : 'licenses/' + teile;
+        return { name: name, url: `https://creativecommons.org/${pfad}/${version}/` };
+    }
+    return { name: id.toUpperCase(), url: null };
+}
+
+async function fetchRepositoryFiles(repo) {
+    try {
+        if (repo.key === 'zenodo' && repo.id) {
+            const res = await fetch(`https://zenodo.org/api/records/${repo.id}`, { cache: 'no-cache' });
+            if (!res.ok) return { files: [] };
+            const json = await res.json();
+            return {
+                title: json.title || (json.metadata && json.metadata.title) || '',
+                license: normalizeLicense((json.metadata && json.metadata.license) || json.license),
+                files: (json.files || []).map(f => ({
+                    name: f.key,
+                    size: f.size || 0,
+                    url: (f.links && (f.links.self || f.links.download)) || null
+                })).filter(f => f.url)
+            };
+        }
+        if (repo.key === 'figshare' && repo.id) {
+            const [dateien, meta] = await Promise.all([
+                fetch(`https://api.figshare.com/v2/articles/${repo.id}/files`, { cache: 'no-cache' }),
+                fetch(`https://api.figshare.com/v2/articles/${repo.id}`, { cache: 'no-cache' })
+            ]);
+            const liste = dateien.ok ? await dateien.json() : [];
+            const info = meta.ok ? await meta.json() : {};
+            return {
+                title: String(info.title || '').replace(/\s+/g, ' ').trim(),
+                license: normalizeLicense(info.license),
+                files: (liste || []).map(f => ({
+                    name: f.name,
+                    size: f.size || 0,
+                    url: f.download_url || null
+                })).filter(f => f.url)
+            };
+        }
+    } catch (e) {
+        console.warn('Repository-Dateien nicht abrufbar:', repo, e);
+    }
+    return { files: [] };
+}
+
+// --- Crossref: relation.is-supplemented-by / has-part ---
+function extractCrossrefSupplements(message) {
+    const out = [];
+    const rel = (message && message.relation) || {};
+    ['is-supplemented-by', 'has-part'].forEach(typ => {
+        [].concat(rel[typ] || []).forEach(eintrag => {
+            const id = String(eintrag.id || '').trim();
+            if (!id) return;
+            const istDoi = (eintrag['id-type'] || '').toLowerCase() === 'doi';
+            out.push({
+                source: 'Crossref',
+                relation: typ,
+                doi: istDoi ? id : null,
+                url: istDoi ? `https://doi.org/${id}` : id,
+                title: '',
+                type: 'dataset'
+            });
+        });
+    });
+    return out;
+}
+
+// --- OpenAIRE: IsSupplementedBy (Titel, DOI und URL liegen in der Relation) ---
+async function fetchOpenAireSupplements(doi) {
+    const url = `https://api.openaire.eu/search/publications?doi=${encodeURIComponent(doi)}&format=json`;
+    const res = await fetch(url, { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`OpenAIRE HTTP ${res.status}`);
+    const json = await res.json();
+
+    const asArray = v => (v === undefined || v === null) ? [] : (Array.isArray(v) ? v : [v]);
+    const val = v => (v && typeof v === 'object') ? (v['$'] || '') : (v || '');
+
+    const results = asArray(json && json.response && json.response.results && json.response.results.result);
+    if (!results.length) return [];
+
+    const entity = results[0] && results[0].metadata && results[0].metadata['oaf:entity']
+        && results[0].metadata['oaf:entity']['oaf:result'];
+
+    return asArray(entity && entity.rels && entity.rels.rel)
+        .filter(r => r && r.to && /IsSupplementedBy/i.test(r.to['@class'] || ''))
+        .map(r => {
+            const pid = asArray(r.pid).find(p => (p['@classid'] || '').toLowerCase() === 'doi');
+            const instanz = asArray(r.instance)[0] || {};
+            const webUrl = val(instanz.webresource && instanz.webresource.url) || val(instanz.url);
+            const supplementDoi = pid ? val(pid) : null;
+            return {
+                source: 'OpenAIRE',
+                relation: 'IsSupplementedBy',
+                doi: supplementDoi,
+                url: supplementDoi ? `https://doi.org/${supplementDoi}` : (webUrl || null),
+                title: val(r.title),
+                creators: asArray(r.creator).map(c => val(c)).filter(Boolean).slice(0, 3),
+                type: val(r.resulttype && r.resulttype['@classid']) || 'dataset'
+            };
+        })
+        .filter(s => s.url);
+}
+
+// --- figshare kennt die Artikel-DOI als "resource_doi" ---
+// ACS und andere Verlage legen ihre Supporting Information dort ab. Dieser
+// Weg braucht die Verlagsseite nicht, die bei ACS ohnehin gesperrt ist.
+async function fetchFigshareByArticleDoi(doi) {
+    try {
+        const res = await fetch('https://api.figshare.com/v2/articles/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ resource_doi: doi })
+        });
+        if (!res.ok) return [];
+        const treffer = await res.json();
+        return (treffer || []).slice(0, 5).map(a => ({
+            source: 'figshare',
+            relation: 'resource_doi',
+            doi: a.doi || null,
+            url: a.url_public_html || (a.doi ? `https://doi.org/${a.doi}` : null),
+            title: String(a.title || '').replace(/\s+/g, ' ').trim(),
+            type: 'dataset',
+            figshareId: a.id
+        })).filter(a => a.url);
+    } catch (e) {
+        console.warn('figshare-Suche fehlgeschlagen:', e);
+        return [];
+    }
+}
+
+// --- Elsevier: Supplements über die PII vom CDN ---
+// ScienceDirect sperrt automatisierte Abrufe, der Auslieferungs-CDN
+// (ars.els-cdn.com) ist dagegen offen. Die Dateien heissen dort
+// "1-s2.0-<PII>-mmc<N>.<endung>" und lassen sich per HEAD prüfen.
+const ELSEVIER_EXTENSIONS = ['pdf', 'docx', 'xlsx', 'zip', 'doc', 'xls', 'csv', 'txt'];
+const ELSEVIER_MAX_INDEX = 8;
+
+function elsevierPiiFromCrossref(message) {
+    if (!message) return null;
+    const kandidaten = [].concat(message['alternative-id'] || []);
+    const treffer = kandidaten.find(id => /^S\d{15,17}$/i.test(String(id).trim()));
+    if (treffer) return String(treffer).trim();
+
+    const primaer = (message.resource && message.resource.primary && message.resource.primary.URL) || '';
+    const ausUrl = primaer.match(/pii\/(S\d{15,17})/i);
+    return ausUrl ? ausUrl[1] : null;
+}
+
+async function probeElsevierFile(pii, index, endung) {
+    const url = `https://ars.els-cdn.com/content/image/1-s2.0-${pii}-mmc${index}.${endung}`;
+    try {
+        const res = await fetch(url, { method: 'HEAD', cache: 'no-cache' });
+        if (!res.ok) return null;
+        const laenge = parseInt(res.headers.get('content-length') || '0', 10);
+        return { url: url, name: `mmc${index}.${endung}`, size: laenge || 0 };
+    } catch (e) {
+        return null;
+    }
+}
+
+async function fetchElsevierSupplements(pii) {
+    if (!pii) return [];
+    const gefunden = [];
+
+    for (let index = 1; index <= ELSEVIER_MAX_INDEX; index++) {
+        let treffer = null;
+        for (const endung of ELSEVIER_EXTENSIONS) {
+            treffer = await probeElsevierFile(pii, index, endung);
+            if (treffer) break;
+        }
+        // Elsevier nummeriert lückenlos: beim ersten fehlenden Index aufhören
+        if (!treffer) break;
+        gefunden.push({
+            source: 'Elsevier',
+            relation: 'cdn',
+            type: 'file',
+            title: index === 1 ? 'Supplementary material' : `Supplementary material ${index}`,
+            fileName: treffer.name,
+            url: treffer.url,
+            isFile: true,
+            files: [{ name: treffer.name, size: treffer.size, url: treffer.url }]
+        });
+    }
+
+    return gefunden;
+}
+
+async function fetchSupplements(doi) {
+    const key = String(doi || '').trim().toLowerCase();
+    if (supplementCache.has(key)) return supplementCache.get(key);
+
+    const crossrefWerk = await fetch(`https://api.crossref.org/works/${doi}`, { cache: 'no-cache' })
+        .then(r => r.ok ? r.json() : null)
+        .then(j => (j && j.message) || null)
+        .catch(() => null);
+
+    const [crossrefRes, openaireRes, figshareRes, elsevierRes] = await Promise.allSettled([
+        Promise.resolve(extractCrossrefSupplements(crossrefWerk)),
+        fetchOpenAireSupplements(doi),
+        fetchFigshareByArticleDoi(doi),
+        fetchElsevierSupplements(elsevierPiiFromCrossref(crossrefWerk))
+    ]);
+
+    const errors = [];
+    if (crossrefRes.status === 'rejected') errors.push('Crossref: ' + (crossrefRes.reason && crossrefRes.reason.message));
+    if (openaireRes.status === 'rejected') errors.push('OpenAIRE: ' + (openaireRes.reason && openaireRes.reason.message));
+
+    // Zusammenfuehren, Dubletten ueber DOI bzw. URL erkennen
+    const items = [];
+    const merge = eintrag => {
+        const kennung = (eintrag.doi || eintrag.url || '').toLowerCase();
+        const vorhanden = items.find(i => (i.doi || i.url || '').toLowerCase() === kennung);
+        if (vorhanden) {
+            if (!vorhanden.title && eintrag.title) vorhanden.title = eintrag.title;
+            if (!vorhanden.sources.includes(eintrag.source)) vorhanden.sources.push(eintrag.source);
+            return;
+        }
+        items.push(Object.assign({}, eintrag, { sources: [eintrag.source] }));
+    };
+    (openaireRes.status === 'fulfilled' ? openaireRes.value : []).forEach(merge);
+    (crossrefRes.status === 'fulfilled' ? crossrefRes.value : []).forEach(merge);
+    (figshareRes.status === 'fulfilled' ? figshareRes.value : []).forEach(merge);
+    (elsevierRes.status === 'fulfilled' ? elsevierRes.value : []).forEach(merge);
+
+    // Repositorien aufloesen: Dateiliste mit direkten Download-Links
+    await Promise.all(items.map(async item => {
+        const repo = item.figshareId
+            ? { name: 'figshare', key: 'figshare', id: String(item.figshareId) }
+            : repositoryFromId(item.doi || item.url);
+        if (!repo) return;
+        item.repository = repo.name;
+        const inhalt = await fetchRepositoryFiles(repo);
+        item.files = inhalt.files || [];
+        if (!item.title && inhalt.title) item.title = inhalt.title;
+        if (inhalt.license) item.license = inhalt.license;
+    }));
+
+    const result = { items: items, errors: errors };
+    if (supplementCache.size >= SUPPLEMENT_CACHE_MAX) {
+        supplementCache.delete(supplementCache.keys().next().value);
+    }
+    supplementCache.set(key, result);
+    return result;
 }
