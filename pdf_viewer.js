@@ -17,13 +17,97 @@ const zoomOutBtn = document.getElementById('zoom-out-btn');
 const fitBtn = document.getElementById('fit-btn');
 const zoomInfoEl = document.getElementById('zoom-info');
 const adobeBtn = document.getElementById('adobe-btn');
+const saveBtn = document.getElementById('save-btn');
 const loadingEl = document.getElementById('loading');
 
 // Parse Query Parameters
 const urlParams = new URLSearchParams(window.location.search);
 const fileUrl = urlParams.get('file');
+// Quellen mit Geheimnis in der Adresse (Elsevier-Schlüssel) werden nicht
+// direkt geladen: das Hintergrundskript reicht die Bytes durch.
+const elsevierDoi = urlParams.get('elsevier');
+// Dateiname-Vorschlag (aus DOI oder PID), damit die Ablage nicht
+// "view" oder "pdf" heisst.
+const dateiName = urlParams.get('name') || '';
 
-if (fileUrl) {
+// Institut des Datensatzes als farbiges Schild in der Leiste. Die Zuordnung
+// kommt aus der aufrufenden DORA-Seite (Pfad bzw. PID-Praefix).
+const INSTITUTE = {
+    eawag: 'Eawag', empa: 'Empa', wsl: 'WSL', psi: 'PSI'
+};
+
+function institutTagSetzen() {
+    const schild = document.getElementById('institut-tag');
+    if (!schild) return;
+    const schluessel = (urlParams.get('inst') || '').toLowerCase();
+    const name = INSTITUTE[schluessel];
+    if (!name) { schild.hidden = true; return; }
+
+    schild.textContent = name;
+    schild.dataset.institut = schluessel;
+    schild.title = `Datensatz aus ${name}`;
+    schild.hidden = false;
+}
+
+institutTagSetzen();
+
+// Das angezeigte PDF zusaetzlich ablegen. Laeuft im Hintergrundskript, damit
+// auch Quellen mit Schluessel in der Adresse funktionieren.
+let downloadLaeuft = false;
+let downloadFertig = false;
+
+function pdfAblegen(stillschweigend) {
+    if (downloadLaeuft || downloadFertig) return;
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) return;
+
+    downloadLaeuft = true;
+    if (saveBtn && !stillschweigend) saveBtn.textContent = '⬇ speichert …';
+
+    chrome.runtime.sendMessage({
+        action: 'downloadPdf',
+        url: elsevierDoi ? '' : fileUrl,
+        elsevierDoi: elsevierDoi || '',
+        filename: dateiName
+    }, (antwort) => {
+        downloadLaeuft = false;
+        if (!saveBtn) return;
+        if (antwort && antwort.success) {
+            downloadFertig = true;
+            saveBtn.textContent = '✓ gespeichert';
+            saveBtn.title = 'Liegt im Download-Ordner: ' + (antwort.data && antwort.data.filename || '');
+        } else {
+            saveBtn.textContent = '⬇ Speichern';
+            saveBtn.title = 'Download fehlgeschlagen: ' + ((antwort && antwort.error) || 'keine Antwort');
+        }
+    });
+}
+
+function ladeUeberHintergrund(auftrag) {
+    return new Promise((erfuellen, ablehnen) => {
+        chrome.runtime.sendMessage(Object.assign({ action: 'fetchPdfBytes' }, auftrag), (antwort) => {
+            if (!antwort || !antwort.success) {
+                ablehnen(new Error((antwort && antwort.error) || 'Kein Zugriff auf das Hintergrundskript'));
+                return;
+            }
+            const roh = atob(antwort.data.base64);
+            const bytes = new Uint8Array(roh.length);
+            for (let i = 0; i < roh.length; i++) bytes[i] = roh.charCodeAt(i);
+            erfuellen(bytes);
+        });
+    });
+}
+
+if (fileUrl || elsevierDoi) {
+    if (saveBtn) saveBtn.onclick = () => pdfAblegen(false);
+
+    // Auf Wunsch wandert jedes geöffnete PDF gleich in den Download-Ordner,
+    // damit es für den Upload nach DORA bereitliegt.
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.get({ autoDownloadPreview: true }, (e) => {
+            if (e.autoDownloadPreview) pdfAblegen(true);
+        });
+    }
+
     // Wenn Firefox das automatische Starten abgelehnt hat, merkt sich der
     // Knopf die geladene Datei und startet sie beim naechsten Klick - dann
     // liegt eine echte Nutzeraktion vor.
@@ -104,18 +188,27 @@ if (fileUrl) {
             });
     }
 
-    // Load PDF Document
-    pdfjsLib.getDocument(fileUrl).promise.then(pdfDoc_ => {
-        pdfDoc = pdfDoc_;
-        pageCountEl.textContent = pdfDoc.numPages;
-        loadingEl.style.display = 'none';
+    // Load PDF Document. Bei Quellen mit Schluessel in der Adresse kommen
+    // die Bytes ueber das Hintergrundskript, sonst laedt pdf.js direkt.
+    const quelle = elsevierDoi
+        ? ladeUeberHintergrund({ elsevierDoi: elsevierDoi }).then(bytes => ({ data: bytes }))
+        : Promise.resolve(fileUrl);
 
-        // Render All Pages
-        renderAllPages();
-    }).catch(error => {
-        console.error('Error loading PDF:', error);
-        loadingEl.textContent = 'PDF konnte nicht geladen werden. Bitte nutzen Sie die Adobe-Schaltfläche.';
-    });
+    quelle
+        .then(auftrag => pdfjsLib.getDocument(auftrag).promise)
+        .then(pdfDoc_ => {
+            pdfDoc = pdfDoc_;
+            pageCountEl.textContent = pdfDoc.numPages;
+            loadingEl.style.display = 'none';
+
+            // Render All Pages
+            renderAllPages();
+        }).catch(error => {
+            console.error('Error loading PDF:', error);
+            loadingEl.textContent = 'PDF konnte nicht geladen werden: '
+                + ((error && error.message) || 'unbekannter Fehler')
+                + '. Bitte die Adobe-Schaltfläche oder eine andere Quelle versuchen.';
+        });
 } else {
     loadingEl.textContent = 'Keine PDF-Datei angegeben.';
 }
@@ -184,6 +277,47 @@ const MARKER_KATEGORIEN = [
             'index\\s+terms\\s*[:\\u2013\\-]'
         ]
     },
+    // Die vier Institute - Hausfarben wie beim Schild oben. Sie helfen beim
+    // Prüfen der Affiliationen: man sieht auf einen Blick, wo im Text das
+    // eigene Institut genannt ist.
+    {
+        key: 'eawag', label: 'Eawag', farbe: '#0069b4', nurBeiTreffer: true,
+        muster: [
+            '\\bEawag\\b',
+            'swiss\\s+federal\\s+institute\\s+(?:of|for)\\s+aquatic\\s+science(?:\\s+and\\s+technology)?',
+            'eidgen[o\\u00f6]ssische[sr]?\\s+wasserforschungs?[\\-\\s]?institut',
+            'kastanienbaum'
+        ]
+    },
+    {
+        key: 'empa', label: 'Empa', farbe: '#e2001a', nurBeiTreffer: true,
+        muster: [
+            '\\bEmpa\\b',
+            'swiss\\s+federal\\s+laboratories\\s+for\\s+materials\\s+science(?:\\s+and\\s+technology)?',
+            'eidgen[o\\u00f6]ssische\\s+materialpr[u\\u00fc]fungs?[\\-\\s]?\\s?und\\s+forschungsanstalt'
+        ]
+    },
+    {
+        key: 'wsl', label: 'WSL', farbe: '#2d6a4f', nurBeiTreffer: true,
+        muster: [
+            'swiss\\s+federal\\s+institute\\s+for\\s+forest,?\\s+snow\\s+and\\s+landscape\\s+research',
+            'eidgen[o\\u00f6]ssische\\s+forschungsanstalt\\s+f[u\\u00fc]r\\s+wald,?\\s+schnee\\s+und\\s+landschaft',
+            'institut\\s+f[u\\u00fc]r\\s+schnee[\\-\\s]?\\s?und\\s+lawinenforschung',
+            'birmensdorf'
+        ],
+        // Abkürzungen nur in Grossschreibung, sonst trifft es beliebige Silben
+        musterExakt: ['\\bWSL\\b', '\\bSLF\\b']
+    },
+    {
+        key: 'psi', label: 'PSI', farbe: '#002b5c', nurBeiTreffer: true,
+        muster: [
+            'paul\\s+scherrer\\s+institut(?:e|s)?',
+            'villigen'
+        ],
+        // "PSI" ist auch eine Druckeinheit - direkt hinter einer Zahl zählt
+        // es deshalb nicht als Institut.
+        musterExakt: ['(?<![\\d.,]\\s?)\\bPSI\\b']
+    },
     { key: 'eigene', label: 'Eigene', farbe: '#ec4899', muster: [] }
 ];
 
@@ -195,14 +329,20 @@ function begriffZuMuster(begriff) {
     return begriff.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Ein zusammengesetzter Ausdruck je Kategorie; wird bei jedem Aufruf neu
-// gebaut, damit kein lastIndex zwischen Durchläufen hängen bleibt.
+// Ausdrücke je Kategorie; werden bei jedem Aufruf neu gebaut, damit kein
+// lastIndex zwischen Durchläufen hängen bleibt. Abkürzungen wie WSL, SLF und
+// PSI stehen in einem zweiten, gross-/kleinschreibungsempfindlichen Ausdruck.
 function musterFuer(kategorie) {
     const teile = kategorie.key === 'eigene'
         ? eigeneBegriffe.map(begriffZuMuster)
-        : kategorie.muster;
-    if (!teile.length) return null;
-    return new RegExp('(' + teile.join(')|(') + ')', 'gi');
+        : (kategorie.muster || []);
+
+    const ausdruecke = [];
+    if (teile.length) ausdruecke.push(new RegExp('(' + teile.join(')|(') + ')', 'gi'));
+    if ((kategorie.musterExakt || []).length) {
+        ausdruecke.push(new RegExp('(' + kategorie.musterExakt.join(')|(') + ')', 'g'));
+    }
+    return ausdruecke;
 }
 
 // Alle Fundstellen in einem Text, überschneidungsfrei und nach Position
@@ -211,13 +351,16 @@ function trefferImText(text) {
     if (!text) return [];
     const roh = [];
     MARKER_KATEGORIEN.forEach(kategorie => {
-        const regex = musterFuer(kategorie);
-        if (!regex) return;
-        let treffer;
-        while ((treffer = regex.exec(text)) !== null) {
-            if (!treffer[0]) { regex.lastIndex++; continue; }
-            roh.push({ kategorie: kategorie.key, text: treffer[0], start: treffer.index, ende: treffer.index + treffer[0].length });
-        }
+        musterFuer(kategorie).forEach(regex => {
+            let treffer;
+            while ((treffer = regex.exec(text)) !== null) {
+                if (!treffer[0]) { regex.lastIndex++; continue; }
+                roh.push({
+                    kategorie: kategorie.key, text: treffer[0],
+                    start: treffer.index, ende: treffer.index + treffer[0].length
+                });
+            }
+        });
     });
 
     roh.sort((a, b) => a.start - b.start || (b.ende - b.start) - (a.ende - a.start));
@@ -320,7 +463,9 @@ function markerLeisteZeichnen() {
 
     MARKER_KATEGORIEN.forEach(kategorie => {
         const anzahl = befunde.filter(b => b.kategorie === kategorie.key).length;
-        if (!anzahl && kategorie.key === 'eigene') return;
+        // Institute und eigene Begriffe nur zeigen, wenn es sie im Text gibt -
+        // sonst steht die Leiste voller Nullen.
+        if (!anzahl && (kategorie.key === 'eigene' || kategorie.nurBeiTreffer)) return;
 
         const chip = document.createElement('button');
         chip.className = 'marker-chip';

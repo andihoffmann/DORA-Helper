@@ -108,6 +108,61 @@ Neben dem Volltext werden die **Zusatzmaterialien** eines Artikels gesucht und z
 ---
 
 ### 4. Advanced PDF Analysis & Extraction
+
+#### PDF-Quellen aus Nachweisdiensten
+Das Auslesen der Verlagsseite scheitert regelmässig an Bot-Sperren. Der Helper
+fragt deshalb **parallel mehrere Nachweisdienste** nach direkten Volltext-Links
+und **testet jeden Kandidaten mit einem kurzen Bereichsabruf an** – „geprüft ✓"
+heisst, dass dahinter wirklich ein PDF liegt und keine Sperrseite:
+
+| Quelle | Feld |
+|---|---|
+| Unpaywall | **alle** `oa_locations[].url_for_pdf` (bisher nur `best_oa_location`) – bringt Repositoriumskopien (ZORA, DORA, institutionelle Server) |
+| Crossref | `link[]` mit `content-type: application/pdf` (die vom Verlag gemeldeten Volltext-Links) |
+| OpenAlex | `best_oa_location.pdf_url`, `locations[].pdf_url`, `open_access.oa_url` |
+| Europe PMC | `fullTextUrlList` (nur `availabilityCode: OA`) plus der Render-Endpunkt `europepmc.org/articles/<PMCID>?pdf=render` |
+| Semantic Scholar | `openAccessPdf.url`, dazu `externalIds.ArXiv` → `arxiv.org/pdf/<id>` |
+| Elsevier Article Retrieval | mit dem hinterlegten **Scopus-Schlüssel**: `api.elsevier.com/content/article/doi/<doi>?httpAccept=application/pdf` – umgeht die ScienceDirect-Sperre |
+
+Messwerte aus der Praxis: `europepmc.org/…?pdf=render` liefert PDF,
+`pmc.ncbi.nlm.nih.gov/…/pdf/…` und `link.springer.com/content/pdf/…` dagegen
+HTML-Sperrseiten – genau deshalb wird angetestet statt vertraut.
+
+*   **Bedienung**: In der Ergebnisbox steht **📚 n PDF-Quellen ✓**; die Liste
+    zeigt jede Quelle mit Herkunft, Fassung, Lizenz und Prüfergebnis, jede
+    einzeln zu öffnen. Der beste geprüfte Treffer wandert automatisch in den
+    Haupt-PDF-Schalter und verdrängt den aus der Verlagsseite geratenen Link.
+*   **Schlüssel bleibt geheim**: Die Elsevier-Adresse wird ohne `apiKey`
+    angezeigt; geprüft und geladen wird im Hintergrundskript, das die Bytes an
+    den Betrachter durchreicht (`fetchPdfBytes`).
+*   **Elsevier nur bei Elsevier**: Der API-Kandidat entsteht nur, wenn DOI-Präfix
+    oder Crossref-Verlagsangabe auf Elsevier deuten – sonst stünde bei jedem
+    fremden Verlag ein Kandidat in der Liste, der nie funktionieren kann.
+*   **arXiv**: Kennung aus Semantic Scholar (mit einem Wiederholversuch, der
+    offene Endpunkt drosselt oft), aus den Crossref-Relationen oder aus der
+    Landing-Page eines OpenAlex-Standorts. Bei Physik-Artikeln ist das häufig
+    die einzige frei zugängliche Fassung – Beispiel `10.1103/fjjf-xspp`:
+    Verlagsseite gesperrt, `arxiv.org/pdf/2512.18831` ✓.
+*   **Last**: Ergebnis je DOI 12 Stunden zwischengespeichert – **ohne
+    geprüften Treffer nur 20 Minuten**, damit ein Aussetzer eines Dienstes
+    nicht einen halben Tag als „nichts gefunden" stehen bleibt. Höchstens acht
+    Kandidaten werden angetestet.
+*   **Auch der Verlags-Scan wird angetestet**: Der aus der Verlagsseite
+    gelesene Link bekommt ein ✓ oder ein ⚠ mit dem Grund – vorher wurde ein
+    Angebot gemacht, das der Verlag gar nicht ausliefert.
+*   **Abgeleitete Adressen**: Aus der Artikelseite (Crossref
+    `resource.primary.URL`) wird der richtige Verlags-Host gezogen und das
+    übliche Schema angehängt – **Wiley** `/doi/pdfdirect/<doi>` und
+    `/doi/pdf/<doi>` (auch auf Zeitschriften-Subdomains wie
+    `advanced.onlinelibrary.wiley.com`), dazu Springer, Frontiers, IOP und die
+    Atypon-Plattformen. Geraten wird nur die Adresse – ob etwas dahinter
+    liegt, entscheidet wie immer der Test.
+*   **Blockiert ≠ nicht vorhanden**: Antwortet ein Verlag mit 403/401, wird der
+    Kandidat als **blockiert** markiert; sein Knopf heisst dann **„im Tab"**
+    und öffnet die Adresse in einem normalen Browser-Tab, wo Session und
+    Cloudflare-Freigabe greifen. Der Helper versucht es vor dem Aufgeben ein
+    zweites Mal ohne Bereichsanfrage und mit Referer der Artikelseite.
+
 Der PDF-Schalter der Ergebnisbox (**📄 PDF ansehen (Unpaywall)** bzw.
 **📄 PDF (Verlag)**, sobald der Verlags-Scan einen direkten Link findet)
 öffnet das gefundene PDF im mitgelieferten Betrachter – eigenes Fenster,
@@ -218,6 +273,12 @@ als Vollbild über die Seite und arbeitet die Liste ohne Seitenwechsel ab.
     Lehnt Firefox das automatische Starten ab (`downloads.open()` ist nur aus
     einer Nutzeraktion erlaubt), wird der Knopf zu **📂 In Adobe starten** –
     ein Klick holt es nach.
+*   **Institutsschild**: Links in der Betrachter-Leiste steht, zu welchem
+    Institut der Datensatz gehört – **Eawag** (blau `#0069b4`), **Empa**
+    (rot `#e2001a`), **WSL** (waldgrün `#2d6a4f`), **PSI** (dunkelblau
+    `#002b5c`). Die Zuordnung kommt aus dem Pfad der DORA-Seite
+    (`/eawag/islandora/…`), ersatzweise aus dem PID-Präfix (`wsl:44194`);
+    ohne Anhaltspunkt bleibt das Schild verborgen.
 *   **Marker im Betrachter**: **🖍 Marker** hebt im PDF hervor, worauf es in
     der QC ankommt, und sammelt die Fundstellen in einer Leiste am unteren
     Rand – je Kategorie ein Zähler zum Aus-/Einblenden, darunter die
@@ -235,8 +296,15 @@ als Vollbild über die Seite und arbeitet die Liste ohne Seitenwechsel ab.
     *   🟪 **EU/ERC** – ERC, Horizon 2020/Europe, FP7, Marie
         Skłodowska-Curie, „grant agreement No …", Horizon-Projektnummern.
     *   🟨 **Keywords** – Keyword-/Schlagwörter-Abschnitte.
+    *   **Institute** in ihren Hausfarben – 🔵 **Eawag**, 🔴 **Empa**,
+        🟢 **WSL**, 🔷 **PSI**: Kurzform, ausgeschriebener Name (deutsch und
+        englisch) und Standorte (Kastanienbaum, Birmensdorf, Villigen), bei
+        der WSL auch das SLF. Abkürzungen zählen nur in Grossschreibung, und
+        `50 PSI` als Druckangabe wird nicht als Institut gewertet. Diese
+        Kategorien erscheinen in der Leiste nur, wenn es im Text Treffer gibt.
     *   🟥 **Eigene** – frei eingetragene Begriffe (kommagetrennt, bleiben
-        gespeichert).
+        gespeichert). Deckt sich ein Begriff mit einer der Kategorien oben,
+        gewinnt die Kategorie – „Eawag" bleibt also Eawag-blau.
 *   **Schnell-Freigabe** setzt `Quality control = Yes` samt Kürzel aus den
     Einstellungen und speichert.
 
@@ -248,6 +316,16 @@ Customization via the **Options** page:
 1.  **Scopus API Key**: Required for Corresponding Author checks.
 1.  **PDFs öffnen**: Eingebauter Betrachter (Standard) oder direkt Adobe
     Acrobat (`pdfOpenInAdobe`).
+1.  **Geöffnete PDFs automatisch ablegen** (`autoDownloadPreview`, Standard
+    **an**): Was in der Vorschau erscheint, landet zugleich im
+    Download-Ordner – benannt nach DOI bzw. PID, ohne Speichern-Dialog, damit
+    es für den Upload nach DORA bereitliegt. Im Betrachter erledigt das sonst
+    der Knopf **⬇ Speichern**.
+1.  **PDF-Analyse anzeigen** (`showPdfAnalysis`, Standard **aus**): Der
+    ⚡-Knopf und das Ablagefeld sind derzeit aus der Ergebnisbox
+    ausgeblendet. Die Analyse selbst ist unverändert vorhanden – die
+    Schaltflächen werden nur verborgen und kommen mit dieser Option sofort
+    zurück, ohne Neuladen.
 2.  **Keyword Exceptions**: Define your own formatting rules (`pattern -> replacement`).
 3.  **PSI Affiliation Data**: Upload `psi_data.js` updates here.
 

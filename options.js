@@ -592,9 +592,13 @@ function restoreOptions() {
     psiDataLastUpdated: '',
     enableBatchQc: true,
     qcInitials: '',
-    pdfOpenInAdobe: false
+    pdfOpenInAdobe: false,
+    showPdfAnalysis: false,
+    autoDownloadPreview: true
   }, function (items) {
     if (document.getElementById('pdfOpenInAdobe')) document.getElementById('pdfOpenInAdobe').checked = items.pdfOpenInAdobe;
+    if (document.getElementById('showPdfAnalysis')) document.getElementById('showPdfAnalysis').checked = items.showPdfAnalysis;
+    if (document.getElementById('autoDownloadPreview')) document.getElementById('autoDownloadPreview').checked = items.autoDownloadPreview;
     if (document.getElementById('exceptions')) document.getElementById('exceptions').value = items.exceptionList;
     if (document.getElementById('scopusKey')) document.getElementById('scopusKey').value = items.scopusApiKey;
     if (document.getElementById('enableBatchQc')) document.getElementById('enableBatchQc').checked = items.enableBatchQc;
@@ -637,7 +641,13 @@ function saveBatchQc() {
 function savePdfMode() {
   const inAdobe = document.getElementById('pdfOpenInAdobe')
     ? document.getElementById('pdfOpenInAdobe').checked : false;
-  chrome.storage.local.set({ pdfOpenInAdobe: inAdobe }, function () {
+  const analyseZeigen = document.getElementById('showPdfAnalysis')
+    ? document.getElementById('showPdfAnalysis').checked : false;
+  const autoDownload = document.getElementById('autoDownloadPreview')
+    ? document.getElementById('autoDownloadPreview').checked : true;
+  chrome.storage.local.set({
+    pdfOpenInAdobe: inAdobe, showPdfAnalysis: analyseZeigen, autoDownloadPreview: autoDownload
+  }, function () {
     showStatus('statusPdfMode');
   });
 }

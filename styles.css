@@ -127,6 +127,42 @@
     transition: all 0.2s;
 }
 
+/* PDF-Aktionen: feste Plätze, damit beim Nachladen nichts springt.
+   Drei Zeilen - PDF, Quellen, Supplements - in immer gleicher Reihenfolge
+   und Grösse; nur die Beschriftung wechselt. */
+.dora-pdf-aktionen {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 5px;
+    align-items: stretch;
+    margin-bottom: 5px;
+}
+
+/* Jede Aktion bekommt eine eigene, volle Zeile: die Beschriftungen ändern
+   sich beim Nachladen, die Plätze nicht. */
+.dora-pdf-aktionen .dora-aktion-zeile {
+    min-width: 0;
+    width: 100%;
+}
+
+/* Alle drei Knöpfe gleich hoch und gleich breit wie ihr Platz */
+.dora-pdf-aktionen .dora-box-btn {
+    height: 30px;
+    padding: 0 10px;
+    font-size: 12px;
+    justify-content: flex-start;
+    gap: 5px;
+    min-width: 0;
+}
+
+/* Der Text wird abgeschnitten statt den Knopf zu dehnen */
+.dora-knopf-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
 /* ORANGE HYBRID BUTTON */
 .btn-hybrid-action {
     background-color: #f97316;

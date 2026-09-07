@@ -56,6 +56,38 @@ const SUPPLEMENT_BLOCK_RE = /just a moment|attention required|access denied|are 
 
 let supplementCacheByDoi = new Map();   // doi -> { items, quellen }
 
+// Die PDF-Analyse ist vorerst aus der Ergebnisbox ausgeblendet. Der Code
+// bleibt vollstaendig erhalten - die Schaltflaechen werden nur verborgen und
+// lassen sich in den Einstellungen wieder einblenden.
+let pdfAnalyseSichtbar = false;
+
+function markierePdfAnalyse(el) {
+    if (!el) return el;
+    el.classList.add('dora-pdf-analyse');
+    el.style.display = pdfAnalyseSichtbar ? '' : 'none';
+    return el;
+}
+
+function pdfAnalyseSichtbarkeitAnwenden() {
+    document.querySelectorAll('.dora-pdf-analyse').forEach(el => {
+        el.style.display = pdfAnalyseSichtbar ? '' : 'none';
+    });
+}
+
+try {
+    chrome.storage.local.get({ showPdfAnalysis: false }, (e) => {
+        pdfAnalyseSichtbar = !!e.showPdfAnalysis;
+        pdfAnalyseSichtbarkeitAnwenden();
+    });
+    if (chrome.storage.onChanged) {
+        chrome.storage.onChanged.addListener((aenderungen, bereich) => {
+            if (bereich !== 'local' || !aenderungen.showPdfAnalysis) return;
+            pdfAnalyseSichtbar = !!aenderungen.showPdfAnalysis.newValue;
+            pdfAnalyseSichtbarkeitAnwenden();
+        });
+    }
+} catch (e) { /* ausserhalb der Erweiterung: bleibt ausgeblendet */ }
+
 // Damit Edit-Formular und PDF-Verwaltung dieselbe Aussage zeigen, wird das
 // Prüfergebnis seitenübergreifend gemerkt (der Verlagsabruf gelingt nicht
 // jedes Mal gleich). Ein Klick auf die Schaltfläche prüft trotzdem neu.
@@ -1031,25 +1063,29 @@ function renderResultBox(data) {
     // Information"; hier wird er nur als erkannt markiert.
     markHybridTagButton(isHybrid);
 
-    // NEW: PDF Action Row (Zeile für PDF-Aktionen)
-    const pdfActionRow = createEl('div', '', '');
-    pdfActionRow.style.cssText = 'display:flex; gap:5px; align-items:center; flex-wrap:wrap;';
+    // PDF-Zeile mit festen Plaetzen: oben der Haupt-Knopf ueber die ganze
+    // Breite, darunter Quellen und Supplements je zur Haelfte. Die Knoepfe
+    // aendern beim Nachladen nur ihre Beschriftung, nicht mehr Groesse oder
+    // Position - vorher sprang die Zeile bei jedem Ergebnis um.
+    const pdfActionRow = createEl('div', 'dora-pdf-aktionen');
 
-    // PDF Button (Unpaywall)
+    // Haupt-Knopf gibt es immer, auch bevor eine Quelle bekannt ist
     const pdfUrl = bestLoc.url_for_pdf;
+    const pdfBtn = createEl('a', 'dora-box-btn btn-secondary dora-aktion-zeile');
+    pdfBtn.id = 'dora-main-pdf-btn';
+    const pdfIcon = createEl('span', '', '📄');
+    pdfBtn.appendChild(pdfIcon);
+    knopfBeschriftung(pdfBtn, pdfUrl ? 'PDF ansehen (Unpaywall)' : 'PDF wird gesucht …');
+    pdfActionRow.appendChild(pdfBtn);
+
+    // Vorschau und Zielfenster gelten von Anfang an - auch wenn die Adresse
+    // erst später aus den Nachweisdiensten kommt. Sonst wäre der Knopf ein
+    // gewöhnlicher Link und würde im selben Tab navigieren.
+    pdfBtn.target = '_blank';
+    verknuepfePdfVorschau(pdfBtn, 'Open-Access-PDF', meta.DOI);
+
     if (pdfUrl) {
-        const pdfBtn = createEl('a', 'dora-box-btn btn-secondary');
-        pdfBtn.id = 'dora-main-pdf-btn';
         pdfBtn.href = pdfUrl;
-        pdfBtn.target = '_blank';
-        const icon = createEl('span', '', '📄');
-        icon.style.marginRight = '5px';
-        pdfBtn.appendChild(icon);
-        pdfBtn.appendChild(document.createTextNode(' PDF ansehen (Unpaywall)'));
-        pdfBtn.style.flex = '1';
-        pdfBtn.style.fontSize = '12px'; // Reduced
-        verknuepfePdfVorschau(pdfBtn, 'Open-Access-PDF');
-        pdfActionRow.appendChild(pdfBtn);
 
         const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary');
         analyzeBtn.textContent = '⚡';
@@ -1057,10 +1093,28 @@ function renderResultBox(data) {
         analyzeBtn.style.width = 'auto';
         analyzeBtn.style.padding = '6px 10px';
         analyzeBtn.onclick = () => handlePdfUrl(pdfUrl, analyzeBtn);
-        pdfActionRow.appendChild(analyzeBtn);
+        pdfActionRow.appendChild(markierePdfAnalyse(analyzeBtn));
+    } else {
+        pdfBtn.style.opacity = '.7';
+        pdfBtn.title = 'Unpaywall kennt keinen freien Volltext – die Nachweisdienste werden noch abgefragt';
     }
 
     btnContainer.appendChild(pdfActionRow);
+
+    // DOI Link - als Schaltfläche wie der Policy-Knopf und vor diesem, weil
+    // der Sprung zum Artikel beim Prüfen häufiger gebraucht wird.
+    const doiLink = createEl('a', 'dora-box-btn btn-secondary');
+    doiLink.href = `https://doi.org/${meta.DOI}`;
+    doiLink.target = '_blank';
+    doiLink.title = 'Öffnet die Artikelseite beim Verlag';
+    const doiIcon = createEl('span', '', '🔗');
+    doiIcon.style.marginRight = '5px';
+    doiLink.appendChild(doiIcon);
+    doiLink.appendChild(document.createTextNode(' Zum Artikel (Verlagsseite)'));
+    doiLink.style.fontSize = '12px';
+    doiLink.style.padding = '6px 10px';
+    doiLink.style.marginTop = '5px';
+    btnContainer.appendChild(doiLink);
 
     // Policy Button
     const issn = meta.ISSN ? meta.ISSN[0] : null;
@@ -1068,29 +1122,24 @@ function renderResultBox(data) {
         const policyBtn = createEl('a', 'dora-box-btn btn-secondary');
         policyBtn.href = `https://openpolicyfinder.jisc.ac.uk/search?search=${issn}`;
         policyBtn.target = '_blank';
+        policyBtn.title = 'Open Policy Finder (JISC): Selbstarchivierungs-Regeln der Zeitschrift';
         const icon = createEl('span', '', '🛡️');
         icon.style.marginRight = '5px';
         policyBtn.appendChild(icon);
-        policyBtn.appendChild(document.createTextNode(' Policy prüfen'));
+        policyBtn.appendChild(document.createTextNode(' OA Policy Finder'));
         policyBtn.style.fontSize = '12px'; // Reduced
+        policyBtn.style.padding = '4px 10px'; // flacher als der Artikel-Knopf
+        policyBtn.style.marginTop = '4px';
         btnContainer.appendChild(policyBtn);
     }
-
-    // DOI Link
-    const doiLink = createEl('a', 'dora-box-link', '🔗 Zum Artikel (Verlagsseite)');
-    doiLink.href = `https://doi.org/${meta.DOI}`;
-    doiLink.target = '_blank';
-    doiLink.style.display = 'block';
-    doiLink.style.marginTop = '5px';
-    doiLink.style.textAlign = 'center';
-    doiLink.style.fontSize = '0.9em';
-    doiLink.style.color = '#666';
-    btnContainer.appendChild(doiLink);
 
     box.appendChild(btnContainer);
 
     // 5b. Parallel: Deep Scan on Publisher Site (Zotero/Meta-Tags)
     if (meta.DOI) {
+        // Direkte Volltext-Links aus den Nachweisdiensten - zuverlässiger als
+        // das Auslesen der Verlagsseite, das meist an Sperren scheitert.
+        pdfActionRow.appendChild(createPdfSourceButton(meta.DOI, document.getElementById('dora-main-pdf-btn')));
         findPublisherPdf(meta.DOI, pdfActionRow, pdfUrl);
         // Supplements: Datenpublikationen und Supporting Information
         pdfActionRow.appendChild(createSupplementButton(meta.DOI, { fontSize: '12px' }));
@@ -1135,7 +1184,7 @@ function renderResultBox(data) {
     // Register for passive monitoring
     chrome.runtime.sendMessage({ action: "registerDoraTab" });
 
-    box.appendChild(dropZone);
+    box.appendChild(markierePdfAnalyse(dropZone));
 
     // War die Box eingeklappt, bleibt sie es auch beim naechsten Abruf -
     // sonst springt sie beim Durcharbeiten staendig wieder auf.
@@ -2291,9 +2340,50 @@ function formatKeyword(text) {
 // PDF im mitgelieferten Betrachter oeffnen (eigenes Fenster, Marker fuer
 // Lizenz/Foerderung/Keywords). Genutzt vom Batch-QC-Dashboard und von den
 // PDF-Schaltern in der Ergebnisbox.
-function openPdfPreviewFenster(pdfUrl, nurWennOffen) {
+// Institut des aktuellen Datensatzes: erst der Pfad der DORA-Seite
+// (/eawag/islandora/...), sonst das Praefix der PID (wsl:44194).
+function aktuellesInstitut(kennung) {
+    const bekannt = ['eawag', 'empa', 'wsl', 'psi'];
+
+    const segmente = window.location.pathname.split('/').filter(Boolean);
+    if (segmente.length && bekannt.indexOf(segmente[0].toLowerCase()) !== -1) {
+        return segmente[0].toLowerCase();
+    }
+
+    const praefix = (kennung || '').split(':')[0].toLowerCase();
+    if (bekannt.indexOf(praefix) !== -1) return praefix;
+
+    return '';
+}
+
+// Beschriftung eines Knopfes setzen, ohne Symbol und Layout anzutasten.
+// Der Text sitzt in einem eigenen Feld und wird bei Bedarf abgeschnitten,
+// damit der Knopf seine Breite behaelt.
+function knopfBeschriftung(btn, text) {
+    if (!btn) return;
+    let feld = btn.querySelector('.dora-knopf-text');
+    if (!feld) {
+        feld = createEl('span', 'dora-knopf-text');
+        btn.appendChild(feld);
+    }
+    feld.textContent = text;
+}
+
+// Aus einer DOI oder PID einen brauchbaren Dateinamen machen - sonst heisst
+// die abgelegte Datei "view" oder "pdf".
+function pdfDateiname(kennung) {
+    const roh = (kennung || '').trim();
+    if (!roh) return '';
+    return roh.replace(/^https?:\/\/(dx\.)?doi\.org\//i, '').replace(/[\\/:*?"<>|%]+/g, '_') + '.pdf';
+}
+
+function openPdfPreviewFenster(pdfUrl, nurWennOffen, kennung) {
     if (!pdfUrl) return;
-    const viewerUrl = `${chrome.runtime.getURL('pdf_viewer.html')}?file=${encodeURIComponent(pdfUrl)}`;
+    const name = pdfDateiname(kennung);
+    const institut = aktuellesInstitut(kennung);
+    const viewerUrl = `${chrome.runtime.getURL('pdf_viewer.html')}?file=${encodeURIComponent(pdfUrl)}`
+        + (name ? `&name=${encodeURIComponent(name)}` : '')
+        + (institut ? `&inst=${institut}` : '');
     try {
         chrome.runtime.sendMessage({
             action: 'openPopupWindow', url: viewerUrl,
@@ -2308,17 +2398,210 @@ function openPdfPreviewFenster(pdfUrl, nurWennOffen) {
     }
 }
 
+// Elsevier-Volltexte laufen über das Hintergrundskript, damit der
+// Scopus-Schlüssel nicht in einer sichtbaren Adresse steht.
+function openPdfPreviewElsevier(doi) {
+    if (!doi) return;
+    const institut = aktuellesInstitut(doi);
+    const viewerUrl = `${chrome.runtime.getURL('pdf_viewer.html')}?elsevier=${encodeURIComponent(doi)}`
+        + `&name=${encodeURIComponent(pdfDateiname(doi))}`
+        + (institut ? `&inst=${institut}` : '');
+    try {
+        chrome.runtime.sendMessage({
+            action: 'openPopupWindow', url: viewerUrl, onlyIfOpen: false, width: 900, height: 1050
+        }, (antwort) => {
+            if (!antwort || !antwort.success) window.open(viewerUrl, 'dora-qc-pdf');
+        });
+    } catch (e) {
+        window.open(viewerUrl, 'dora-qc-pdf');
+    }
+}
+
+// --- PDF-Quellen aus Nachweisdiensten ---
+// Verlagsseiten sperren automatisierte Abrufe; Unpaywall, Crossref, OpenAlex,
+// Europe PMC, Semantic Scholar und (mit Schlüssel) die Elsevier-API führen
+// dagegen direkte Volltext-Links. Jeder Kandidat wird angetestet, damit
+// "geprüft" auch wirklich heisst, dass ein PDF dahinter liegt.
+function createPdfSourceButton(doi, hauptBtn) {
+    const wrap = createEl('div', 'dora-aktion-zeile');
+    wrap.style.position = 'relative';
+
+    const btn = createEl('button', 'dora-box-btn btn-secondary');
+    btn.type = 'button';
+    btn.appendChild(createEl('span', '', '📚'));
+    knopfBeschriftung(btn, 'Quellen …');
+    btn.disabled = true;
+    btn.title = 'Sucht direkte PDF-Links in Unpaywall, Crossref, OpenAlex, Europe PMC und Semantic Scholar';
+    wrap.appendChild(btn);
+
+    const liste = createEl('div');
+    liste.style.cssText = 'display:none; position:absolute; right:0; z-index:10001; margin-top:4px; '
+        + 'padding:6px 8px; background:#fff; border:1px solid #cbd5e0; border-radius:4px; '
+        + 'box-shadow:0 4px 12px rgba(0,0,0,.12); font-size:12px; min-width:320px; max-width:440px; '
+        + 'max-height:280px; overflow:auto;';
+    wrap.appendChild(liste);
+
+    btn.addEventListener('click', () => {
+        if (btn.dataset.zustand === 'leer') { hole(true); return; }
+        liste.style.display = liste.style.display === 'none' ? 'block' : 'none';
+    });
+
+    const oeffne = (kandidat) => {
+        if (kandidat.elsevierApi) { openPdfPreviewElsevier(doi); return; }
+        // Sperrt der Verlag den Helper aus, hilft der eigene Betrachter nicht -
+        // im normalen Tab greifen Cookies und Cloudflare-Freigabe.
+        if (!kandidat.geprueft && kandidat.blockiert) { window.open(kandidat.url, '_blank'); return; }
+        openPdfPreviewFenster(kandidat.url, false, doi);
+    };
+
+    const zeige = (kandidaten) => {
+        const geprueft = kandidaten.filter(k => k.geprueft);
+        liste.replaceChildren();
+
+        if (!kandidaten.length) {
+            btn.dataset.zustand = 'leer';
+            btn.disabled = false;
+            knopfBeschriftung(btn, 'Keine PDF-Quelle gefunden');
+            btn.style.opacity = '.6';
+            btn.title = 'Unpaywall, Crossref, OpenAlex, Europe PMC und Semantic Scholar führen keinen Volltext-Link.'
+                + '\nKlicken für eine erneute Suche.';
+            return;
+        }
+
+        btn.dataset.zustand = geprueft.length ? 'treffer' : 'leer';
+        btn.disabled = false;
+        btn.style.opacity = '';
+        if (geprueft.length) {
+            knopfBeschriftung(btn, `${geprueft.length} PDF-Quelle${geprueft.length > 1 ? 'n' : ''} ✓`);
+            btn.style.borderColor = '#2b6cb0';
+            btn.style.color = '#2b6cb0';
+            btn.title = 'Geprüfte direkte Links — anzeigen und öffnen';
+        } else {
+            knopfBeschriftung(btn, `${kandidaten.length} Quelle${kandidaten.length > 1 ? 'n' : ''}, keine geprüft ⚠`);
+            btn.style.borderColor = '#d69e2e';
+            btn.style.color = '#8a5a10';
+            btn.title = 'Links gefunden, aber keiner lieferte ein PDF (Sperrseite oder Zugangsschranke).'
+                + '\nKlicken für eine erneute Suche.';
+        }
+
+        // Bester geprüfter Treffer wandert in den Haupt-Button
+        if (geprueft.length && hauptBtn) {
+            const bester = geprueft[0];
+            hauptBtn.dataset.doraGeprueft = 'ja';
+            if (bester.elsevierApi) {
+                hauptBtn.dataset.doraElsevier = doi;
+                hauptBtn.removeAttribute('href');
+                hauptBtn.style.cursor = 'pointer';
+                hauptBtn.onclick = (e) => { e.preventDefault(); openPdfPreviewElsevier(doi); };
+            } else {
+                hauptBtn.href = bester.url;
+            }
+            hauptBtn.style.opacity = '';
+            knopfBeschriftung(hauptBtn, `PDF (${bester.quellen[0]}) ✓`);
+            hauptBtn.title = `Geprüfter Volltext über ${bester.quellen.join(', ')}`
+                + (bester.version ? ` — ${bester.version}` : '')
+                + '\nÖffnet die Helper-Vorschau (Strg-/Mittelklick: Originallink).';
+        }
+
+        kandidaten.forEach((k, i) => {
+            const zeile = createEl('div');
+            zeile.style.cssText = 'padding:5px 0; display:flex; gap:6px; align-items:baseline;'
+                + (i ? ' border-top:1px solid #edf2f7;' : '');
+
+            const marke = createEl('span', '', k.geprueft ? '✓' : '✗');
+            marke.style.cssText = 'font-weight:bold; color:' + (k.geprueft ? '#2f855a' : '#a0aec0') + ';';
+            zeile.appendChild(marke);
+
+            const text = createEl('div');
+            text.style.cssText = 'flex:1; min-width:0;';
+
+            const kopf = createEl('div', '', k.quellenName || k.quellen[0]);
+            kopf.style.cssText = 'font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+            text.appendChild(kopf);
+
+            const teile = [k.quellen.join(', ')];
+            if (k.version) teile.push(k.version);
+            if (k.license) teile.push(k.license);
+            if (!k.geprueft && k.grund) teile.push(k.grund);
+            if (!k.geprueft && k.blockiert) teile.push('im Browser meist erreichbar');
+            const unten = createEl('div', '', teile.join(' · '));
+            unten.style.cssText = 'font-size:10px; color:#718096; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+            unten.title = k.elsevierApi ? 'Elsevier Article Retrieval API (Schlüssel bleibt im Hintergrund)' : k.url;
+            text.appendChild(unten);
+            zeile.appendChild(text);
+
+            const oeffnen = createEl('button', 'dora-box-btn btn-secondary');
+            oeffnen.type = 'button';
+            oeffnen.textContent = (!k.geprueft && k.blockiert) ? 'im Tab' : 'öffnen';
+            oeffnen.title = (!k.geprueft && k.blockiert)
+                ? 'Der Verlag blockiert den Helper – öffnet die Adresse in einem normalen Tab'
+                : 'In der Helper-Vorschau öffnen';
+            oeffnen.style.cssText = 'width:auto; padding:2px 8px; font-size:10px;';
+            oeffnen.onclick = () => oeffne(k);
+            zeile.appendChild(oeffnen);
+
+            liste.appendChild(zeile);
+        });
+    };
+
+    const hole = (erneut) => {
+        btn.dataset.zustand = 'laeuft';
+        btn.disabled = true;
+        knopfBeschriftung(btn, erneut ? 'sucht erneut …' : 'PDF-Quellen …');
+        chrome.runtime.sendMessage({ action: 'findPdfLinks', doi: doi, erneut: !!erneut }, (antwort) => {
+            if (!antwort || !antwort.success) {
+                btn.dataset.zustand = 'leer';
+                btn.disabled = false;
+                knopfBeschriftung(btn, 'PDF-Suche fehlgeschlagen');
+                btn.title = ((antwort && antwort.error) || 'Keine Antwort') + '\nKlicken für einen neuen Versuch.';
+                return;
+            }
+            zeige((antwort.data && antwort.data.kandidaten) || []);
+        });
+    };
+
+    hole(false);
+    return wrap;
+}
+
 // Einen PDF-Link der Ergebnisbox auf die Vorschau umbiegen. Der href bleibt
 // erhalten: Strg-, Umschalt- und Mittelklick oeffnen weiterhin den Rohlink -
 // wichtig, wenn ein Verlag die Datei nicht ausliefert.
-function verknuepfePdfVorschau(anker, beschreibung) {
+function verknuepfePdfVorschau(anker, beschreibung, kennung) {
     if (!anker || anker.dataset.doraVorschau === 'ja') return;
     anker.dataset.doraVorschau = 'ja';
     anker.title = `${beschreibung || 'PDF'} in der Helper-Vorschau öffnen (mit Markern für Lizenz, Förderung, Keywords). Strg- oder Mittelklick öffnet den Originallink.`;
     anker.addEventListener('click', (e) => {
         if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
         e.preventDefault();
-        openPdfPreviewFenster(anker.href, false);
+        // Solange keine Adresse feststeht, passiert bewusst nichts
+        if (!anker.getAttribute('href')) return;
+        openPdfPreviewFenster(anker.href, false, kennung || anker.dataset.doraKennung || '');
+    });
+}
+
+// Einen aus der Verlagsseite gelesenen PDF-Link antesten. Verlage liefern
+// darauf oft nur eine Sperrseite; dann sagt der Knopf das, statt ein Angebot
+// zu machen, das ins Leere läuft.
+function pruefeVerlagsLink(btn, url) {
+    if (!btn || !url) return;
+    chrome.runtime.sendMessage({ action: 'verifyPdfUrl', url: url }, (antwort) => {
+        const ergebnis = antwort && antwort.success ? antwort.data : null;
+        const feld = btn.querySelector('.dora-knopf-text');
+        const grundText = feld ? feld.textContent.replace(/ [✓⚠]$/, '') : '';
+        if (ergebnis && ergebnis.ok) {
+            btn.dataset.doraGeprueft = 'ja';
+            if (feld) knopfBeschriftung(btn, grundText + ' ✓');
+            btn.title = 'Geprüfter Verlags-Link – öffnet die Helper-Vorschau (Strg-/Mittelklick: Originallink)';
+            return;
+        }
+        btn.dataset.doraGeprueft = 'nein';
+        btn.style.borderColor = '#d69e2e';
+        btn.style.color = '#8a5a10';
+        if (feld) knopfBeschriftung(btn, grundText + ' ⚠');
+        btn.title = 'Der Verlag liefert die Datei nicht an den Helper aus'
+            + (ergebnis && ergebnis.grund ? ` (${ergebnis.grund})` : '')
+            + '. Im normalen Tab (Strg- oder Mittelklick) klappt es meist trotzdem.';
     });
 }
 
@@ -2344,15 +2627,19 @@ function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
             // Prüfen ob wir schon einen Haupt-Button haben
             const mainBtn = document.getElementById('dora-main-pdf-btn');
 
+            // Ein bereits geprüfter Link aus den Nachweisdiensten ist besser
+            // belegt als ein aus der Seite gelesener - der bleibt stehen.
+            if (mainBtn && mainBtn.dataset.doraGeprueft === 'ja') return;
+
             if (mainBtn) {
                 // Update existing button
                 mainBtn.href = foundPdfUrl;
-                mainBtn.replaceChildren();
-                const icon = createEl('span', '', '📄');
-                icon.style.marginRight = '5px';
-                mainBtn.appendChild(icon);
-                mainBtn.appendChild(document.createTextNode(' PDF (Verlag)'));
+                mainBtn.style.opacity = '';
+                knopfBeschriftung(mainBtn, 'PDF (Verlag)');
                 mainBtn.title = "Direkter Link via Verlags-Metadaten gefunden – öffnet die Helper-Vorschau (Strg-/Mittelklick: Originallink)";
+                // Aus der Seite geratene Links liefern oft nur eine Sperrseite -
+                // deshalb antesten und das Ergebnis anschreiben.
+                pruefeVerlagsLink(mainBtn, foundPdfUrl);
                 mainBtn.style.border = "1px solid #2b6cb0";
                 mainBtn.style.color = "#2b6cb0";
 
@@ -2363,18 +2650,14 @@ function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
                 }
             } else {
                 // Create new if none existed
-                const pubPdfBtn = createEl('a', 'dora-box-btn btn-secondary');
+                const pubPdfBtn = createEl('a', 'dora-box-btn btn-secondary dora-aktion-zeile');
                 pubPdfBtn.id = 'dora-main-pdf-btn';
                 pubPdfBtn.href = foundPdfUrl;
                 pubPdfBtn.target = '_blank';
-                const icon = createEl('span', '', '📄');
-                icon.style.marginRight = '5px';
-                pubPdfBtn.appendChild(icon);
-                pubPdfBtn.appendChild(document.createTextNode(' PDF (Verlag)'));
-                pubPdfBtn.style.flex = '1';
-                pubPdfBtn.style.fontSize = '12px'; // Reduced
-                pubPdfBtn.style.padding = '6px 4px';
-                verknuepfePdfVorschau(pubPdfBtn, 'Verlags-PDF');
+                pubPdfBtn.appendChild(createEl('span', '', '📄'));
+                knopfBeschriftung(pubPdfBtn, 'PDF (Verlag)');
+                verknuepfePdfVorschau(pubPdfBtn, 'Verlags-PDF', doi);
+                pruefeVerlagsLink(pubPdfBtn, foundPdfUrl);
 
                 const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary');
                 analyzeBtn.textContent = '⚡';
@@ -2384,7 +2667,7 @@ function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
                 analyzeBtn.onclick = () => handlePdfUrl(foundPdfUrl, analyzeBtn, null);
 
                 rowContainer.appendChild(pubPdfBtn);
-                rowContainer.appendChild(analyzeBtn);
+                rowContainer.appendChild(markierePdfAnalyse(analyzeBtn));
             }
         }
     });
@@ -4491,7 +4774,7 @@ function initBatchQcDashboard(pids) {
     }
 
     function oeffneInViewer(pid, nurWennOffen) {
-        openPdfPreviewFenster(pdfDatastreamUrl(pid), nurWennOffen);
+        openPdfPreviewFenster(pdfDatastreamUrl(pid), nurWennOffen, pid);
     }
 
     // Der Button sagt, was passiert - Vorschaufenster oder Adobe
@@ -6448,14 +6731,13 @@ function pruefeSupplements(doi, callback) {
 function createSupplementButton(doi, optionen) {
     const opt = optionen || {};
     const wrap = createEl('div');
-    wrap.className = 'dora-supplement-wrap';
-    wrap.style.cssText = 'display:inline-block; position:relative;';
+    wrap.className = 'dora-supplement-wrap dora-aktion-zeile';
+    wrap.style.position = 'relative';
 
     const btn = createEl('button', 'dora-box-btn btn-secondary');
     btn.type = 'button';
-    btn.style.cssText = 'width:auto; padding:2px 8px; font-size:' + (opt.fontSize || '11px') + '; '
-        + 'display:inline-flex; align-items:center; gap:4px; white-space:nowrap;';
-    btn.textContent = '📎 Supplement …';
+    btn.appendChild(createEl('span', '', '📎'));
+    knopfBeschriftung(btn, 'Supplement …');
     btn.disabled = true;
     btn.title = 'Sucht Supporting Information und verknüpfte Datenpublikationen';
     wrap.appendChild(btn);
@@ -6508,12 +6790,12 @@ function createSupplementButton(doi, optionen) {
             }
 
             if (grund) {
-                btn.textContent = '📎 Kein Supplement gefunden ⚠';
+                knopfBeschriftung(btn, 'Kein Supplement gefunden ⚠');
                 btn.style.borderColor = '#d69e2e';
                 btn.style.color = '#8a5a10';
                 btn.title = 'Prüfung unvollständig. ' + grund + '\nKlicken für eine erneute Prüfung.';
             } else {
-                btn.textContent = '📎 Kein Supplement gefunden';
+                knopfBeschriftung(btn, 'Kein Supplement gefunden');
                 btn.style.opacity = '.6';
                 btn.title = 'Geprüft: Crossref, OpenAIRE, figshare und die Verlagsseite verzeichnen keines. '
                     + 'Ein Blick auf die Artikelseite kann sich trotzdem lohnen.\nKlicken für eine erneute Prüfung.';
@@ -6523,7 +6805,7 @@ function createSupplementButton(doi, optionen) {
 
         btn.dataset.zustand = 'treffer';
         btn.disabled = false;
-        btn.textContent = `📎 ${items.length} Supplement${items.length > 1 ? 's' : ''}`;
+        knopfBeschriftung(btn, `${items.length} Supplement${items.length > 1 ? 's' : ''}`);
         btn.title = 'Anzeigen und herunterladen';
         btn.style.borderColor = '#2b6cb0';
         btn.style.color = '#2b6cb0';
@@ -6534,7 +6816,7 @@ function createSupplementButton(doi, optionen) {
     const erneutPruefen = () => {
         btn.dataset.zustand = 'laeuft';
         btn.disabled = true;
-        btn.textContent = '📎 prüft erneut …';
+        knopfBeschriftung(btn, 'prüft erneut …');
         btn.title = 'Die Quellen werden noch einmal abgefragt';
         loadSupplements(doi, zeigeErgebnis, true);
     };

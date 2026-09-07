@@ -49,6 +49,23 @@
             opacity: 0.4;
             cursor: not-allowed;
         }
+        /* Institut des Datensatzes - Hausfarben der vier Institute */
+        #institut-tag {
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            padding: 4px 12px;
+            border-radius: 999px;
+            color: #ffffff;
+            background-color: #475569;
+            white-space: nowrap;
+        }
+        #institut-tag[hidden] { display: none !important; }
+        #institut-tag[data-institut="eawag"] { background-color: #0069b4; }
+        #institut-tag[data-institut="empa"] { background-color: #e2001a; }
+        #institut-tag[data-institut="wsl"] { background-color: #2d6a4f; }
+        #institut-tag[data-institut="psi"] { background-color: #002b5c; }
+
         #page-info,
         #zoom-info {
             font-size: 13px;
@@ -159,6 +176,11 @@
         .dora-marker[data-kategorie="eu"] { background-color: rgba(168, 85, 247, 0.42); }
         .dora-marker[data-kategorie="keywords"] { background-color: rgba(245, 158, 11, 0.45); }
         .dora-marker[data-kategorie="eigene"] { background-color: rgba(236, 72, 153, 0.42); }
+        /* Institute in ihren Hausfarben, wie das Schild oben */
+        .dora-marker[data-kategorie="eawag"] { background-color: rgba(0, 105, 180, 0.42); }
+        .dora-marker[data-kategorie="empa"] { background-color: rgba(226, 0, 26, 0.42); }
+        .dora-marker[data-kategorie="wsl"] { background-color: rgba(45, 106, 79, 0.45); }
+        .dora-marker[data-kategorie="psi"] { background-color: rgba(0, 43, 92, 0.42); }
         /* Kurzes, sofort startendes Aufblitzen der angesprungenen Fundstelle */
         @keyframes dora-blitz {
             0%   { outline-color: rgba(248, 250, 252, 0); background-color: rgba(248, 250, 252, 0.9); }
@@ -275,6 +297,7 @@
 <body>
     <div id="toolbar">
         <div class="btn-group">
+            <span id="institut-tag" hidden></span>
             <span id="page-info"><span id="page-count">-</span> Seiten</span>
             <span id="zoom-info" title="Aktuelle Darstellungsgröße">100%</span>
         </div>
@@ -283,6 +306,7 @@
             <button id="zoom-in-btn" title="Vergrößern">🔎+</button>
             <button id="fit-btn" title="Seitenbreite an das Fenster anpassen">↔ Fensterbreite</button>
             <button id="marker-btn" title="Lizenz-, Förder- und Schlagwort-Fundstellen hervorheben">🖍 Marker</button>
+            <button id="save-btn" title="PDF in den Download-Ordner legen">⬇ Speichern</button>
             <button id="adobe-btn">📥 In Adobe öffnen</button>
             <label id="adobe-default" title="PDFs künftig sofort in Adobe Acrobat öffnen, statt sie hier anzuzeigen">
                 <input type="checkbox" id="adobe-default-cb"> Immer Adobe

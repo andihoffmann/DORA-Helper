@@ -12,6 +12,518 @@ const ANALYZER_API_URL = "https://andrehoffmann80-pdf-analyzer.hf.space/analyze"
 // vervielfachen. onlyIfOpen = nur aktualisieren, nie neu oeffnen.
 let popupWindowId = null;
 
+// ---------------------------------------------------------------------------
+// PDF-Suche ueber Datenbanken statt ueber Verlagsseiten.
+//
+// Das Auslesen der Verlagsseite scheitert regelmaessig an Cloudflare & Co.
+// Mehrere Nachweisdienste fuehren dagegen direkte Volltext-Links, und ein
+// kurzer Bereichsabruf zeigt zuverlaessig, ob dahinter wirklich ein PDF
+// liegt oder nur eine Sperrseite (gemessen: europepmc.org/...?pdf=render
+// liefert PDF, pmc.ncbi.nlm.nih.gov und link.springer.com HTML).
+// ---------------------------------------------------------------------------
+const PDF_KONTAKT = 'dora@lib4ri.ch';
+const PDF_LINK_CACHE_KEY = 'doraPdfLinkCache';
+const PDF_LINK_TTL = 12 * 60 * 60 * 1000;
+const PDF_LINK_TTL_MAGER = 20 * 60 * 1000; // ohne geprueften Treffer
+const PDF_LINK_MAX = 200;
+const PDF_PRUEF_LIMIT = 10; // so viele Kandidaten werden tatsaechlich angetestet
+
+// Crossref sagt "vor"/"am", Unpaywall "publishedVersion"/"acceptedVersion" -
+// in der Liste soll einheitlich dasselbe stehen.
+function normalisiereVersion(wert) {
+    const v = (wert || '').toString().trim().toLowerCase();
+    if (!v) return '';
+    if (v === 'vor' || v === 'publishedversion') return 'publishedVersion';
+    if (v === 'am' || v === 'acceptedversion') return 'acceptedVersion';
+    if (v === 'submittedversion' || v === 'preprint') return 'submittedVersion';
+    return wert;
+}
+
+function pdfHost(url) {
+    try { return new URL(url).hostname.replace(/^www\./, ''); } catch (e) { return ''; }
+}
+
+async function holeJson(url, timeoutMs) {
+    const abbruch = new AbortController();
+    const uhr = setTimeout(() => abbruch.abort(), timeoutMs || 9000);
+    try {
+        const antwort = await fetch(url, { signal: abbruch.signal, headers: { 'Accept': 'application/json' } });
+        if (!antwort.ok) return null;
+        return await antwort.json();
+    } catch (e) {
+        return null;
+    } finally {
+        clearTimeout(uhr);
+    }
+}
+
+// Kandidaten je Quelle. Jede Quelle darf ausfallen, ohne die anderen zu stoeren.
+async function pdfKandidatenUnpaywall(doi, sammeln, merkeSeite) {
+    const daten = await holeJson(`https://api.unpaywall.org/v2/${encodeURIComponent(doi)}?email=${PDF_KONTAKT}`);
+    if (!daten) return;
+    (daten.oa_locations || []).forEach(ort => {
+        if (merkeSeite && ort.url) merkeSeite(ort.url);
+        const url = ort.url_for_pdf || (/\.pdf($|\?)/i.test(ort.url || '') ? ort.url : '');
+        if (url) sammeln(url, 'Unpaywall', { host: ort.host_type, version: ort.version, license: ort.license });
+    });
+}
+
+async function pdfKandidatenCrossref(doi, sammeln, merkeSeite) {
+    const daten = await holeJson(`https://api.crossref.org/works/${encodeURIComponent(doi)}?mailto=${PDF_KONTAKT}`);
+    const werk = daten && daten.message;
+    if (!werk) return '';
+
+    // Die kanonische Artikelseite verraet den richtigen Verlags-Host
+    // (bei Wiley z.B. advanced.onlinelibrary.wiley.com).
+    if (merkeSeite) {
+        if (werk.resource && werk.resource.primary && werk.resource.primary.URL) merkeSeite(werk.resource.primary.URL);
+        (werk.link || []).forEach(e => { if (e.URL) merkeSeite(e.URL); });
+    }
+
+    // link[] enthaelt die vom Verlag gemeldeten Volltext-Links
+    (werk.link || []).forEach(eintrag => {
+        if ((eintrag['content-type'] || '').toLowerCase().includes('pdf') && eintrag.URL) {
+            sammeln(eintrag.URL, 'Crossref', { host: 'publisher', version: eintrag['content-version'] });
+        }
+    });
+
+    // arXiv-Ableger tauchen als alternative-id oder in der Relation auf
+    const arxiv = pdfArxivId(JSON.stringify(werk.relation || {}) + ' ' + (werk['alternative-id'] || []).join(' '));
+    if (arxiv) sammeln(`https://arxiv.org/pdf/${arxiv}`, 'arXiv', { host: 'repository', version: 'submittedVersion' });
+
+    return { verlag: werk.publisher || '', titel: (werk.title || [])[0] || '' };
+}
+
+function pdfArxivId(text) {
+    const treffer = /(?:arxiv[.:\/]|abs\/)\s*((?:\d{4}\.\d{4,5})(?:v\d+)?|[a-z\-]+\/\d{7}(?:v\d+)?)/i.exec(text || '');
+    return treffer ? treffer[1] : '';
+}
+
+async function pdfKandidatenOpenAlex(doi, sammeln, merkeSeite) {
+    const daten = await holeJson(`https://api.openalex.org/works/doi:${encodeURIComponent(doi)}?mailto=${PDF_KONTAKT}`);
+    if (!daten) return;
+
+    const orte = (daten.locations || []).slice();
+    if (daten.best_oa_location) orte.unshift(daten.best_oa_location);
+    orte.forEach(ort => {
+        if (ort && merkeSeite && ort.landing_page_url) merkeSeite(ort.landing_page_url);
+        if (!ort || !ort.pdf_url) return;
+        sammeln(ort.pdf_url, 'OpenAlex', {
+            host: ort.is_published || (ort.source && ort.source.type === 'journal') ? 'publisher' : 'repository',
+            version: ort.version, license: ort.license,
+            quellenName: ort.source && ort.source.display_name
+        });
+    });
+    if (daten.open_access && daten.open_access.oa_url && /\.pdf($|\?)/i.test(daten.open_access.oa_url)) {
+        sammeln(daten.open_access.oa_url, 'OpenAlex', { host: 'unbekannt' });
+    }
+    // arXiv steckt mal in den ids, mal nur in der Landing-Page eines Standorts
+    let arxiv = pdfArxivId((daten.ids && daten.ids.arxiv) || '');
+    if (!arxiv) {
+        orte.forEach(ort => {
+            if (arxiv || !ort) return;
+            const kandidat = pdfArxivId(ort.landing_page_url || '');
+            if (kandidat) arxiv = kandidat;
+        });
+    }
+    if (arxiv) sammeln(`https://arxiv.org/pdf/${arxiv}`, 'arXiv', { host: 'repository', version: 'submittedVersion' });
+}
+
+async function pdfKandidatenEuropePmc(doi, sammeln) {
+    const daten = await holeJson('https://www.ebi.ac.uk/europepmc/webservices/rest/search'
+        + `?query=DOI:%22${encodeURIComponent(doi)}%22&resultType=core&format=json`);
+    const treffer = daten && daten.resultList && (daten.resultList.result || [])[0];
+    if (!treffer) return;
+
+    const liste = (treffer.fullTextUrlList && treffer.fullTextUrlList.fullTextUrl) || [];
+    liste.forEach(eintrag => {
+        if ((eintrag.documentStyle || '').toLowerCase() !== 'pdf') return;
+        if ((eintrag.availabilityCode || '') !== 'OA') return;
+        sammeln(eintrag.url, 'Europe PMC', { host: eintrag.site === 'Europe_PMC' ? 'repository' : 'publisher' });
+    });
+
+    // Der Render-Endpunkt von Europe PMC liefert auch dann ein PDF, wenn der
+    // PMC-Server selbst mit einer Sperrseite antwortet.
+    if (treffer.pmcid) {
+        sammeln(`https://europepmc.org/articles/${treffer.pmcid}?pdf=render`, 'Europe PMC',
+            { host: 'repository', version: 'publishedVersion' });
+    }
+}
+
+async function pdfKandidatenSemanticScholar(doi, sammeln) {
+    const adresse = 'https://api.semanticscholar.org/graph/v1/paper/DOI:'
+        + encodeURIComponent(doi) + '?fields=openAccessPdf,externalIds';
+
+    // Der offene Endpunkt drosselt haeufig (HTTP 429). Da hier die arXiv-Kennung
+    // haengt - oft die einzige frei zugaengliche Fassung - wird einmal nachgefasst.
+    let daten = await holeJson(adresse);
+    if (!daten) {
+        await new Promise(r => setTimeout(r, 3000));
+        daten = await holeJson(adresse);
+    }
+    if (!daten) return;
+    if (daten.openAccessPdf && daten.openAccessPdf.url) {
+        sammeln(daten.openAccessPdf.url, 'Semantic Scholar', { host: 'unbekannt', license: daten.openAccessPdf.license });
+    }
+    const arxivId = daten.externalIds && daten.externalIds.ArXiv;
+    if (arxivId) sammeln(`https://arxiv.org/pdf/${arxivId}`, 'arXiv', { host: 'repository', version: 'submittedVersion' });
+}
+
+// Elsevier: mit dem hinterlegten Scopus-Schluessel liefert die Article-
+// Retrieval-API das PDF direkt (httpAccept=application/pdf) - das umgeht die
+// Sperre auf sciencedirect.com. Der Schluessel bleibt im Hintergrundskript;
+// nach aussen wird nur die schluessellose Adresse gezeigt und beim Oeffnen
+// werden die Bytes ueber fetchPdfBytes geholt.
+async function elsevierSchluessel() {
+    try {
+        const gespeichert = await chrome.storage.local.get({ scopusApiKey: '' });
+        return (gespeichert.scopusApiKey || '').trim();
+    } catch (e) {
+        return '';
+    }
+}
+
+function elsevierPdfUrl(doi, schluessel) {
+    return 'https://api.elsevier.com/content/article/doi/' + encodeURIComponent(doi)
+        + '?apiKey=' + encodeURIComponent(schluessel) + '&httpAccept=application%2Fpdf';
+}
+
+// Nur fuer Elsevier-Inhalte anbieten: bei fremden Verlagen antwortet die API
+// mit 404, und in der Liste stuende ein Kandidat, der nie funktionieren kann.
+const ELSEVIER_PRAEFIXE = ['10.1016', '10.1006', '10.1053', '10.1054', '10.1067',
+    '10.1078', '10.1157', '10.1197', '10.1367', '10.1510', '10.1532', '10.2353'];
+
+function istElsevier(doi, verlag) {
+    const praefix = (doi || '').split('/')[0];
+    if (ELSEVIER_PRAEFIXE.indexOf(praefix) !== -1) return true;
+    return /elsevier|sciencedirect|cell\s+press/i.test(verlag || '');
+}
+
+async function pdfKandidatenElsevier(doi, sammeln, verlag) {
+    if (!istElsevier(doi, verlag)) return;
+    const schluessel = await elsevierSchluessel();
+    if (!schluessel) return;
+    sammeln('https://api.elsevier.com/content/article/doi/' + doi, 'Elsevier API',
+        { host: 'publisher', version: 'publishedVersion', elsevierApi: true, quellenName: 'Elsevier Article Retrieval' });
+}
+
+// arXiv ueber den Titel finden. Die arXiv-API kennt keine DOI-Suche, der
+// Titelabgleich ist aber eindeutig genug, wenn er exakt uebereinstimmt.
+function normalisiereTitel(t) {
+    return (t || '').toLowerCase().replace(/&amp;/g, '&').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+async function pdfKandidatenArxivTitel(titel, sammeln) {
+    if (!titel || titel.length < 15) return;
+
+    const adresse = 'http://export.arxiv.org/api/query?search_query='
+        + encodeURIComponent('ti:"' + titel.replace(/"/g, '') + '"') + '&max_results=5';
+
+    const abbruch = new AbortController();
+    const uhr = setTimeout(() => abbruch.abort(), 12000);
+    let xml = '';
+    try {
+        const antwort = await fetch(adresse, { signal: abbruch.signal });
+        if (!antwort.ok) return;
+        xml = await antwort.text();
+    } catch (e) {
+        return;
+    } finally {
+        clearTimeout(uhr);
+    }
+
+    const gesucht = normalisiereTitel(titel);
+    const eintraege = xml.split('<entry>').slice(1);
+    for (const eintrag of eintraege) {
+        const idTreffer = /<id>\s*https?:\/\/arxiv\.org\/abs\/([^<\s]+)\s*<\/id>/i.exec(eintrag);
+        const titelTreffer = /<title>([\s\S]*?)<\/title>/i.exec(eintrag);
+        if (!idTreffer || !titelTreffer) continue;
+        if (normalisiereTitel(titelTreffer[1]) !== gesucht) continue;
+
+        const kennung = idTreffer[1].replace(/v\d+$/, '');
+        sammeln('https://arxiv.org/pdf/' + kennung, 'arXiv (Titelsuche)',
+            { host: 'repository', version: 'submittedVersion' });
+        return;
+    }
+}
+
+// Aus der Artikelseite die uebliche PDF-Adresse ableiten. Viele Verlage auf
+// der Atypon-Plattform folgen dem Schema /doi/pdf/<doi>; Wiley liefert unter
+// /doi/pdfdirect/<doi> die Datei ohne den Betrachter drumherum.
+function pdfKandidatenMuster(doi, sammeln, landeSeiten) {
+    const hosts = new Set();
+    landeSeiten.forEach(seite => {
+        const host = pdfHost(seite);
+        if (host && host.indexOf('doi.org') === -1) hosts.add(host);
+    });
+
+    hosts.forEach(host => {
+        const basis = 'https://' + host;
+        const gemeinsam = { host: 'publisher', version: 'publishedVersion', abgeleitet: true, quellenName: host };
+
+        if (/onlinelibrary\.wiley\.com$/.test(host)) {
+            sammeln(`${basis}/doi/pdfdirect/${doi}?download=true`, 'Muster (Wiley)', gemeinsam);
+            sammeln(`${basis}/doi/pdf/${doi}`, 'Muster (Wiley)', gemeinsam);
+        } else if (/tandfonline\.com$|sagepub\.com$|pubs\.acs\.org$|journals\.ametsoc\.org$/.test(host)) {
+            sammeln(`${basis}/doi/pdf/${doi}`, 'Muster (Verlag)', gemeinsam);
+        } else if (/link\.springer\.com$/.test(host)) {
+            sammeln(`${basis}/content/pdf/${doi}.pdf`, 'Muster (Springer)', gemeinsam);
+        } else if (/frontiersin\.org$/.test(host)) {
+            sammeln(`${basis}/articles/${doi}/pdf`, 'Muster (Frontiers)', gemeinsam);
+        } else if (/iopscience\.iop\.org$/.test(host)) {
+            sammeln(`${basis}/article/${doi}/pdf`, 'Muster (IOP)', gemeinsam);
+        }
+    });
+
+    // Wiley auch ohne bekannte Artikelseite: der Hauptserver leitet auf die
+    // richtige Zeitschriften-Subdomain um.
+    if (/^10\.(1002|1111|1029|1046|1034)$/.test((doi || '').split('/')[0])
+        && !Array.from(hosts).some(h => /wiley\.com$/.test(h))) {
+        sammeln(`https://onlinelibrary.wiley.com/doi/pdfdirect/${doi}?download=true`, 'Muster (Wiley)',
+            { host: 'publisher', version: 'publishedVersion', abgeleitet: true, quellenName: 'onlinelibrary.wiley.com' });
+    }
+}
+
+// Kurzer Bereichsabruf: liefert die Adresse wirklich ein PDF oder eine
+// Sperrseite? Cookies werden mitgeschickt, damit institutionelle Zugaenge
+// greifen.
+async function pruefePdfUrl(url, referer) {
+    const versuch = async (mitBereich) => {
+        const abbruch = new AbortController();
+        const uhr = setTimeout(() => abbruch.abort(), 12000);
+        try {
+            const kopf = { 'Accept': 'application/pdf,application/octet-stream;q=0.9,*/*;q=0.8' };
+            if (mitBereich) kopf['Range'] = 'bytes=0-2047';
+            // Ein Referer der Artikelseite laesst den Abruf wie ein Klick aus
+            // dem Artikel aussehen - manche Verlage geben dann aus.
+            if (referer) kopf['Referer'] = referer;
+
+            const antwort = await fetch(url, {
+                method: 'GET', credentials: 'include', redirect: 'follow',
+                headers: kopf, signal: abbruch.signal
+            });
+            const typ = ((antwort.headers && antwort.headers.get('content-type')) || '').toLowerCase();
+            if (!antwort.ok && antwort.status !== 206) {
+                return { ok: false, status: antwort.status, typ: typ, grund: 'HTTP ' + antwort.status };
+            }
+            if (typ.includes('pdf')) return { ok: true, status: antwort.status, typ: typ };
+
+            const anfang = (await antwort.text()).slice(0, 8);
+            if (anfang.indexOf('%PDF-') === 0) return { ok: true, status: antwort.status, typ: typ || 'application/pdf' };
+            return {
+                ok: false, status: antwort.status, typ: typ,
+                grund: typ.includes('html') ? 'Sperr- oder Landeseite' : 'kein PDF'
+            };
+        } catch (e) {
+            return { ok: false, grund: e.name === 'AbortError' ? 'Zeitüberschreitung' : e.message };
+        } finally {
+            clearTimeout(uhr);
+        }
+    };
+
+    const erster = await versuch(true);
+    if (erster.ok) return erster;
+
+    // Manche Server mögen keine Bereichsanfragen oder mustern den Abruf ab -
+    // ein zweiter, unauffälligerer Versuch lohnt sich.
+    if (erster.status === 403 || erster.status === 401 || erster.status === 416 || !erster.status) {
+        const zweiter = await versuch(false);
+        if (zweiter.ok) return zweiter;
+        zweiter.blockiert = (zweiter.status === 403 || zweiter.status === 401);
+        return zweiter;
+    }
+    erster.blockiert = (erster.status === 403 || erster.status === 401);
+    return erster;
+}
+
+// Reihenfolge: bestaetigte zuerst, darunter Verlagsfassung vor Repositorium,
+// publizierte Fassung vor Manuskript.
+function pdfRang(kandidat) {
+    let punkte = 0;
+    if (kandidat.geprueft) punkte += 100;
+    if (kandidat.abgeleitet) punkte -= 4; // geraten, nicht gemeldet
+    if (kandidat.version === 'publishedVersion' || kandidat.version === 'vor') punkte += 20;
+    if (kandidat.version === 'acceptedVersion' || kandidat.version === 'am') punkte += 10;
+    if (kandidat.host === 'publisher') punkte += 5;
+    if (kandidat.host === 'repository') punkte += 3;
+    return -punkte;
+}
+
+async function pdfLinkCacheLesen(doi) {
+    try {
+        const gespeichert = await chrome.storage.local.get({ [PDF_LINK_CACHE_KEY]: {} });
+        const eintrag = (gespeichert[PDF_LINK_CACHE_KEY] || {})[doi];
+        const frist = (eintrag && eintrag.ttl) || PDF_LINK_TTL;
+        if (eintrag && eintrag.zeit && (Date.now() - eintrag.zeit) < frist) return eintrag.kandidaten;
+    } catch (e) { }
+    return null;
+}
+
+async function pdfLinkCacheSchreiben(doi, kandidaten, brauchbar) {
+    try {
+        const gespeichert = await chrome.storage.local.get({ [PDF_LINK_CACHE_KEY]: {} });
+        const alle = gespeichert[PDF_LINK_CACHE_KEY] || {};
+        // Ohne geprueften Treffer nur kurz merken: ein Aussetzer eines Dienstes
+        // soll nicht 12 Stunden lang als "nichts gefunden" stehen bleiben.
+        alle[doi] = {
+            zeit: Date.now(), kandidaten: kandidaten,
+            ttl: brauchbar ? PDF_LINK_TTL : PDF_LINK_TTL_MAGER
+        };
+        const behalten = Object.keys(alle)
+            .filter(k => alle[k] && alle[k].zeit && (Date.now() - alle[k].zeit) < PDF_LINK_TTL)
+            .sort((a, b) => alle[b].zeit - alle[a].zeit)
+            .slice(0, PDF_LINK_MAX);
+        const neu = {};
+        behalten.forEach(k => { neu[k] = alle[k]; });
+        await chrome.storage.local.set({ [PDF_LINK_CACHE_KEY]: neu });
+    } catch (e) { }
+}
+
+// Ein in der Vorschau geoeffnetes PDF zusaetzlich ablegen, damit es fuer den
+// Upload nach DORA gleich auf der Platte liegt.
+function sichererDateiname(vorschlag) {
+    let name = (vorschlag || '').trim().replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, '_');
+    if (!name) name = 'dora-pdf';
+    if (!/\.pdf$/i.test(name)) name += '.pdf';
+    return name.slice(-120);
+}
+
+async function downloadPdf(auftrag) {
+    let url = auftrag.url;
+    if (auftrag.elsevierDoi) {
+        const schluessel = await elsevierSchluessel();
+        if (!schluessel) throw new Error('Kein Scopus/Elsevier-Schlüssel hinterlegt.');
+        url = elsevierPdfUrl(auftrag.elsevierDoi, schluessel);
+    }
+    if (!url) throw new Error('Keine URL angegeben.');
+
+    const downloadId = await chrome.downloads.download({
+        url: url, filename: sichererDateiname(auftrag.filename), saveAs: false
+    });
+    return { downloadId: downloadId, filename: sichererDateiname(auftrag.filename) };
+}
+
+// Liefert ein PDF als base64 an die Betrachterseite. Gedacht fuer Quellen,
+// deren Adresse ein Geheimnis enthaelt (Elsevier-Schluessel) - so bleibt der
+// Schluessel im Hintergrundskript.
+const PDF_BYTES_MAX = 60 * 1024 * 1024;
+
+async function fetchPdfBytes(auftrag) {
+    let url = auftrag.url;
+    if (auftrag.elsevierDoi) {
+        const schluessel = await elsevierSchluessel();
+        if (!schluessel) throw new Error('Kein Scopus/Elsevier-Schlüssel hinterlegt.');
+        url = elsevierPdfUrl(auftrag.elsevierDoi, schluessel);
+    }
+    if (!url) throw new Error('Keine URL angegeben.');
+
+    const antwort = await fetch(url, { credentials: 'include', redirect: 'follow' });
+    if (!antwort.ok) throw new Error('HTTP ' + antwort.status);
+
+    const puffer = await antwort.arrayBuffer();
+    if (puffer.byteLength > PDF_BYTES_MAX) throw new Error('Datei zu groß für die Vorschau.');
+
+    const bytes = new Uint8Array(puffer);
+    if (String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]) !== '%PDF-') {
+        throw new Error('Die Antwort ist kein PDF (vermutlich eine Sperr- oder Fehlerseite).');
+    }
+
+    let roh = '';
+    const block = 0x8000;
+    for (let i = 0; i < bytes.length; i += block) {
+        roh += String.fromCharCode.apply(null, bytes.subarray(i, i + block));
+    }
+    return { base64: btoa(roh), groesse: bytes.length };
+}
+
+async function findPdfLinks(doi, erneut) {
+    if (!doi) return { doi: '', kandidaten: [] };
+
+    if (!erneut) {
+        const gespeichert = await pdfLinkCacheLesen(doi);
+        if (gespeichert) return { doi: doi, kandidaten: gespeichert, ausCache: true };
+    }
+
+    const nachUrl = new Map();
+    const sammeln = (url, quelle, zusatz) => {
+        if (!url || !/^https?:/i.test(url)) return;
+        const sauber = url.trim();
+        // Der DOI-Resolver ist eine Weiterleitung auf die Artikelseite, kein
+        // Volltext - manche Dienste melden ihn trotzdem als "OA-PDF".
+        if (/^(dx\.)?doi\.org$/.test(pdfHost(sauber))) return;
+        const vorhanden = nachUrl.get(sauber);
+        if (vorhanden) {
+            if (vorhanden.quellen.indexOf(quelle) === -1) vorhanden.quellen.push(quelle);
+            // Fehlende Angaben aus der zweiten Quelle ergaenzen
+            ['host', 'version', 'license', 'quellenName'].forEach(feld => {
+                if (!vorhanden[feld] && zusatz && zusatz[feld]) {
+                    vorhanden[feld] = feld === 'version' ? normalisiereVersion(zusatz[feld]) : zusatz[feld];
+                }
+            });
+            return;
+        }
+        nachUrl.set(sauber, {
+            url: sauber, quellen: [quelle], host: (zusatz && zusatz.host) || 'unbekannt',
+            version: normalisiereVersion(zusatz && zusatz.version), license: (zusatz && zusatz.license) || '',
+            quellenName: (zusatz && zusatz.quellenName) || pdfHost(sauber),
+            elsevierApi: !!(zusatz && zusatz.elsevierApi),
+            abgeleitet: !!(zusatz && zusatz.abgeleitet),
+            geprueft: false, status: 0, grund: '', blockiert: false
+        });
+    };
+
+    const landeSeiten = new Set();
+    const merkeSeite = (url) => { if (url && /^https?:/i.test(url)) landeSeiten.add(url); };
+
+    const laeufe = await Promise.allSettled([
+        pdfKandidatenCrossref(doi, sammeln, merkeSeite),
+        pdfKandidatenUnpaywall(doi, sammeln, merkeSeite),
+        pdfKandidatenOpenAlex(doi, sammeln, merkeSeite),
+        pdfKandidatenEuropePmc(doi, sammeln),
+        pdfKandidatenSemanticScholar(doi, sammeln)
+    ]);
+
+    // Der Verlagsname aus Crossref entscheidet, ob die Elsevier-API überhaupt
+    // in Frage kommt.
+    const ausCrossref = laeufe[0].status === 'fulfilled' ? (laeufe[0].value || {}) : {};
+    await pdfKandidatenElsevier(doi, sammeln, ausCrossref.verlag || '');
+
+    // arXiv ist bei Physik oft die einzige freie Fassung. Steht die Kennung
+    // nicht schon fest (Semantic Scholar drosselt haeufig), wird ueber den
+    // Titel gesucht - die arXiv-API ist dafuer verlaesslich.
+    if (!Array.from(nachUrl.keys()).some(u => /arxiv\.org/i.test(u))) {
+        await pdfKandidatenArxivTitel(ausCrossref.titel || '', sammeln);
+    }
+
+    // Aus der Artikelseite abgeleitete Adressen - sie werden wie alle anderen
+    // angetestet, kosten also nichts ausser einem Versuch.
+    pdfKandidatenMuster(doi, sammeln, landeSeiten);
+
+    const kandidaten = Array.from(nachUrl.values());
+
+    // Vorsortieren, damit die aussichtsreichsten Adressen im Pruefbudget liegen
+    kandidaten.sort((a, b) => pdfRang(a) - pdfRang(b));
+
+    const schluessel = await elsevierSchluessel();
+    const zuPruefen = kandidaten.slice(0, PDF_PRUEF_LIMIT);
+    const ergebnisse = await Promise.allSettled(zuPruefen.map(k => {
+        const referer = Array.from(landeSeiten).find(seite => pdfHost(seite) === pdfHost(k.url)) || '';
+        return pruefePdfUrl(k.elsevierApi ? elsevierPdfUrl(doi, schluessel) : k.url, referer);
+    }));
+    ergebnisse.forEach((e, i) => {
+        const wert = e.status === 'fulfilled' ? e.value : { ok: false, grund: 'Prüfung fehlgeschlagen' };
+        zuPruefen[i].geprueft = !!wert.ok;
+        zuPruefen[i].status = wert.status || 0;
+        zuPruefen[i].blockiert = !!wert.blockiert;
+        zuPruefen[i].grund = wert.ok ? '' : (wert.grund || 'nicht abrufbar');
+    });
+    kandidaten.slice(PDF_PRUEF_LIMIT).forEach(k => { k.grund = 'nicht angetestet'; });
+
+    kandidaten.sort((a, b) => pdfRang(a) - pdfRang(b));
+    await pdfLinkCacheSchreiben(doi, kandidaten, kandidaten.some(k => k.geprueft));
+    return { doi: doi, kandidaten: kandidaten };
+}
+
 chrome.windows.onRemoved.addListener(fensterId => {
     if (fensterId === popupWindowId) popupWindowId = null;
 });
@@ -172,6 +684,34 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "registerDoraTab") {
         activeDoraTabId = sender.tab.id;
         sendResponse({ success: true });
+        return true;
+    }
+
+    if (request.action === "verifyPdfUrl") {
+        pruefePdfUrl(request.url)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
+    if (request.action === "findPdfLinks") {
+        findPdfLinks(request.doi, request.erneut)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
+    if (request.action === "downloadPdf") {
+        downloadPdf(request)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
+    if (request.action === "fetchPdfBytes") {
+        fetchPdfBytes(request)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
     }
 
