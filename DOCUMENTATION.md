@@ -25,6 +25,12 @@ When an edit page is opened in DORA, the assistant automatically scans for a DOI
 ![Metadata Auto-Fetch Result Box](./images/metadata_autofetch_ui.png)
 
 
+*   **Einklappen statt schließen**: Neben dem **×** sitzt ein **–**. Damit
+    schrumpft die Box auf eine schmale Leiste mit Logo und DOI; ein Klick auf
+    die Leiste (oder auf **▢**) holt sie zurück. Der Zustand bleibt über
+    weitere Abfragen erhalten – die Box springt beim Durcharbeiten also nicht
+    ständig wieder auf. **×** entfernt sie wie bisher ganz; beim nächsten
+    Abruf startet sie dann wieder offen.
 *   **Result Box**: A floating panel on the right displays:
     *   **Open Access Status** (Gold, Green, Hybrid, Bronze, Closed).
     *   **License Information** (e.g., CC-BY) with direct links.
@@ -92,14 +98,23 @@ Neben dem Volltext werden die **Zusatzmaterialien** eines Artikels gesucht und z
     *   Bei **Zenodo** und **figshare** werden zusätzlich die einzelnen Dateien samt Grösse und direkter Download-URL aufgelöst.
 *   **Wo**: in der Result-Box neben den PDF-Aktionen und im **PDF-Upload-Dialog** direkt bei der Versionsauswahl, damit die Datei beim Hochladen greifbar ist.
 *   **Lizenz**: Bei Zenodo und figshare wird die Lizenz der Datenpublikation als verlinktes Kürzel angezeigt (z.B. `CC BY-NC 4.0`).
-*   **Ergebnislage wird unterschieden** — „nichts gefunden" ist nicht dasselbe wie „nicht nachgesehen":
-    *   `📎 kein Supplement` — alle Quellen haben geantwortet und führen keines. Der Tooltip nennt die geprüften Quellen.
-    *   `📎 nicht prüfbar` (orange) — es gibt keine strukturierten Angaben **und** die Verlagsseite war nicht lesbar, etwa weil sie den Abruf blockiert (ACS antwortet mit HTTP 403 oder einer Cloudflare-Seite mit HTTP 200). Ob Supporting Information existiert, ist damit offen; der Tooltip sagt das und verweist auf die Artikelseite.
+*   **Formulierung** — die Aussage lautet immer `📎 Kein Supplement gefunden`, nie „es gibt keines": gefunden wurde keines, ausgeschlossen ist damit nichts. Der Unterschied steckt in der Kennzeichnung:
+    *   `📎 Kein Supplement gefunden` (blass) — alle Quellen haben geantwortet und führen keines. Der Tooltip nennt die geprüften Quellen.
+    *   `📎 Kein Supplement gefunden ⚠` (orange) — die Prüfung blieb unvollständig: die Verlagsseite war nicht lesbar (ACS antwortet mit HTTP 403 oder einer Cloudflare-Seite mit HTTP 200) oder eine Metadatenquelle hat geschwiegen. Der Tooltip sagt, welche Quelle fehlt, und verweist auf die Artikelseite.
+    *   **Ein Klick prüft erneut** — sinnvoll, wenn ein Verlag beim ersten Versuch gesperrt hat.
     *   Werden Treffer gefunden, während die Verlagsseite blockiert war, steht über der Liste ein Hinweis, dass dort weitere Dateien liegen können.
+*   **Konsistent über die Seiten hinweg**: Das Prüfergebnis wird je DOI 12 Stunden in `chrome.storage.local` gemerkt. Edit-Formular und PDF-Verwaltung zeigen dadurch dieselbe Aussage – vorher konnte derselbe Artikel hier „gefunden" und dort „nicht prüfbar" sein, weil der Verlagsabruf mal durchkam und mal nicht.
 
 ---
 
 ### 4. Advanced PDF Analysis & Extraction
+Der PDF-Schalter der Ergebnisbox (**📄 PDF ansehen (Unpaywall)** bzw.
+**📄 PDF (Verlag)**, sobald der Verlags-Scan einen direkten Link findet)
+öffnet das gefundene PDF im mitgelieferten Betrachter – eigenes Fenster,
+Breite folgt dem Fenster, Marker für Lizenz, Förderung und Keywords.
+**Strg-, Umschalt- oder Mittelklick** öffnet weiterhin den Originallink,
+falls ein Verlag die Datei nicht direkt ausliefert.
+
 Extract **Page Count** and **Keywords** directly from PDFs and discover missing full-texts.
 
 ![PDF Analysis Tool](./images/pdf_analysis_ui.png)
@@ -165,10 +180,74 @@ The assistant validates form fields as you type, highlighting issues with a **re
 
 ---
 
+### 9. Batch QC Dashboard
+Auf Suchergebnisseiten erscheint der Button **Batch QC** – entweder für die
+angehakten Treffer oder für alle sichtbaren Ergebnisse. Das Dashboard legt sich
+als Vollbild über die Seite und arbeitet die Liste ohne Seitenwechsel ab.
+
+*   **Links** die Trefferliste; freigegebene PIDs bleiben pro Sitzung grün
+    markiert (`sessionStorage`).
+*   **Mitte** das MODS-Formular des Datensatzes im Iframe, kompakt gestylt.
+    Drupal-Kopf, Fusszeile, Menü und Hilfstexte sind ausgeblendet.
+    **Identifikatoren (DOI, ISBN/ISSN, PMID, WoS, Scopus …) bleiben an ihrer
+    Stelle im Formular, werden aber immer aufgeklappt und sichtbar gehalten**
+    (Schutzmarke `data-dora-keep`) – sie sind für die QC unverzichtbar und
+    dürfen der Ausblend-Logik nicht zum Opfer fallen. Nach oben gezogen werden
+    nur Titel und Autorenliste. Bewusst verborgen bleiben Felder wie
+    *Corresponding author's e-mail* und die DUO-Notizfelder.
+*   **Rechts** die **PDF-Verwaltung** des Objekts
+    (`…/islandora/object/<pid>/lib4ridora_pdf_management`), damit sichtbar ist,
+    welche Dateien mit welchen Rechten am Datensatz hängen.
+*   **PDF-Vorschau ↗** öffnet das PDF im gebündelten PDF.js-Viewer in einem
+    eigenen, frei skalierbaren Fenster (normales Browserfenster, also
+    maximierbar und Snap-fähig). Der Viewer richtet die Seitenbreite am
+    Fenster aus und rendert beim Ziehen neu; **🔎-/🔎+** schalten auf eine
+    feste Stufe um, **↔ Fensterbreite** zurück auf automatisch.
+    Es wird genau ein Fenster verwaltet:
+    beim Blättern folgt es dem Datensatz, ohne den Fokus zu stehlen; wurde es
+    geschlossen, bleibt es geschlossen, bis man erneut klickt.
+*   **Adobe-Automatik**: Mit der Einstellung *PDFs direkt in Adobe Acrobat
+    öffnen* (Optionen, oder Schalter **Immer Adobe** im Betrachter) wird der
+    Knopf zu **📥 In Adobe öffnen** – der Helper lädt die Datei und übergibt
+    sie an das System-Standardprogramm für PDFs. Heruntergeladen wird nur auf
+    Klick – beim Blättern würde sonst jeder Datensatz einen Download auslösen.
+    Ein bereits offenes Vorschaufenster folgt dem Datensatz trotzdem weiter.
+    Welches Programm startet, entscheidet Firefox unter *Einstellungen →
+    Allgemein → Anwendungen → Portable Document Format (PDF)*: steht dort
+    „In Firefox öffnen", erscheint der eingebaute Betrachter statt Adobe.
+    Lehnt Firefox das automatische Starten ab (`downloads.open()` ist nur aus
+    einer Nutzeraktion erlaubt), wird der Knopf zu **📂 In Adobe starten** –
+    ein Klick holt es nach.
+*   **Marker im Betrachter**: **🖍 Marker** hebt im PDF hervor, worauf es in
+    der QC ankommt, und sammelt die Fundstellen in einer Leiste am unteren
+    Rand – je Kategorie ein Zähler zum Aus-/Einblenden, darunter die
+    Fundstellen mit Seitenzahl. Ein Klick scrollt die Fundstelle selbst
+    mittig ins Bild (nicht nur die Seite) und lässt sie aufblitzen;
+    mehrfaches Klicken geht weitere Vorkommen der Reihe nach durch:
+    *   🟩 **Lizenz** – Creative Commons in Lang- und Kurzform (CC BY, CC0,
+        Lizenz-URLs, „distributed under the terms"). Die **Version gehört zum
+        Tag**, sofern sie unmittelbar dabeisteht: `CC BY-NC-ND 4.0`,
+        `Creative Commons Attribution 4.0 International`,
+        `creativecommons.org/licenses/by-nc/4.0`, `CC0 1.0 Universal`.
+    *   🟦 **SNF** – Swiss National Science Foundation / Nationalfonds, SNSF,
+        NCCR sowie Vergabenummern (`200021_203578`, „grant 203578"). Nackte
+        Sechsstellige zählen bewusst nicht, sonst leuchten Messtabellen auf.
+    *   🟪 **EU/ERC** – ERC, Horizon 2020/Europe, FP7, Marie
+        Skłodowska-Curie, „grant agreement No …", Horizon-Projektnummern.
+    *   🟨 **Keywords** – Keyword-/Schlagwörter-Abschnitte.
+    *   🟥 **Eigene** – frei eingetragene Begriffe (kommagetrennt, bleiben
+        gespeichert).
+*   **Schnell-Freigabe** setzt `Quality control = Yes` samt Kürzel aus den
+    Einstellungen und speichert.
+
+---
+
 ## Configuration
 
 Customization via the **Options** page:
 1.  **Scopus API Key**: Required for Corresponding Author checks.
+1.  **PDFs öffnen**: Eingebauter Betrachter (Standard) oder direkt Adobe
+    Acrobat (`pdfOpenInAdobe`).
 2.  **Keyword Exceptions**: Define your own formatting rules (`pattern -> replacement`).
 3.  **PSI Affiliation Data**: Upload `psi_data.js` updates here.
 

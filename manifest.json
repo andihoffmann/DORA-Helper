@@ -8,6 +8,7 @@
     "scripting",
     "storage",
     "downloads",
+    "downloads.open",
     "tabs"
   ],
   "host_permissions": [

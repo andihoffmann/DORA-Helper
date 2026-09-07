@@ -591,8 +591,10 @@ function restoreOptions() {
     scopusApiKey: '',
     psiDataLastUpdated: '',
     enableBatchQc: true,
-    qcInitials: ''
+    qcInitials: '',
+    pdfOpenInAdobe: false
   }, function (items) {
+    if (document.getElementById('pdfOpenInAdobe')) document.getElementById('pdfOpenInAdobe').checked = items.pdfOpenInAdobe;
     if (document.getElementById('exceptions')) document.getElementById('exceptions').value = items.exceptionList;
     if (document.getElementById('scopusKey')) document.getElementById('scopusKey').value = items.scopusApiKey;
     if (document.getElementById('enableBatchQc')) document.getElementById('enableBatchQc').checked = items.enableBatchQc;
@@ -628,6 +630,15 @@ function saveBatchQc() {
     qcInitials: initials
   }, function () {
     showStatus('statusBatchQc');
+  });
+}
+
+// 5. Speichern PDF-Anzeige (eingebauter Betrachter oder Adobe Acrobat)
+function savePdfMode() {
+  const inAdobe = document.getElementById('pdfOpenInAdobe')
+    ? document.getElementById('pdfOpenInAdobe').checked : false;
+  chrome.storage.local.set({ pdfOpenInAdobe: inAdobe }, function () {
+    showStatus('statusPdfMode');
   });
 }
 
@@ -723,5 +734,6 @@ document.addEventListener('DOMContentLoaded', () => {
   if (document.getElementById('saveScopus')) document.getElementById('saveScopus').addEventListener('click', saveScopus);
   if (document.getElementById('saveKeywords')) document.getElementById('saveKeywords').addEventListener('click', saveKeywords);
   if (document.getElementById('saveBatchQc')) document.getElementById('saveBatchQc').addEventListener('click', saveBatchQc);
+  if (document.getElementById('savePdfMode')) document.getElementById('savePdfMode').addEventListener('click', savePdfMode);
   if (document.getElementById('uploadPsiData')) document.getElementById('uploadPsiData').addEventListener('click', handlePsiDataUpload);
 });

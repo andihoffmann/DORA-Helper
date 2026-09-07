@@ -49,7 +49,8 @@
             opacity: 0.4;
             cursor: not-allowed;
         }
-        #page-info {
+        #page-info,
+        #zoom-info {
             font-size: 13px;
             font-weight: 600;
             color: #cbd5e1;
@@ -115,6 +116,150 @@
         .textLayer ::selection {
             background: rgba(14, 165, 233, 0.45) !important;
         }
+        #adobe-default {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 12px;
+            font-weight: 600;
+            color: #cbd5e1;
+            background-color: #0f172a;
+            padding: 5px 10px;
+            border-radius: 4px;
+            border: 1px solid #334155;
+            cursor: pointer;
+            user-select: none;
+        }
+        #adobe-default input {
+            margin: 0;
+            cursor: pointer;
+        }
+        /* Eigene Ebene für die Hervorhebungen: liegt zwischen Canvas und
+           Textlayer, damit Auswahl und Kopieren unberührt bleiben und die
+           Kästchen exakt auf den vermessenen Textrechtecken sitzen. */
+        .highlightLayer {
+            position: absolute;
+            left: 0;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            overflow: hidden;
+            border-radius: 4px;
+            pointer-events: none;
+            z-index: 1;
+        }
+        .dora-marker {
+            position: absolute;
+            border-radius: 2px;
+            background-color: rgba(148, 163, 184, 0.4);
+            mix-blend-mode: multiply;
+        }
+        .dora-marker[data-kategorie="lizenz"] { background-color: rgba(34, 197, 94, 0.42); }
+        .dora-marker[data-kategorie="snf"] { background-color: rgba(59, 130, 246, 0.42); }
+        .dora-marker[data-kategorie="eu"] { background-color: rgba(168, 85, 247, 0.42); }
+        .dora-marker[data-kategorie="keywords"] { background-color: rgba(245, 158, 11, 0.45); }
+        .dora-marker[data-kategorie="eigene"] { background-color: rgba(236, 72, 153, 0.42); }
+        /* Kurzes, sofort startendes Aufblitzen der angesprungenen Fundstelle */
+        @keyframes dora-blitz {
+            0%   { outline-color: rgba(248, 250, 252, 0); background-color: rgba(248, 250, 252, 0.9); }
+            50%  { outline-color: rgba(248, 250, 252, 1); background-color: rgba(56, 189, 248, 0.85); }
+            100% { outline-color: rgba(248, 250, 252, 0); background-color: rgba(248, 250, 252, 0.9); }
+        }
+        .dora-marker.dora-marker-blitz {
+            outline: 2px solid rgba(248, 250, 252, 0);
+            animation: dora-blitz 0.22s ease-in-out 3;
+            mix-blend-mode: normal;
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .dora-marker.dora-marker-blitz {
+                animation: none;
+                outline-color: #f8fafc;
+                background-color: rgba(248, 250, 252, 0.8);
+            }
+        }
+
+        /* Fundstellen-Leiste am unteren Rand */
+        #marker-bar {
+            background-color: #1e293b;
+            border-top: 1px solid #334155;
+            padding: 8px 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            max-height: 30vh;
+            flex: 0 0 auto;
+        }
+        #marker-bar.leer { display: none; }
+        #marker-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+        }
+        .marker-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 4px 10px;
+            border-radius: 999px;
+            border: 1px solid #475569;
+            background-color: #0f172a;
+            color: #e2e8f0;
+            cursor: pointer;
+        }
+        .marker-chip .punkt {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .marker-chip[aria-pressed="false"] {
+            opacity: 0.45;
+            text-decoration: line-through;
+        }
+        #marker-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            overflow-y: auto;
+            max-height: 15vh;
+        }
+        .marker-fund {
+            font-size: 11px;
+            background-color: #0f172a;
+            border: 1px solid #334155;
+            border-left-width: 4px;
+            border-radius: 4px;
+            padding: 3px 8px;
+            color: #cbd5e1;
+            cursor: pointer;
+            max-width: 340px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .marker-fund:hover { background-color: #334155; color: #f8fafc; }
+        .marker-fund .seite { color: #94a3b8; font-weight: 600; margin-left: 6px; }
+        #marker-own {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            color: #94a3b8;
+        }
+        #marker-own input {
+            flex: 1;
+            background-color: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 4px;
+            color: #e2e8f0;
+            padding: 4px 8px;
+            font-size: 11px;
+        }
+        #marker-leer-hinweis { font-size: 11px; color: #94a3b8; }
+
         #loading {
             position: absolute;
             top: 50%;
@@ -131,16 +276,31 @@
     <div id="toolbar">
         <div class="btn-group">
             <span id="page-info"><span id="page-count">-</span> Seiten</span>
+            <span id="zoom-info" title="Aktuelle Darstellungsgröße">100%</span>
         </div>
         <div class="btn-group">
-            <button id="zoom-out-btn">🔎-</button>
-            <button id="zoom-in-btn">🔎+</button>
+            <button id="zoom-out-btn" title="Verkleinern">🔎-</button>
+            <button id="zoom-in-btn" title="Vergrößern">🔎+</button>
+            <button id="fit-btn" title="Seitenbreite an das Fenster anpassen">↔ Fensterbreite</button>
+            <button id="marker-btn" title="Lizenz-, Förder- und Schlagwort-Fundstellen hervorheben">🖍 Marker</button>
             <button id="adobe-btn">📥 In Adobe öffnen</button>
+            <label id="adobe-default" title="PDFs künftig sofort in Adobe Acrobat öffnen, statt sie hier anzuzeigen">
+                <input type="checkbox" id="adobe-default-cb"> Immer Adobe
+            </label>
         </div>
     </div>
     <div id="canvas-container">
         <div id="loading">Lädt PDF...</div>
         <div id="pages-container"></div>
+    </div>
+
+    <div id="marker-bar">
+        <div id="marker-chips"></div>
+        <div id="marker-list"></div>
+        <div id="marker-own">
+            <label for="marker-own-input">Eigene Begriffe</label>
+            <input type="text" id="marker-own-input" placeholder="z. B. Eawag, dataset, ORCID – mit Komma trennen">
+        </div>
     </div>
 
     <script src="pdf_viewer.js"></script>

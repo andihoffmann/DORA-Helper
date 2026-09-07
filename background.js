@@ -7,6 +7,116 @@ let pdfTabMap = new Map(); // Speichert Tab-IDs zu PDF-URLs (wichtig für Blobs)
 // Zentrale Konfiguration für den PDF-Analyzer
 const ANALYZER_API_URL = "https://andrehoffmann80-pdf-analyzer.hf.space/analyze";
 
+// Ein einziges Vorschaufenster fuer die Batch-QC: beim Blaettern durch die
+// Trefferliste soll das bestehende Fenster dem Datensatz folgen statt sich zu
+// vervielfachen. onlyIfOpen = nur aktualisieren, nie neu oeffnen.
+let popupWindowId = null;
+
+chrome.windows.onRemoved.addListener(fensterId => {
+    if (fensterId === popupWindowId) popupWindowId = null;
+});
+
+// PDF herunterladen und mit der zugeordneten Anwendung oeffnen. Welches
+// Programm das ist, entscheidet die Dateizuordnung des Systems bzw. die
+// Firefox-Einstellung unter "Anwendungen" - steht dort der eingebaute
+// Betrachter, oeffnet Firefox einen Tab statt Adobe.
+// Hinweis: Firefox erlaubt downloads.open() laut MDN nur aus dem Handler
+// einer Nutzeraktion. Klappt es hier nicht, meldet die Funktion das zurueck,
+// und der Aufrufer kann es aus einem Klick heraus erneut versuchen
+// (openDownloadedFile).
+async function openPdfExternally(url) {
+    if (!url) throw new Error('Keine URL angegeben.');
+
+    const downloadId = await chrome.downloads.download({ url: url, saveAs: false });
+
+    return new Promise(resolve => {
+        let abgeschlossen = false;
+        const fertig = (geoeffnet, geladen, hinweis) => {
+            if (abgeschlossen) return;
+            abgeschlossen = true;
+            chrome.downloads.onChanged.removeListener(zuhoerer);
+            resolve({
+                downloadId: downloadId, opened: geoeffnet,
+                downloaded: geladen, note: hinweis || ''
+            });
+        };
+
+        const zuhoerer = (delta) => {
+            if (delta.id !== downloadId) return;
+            if (delta.state && delta.state.current === 'interrupted') {
+                fertig(false, false, 'Download abgebrochen');
+                return;
+            }
+            if (!delta.state || delta.state.current !== 'complete') return;
+
+            Promise.resolve(chrome.downloads.open(downloadId))
+                .then(() => fertig(true, true))
+                .catch(err => fertig(false, true, err && err.message ? err.message : 'Öffnen nicht möglich'));
+        };
+
+        chrome.downloads.onChanged.addListener(zuhoerer);
+        // Sicherheitsnetz, damit der Aufrufer nicht ewig wartet
+        setTimeout(() => fertig(false, false, 'Zeitüberschreitung beim Download'), 60000);
+    });
+}
+
+// Startet eine bereits geladene Datei - gedacht fuer den Klick-Wiederholer,
+// falls Firefox das automatische Oeffnen abgelehnt hat.
+async function openDownloadedFile(downloadId) {
+    if (downloadId === undefined || downloadId === null) throw new Error('Keine Download-ID angegeben.');
+    await chrome.downloads.open(downloadId);
+    return { downloadId: downloadId, opened: true };
+}
+
+async function openPopupWindow(request) {
+    const url = request.url;
+    if (!url) throw new Error('Keine URL angegeben.');
+
+    const uebernehmen = async (tabId, windowId) => {
+        await chrome.tabs.update(tabId, { url: url });
+        if (!request.onlyIfOpen && windowId !== undefined) {
+            try { await chrome.windows.update(windowId, { focused: true }); } catch (e) { }
+        }
+        popupWindowId = windowId !== undefined ? windowId : popupWindowId;
+        return { windowId: popupWindowId, reused: true };
+    };
+
+    if (popupWindowId !== null) {
+        try {
+            const fenster = await chrome.windows.get(popupWindowId, { populate: true });
+            const tab = fenster && fenster.tabs && fenster.tabs[0];
+            if (tab) return await uebernehmen(tab.id, popupWindowId);
+        } catch (e) {
+            popupWindowId = null; // Fenster wurde zwischenzeitlich geschlossen
+        }
+    }
+
+    // Das Hintergrundskript ist eine Event-Page und wird zwischendurch
+    // beendet - dann ist popupWindowId weg, obwohl das Fenster noch offen
+    // ist. Deshalb zusaetzlich anhand der geoeffneten Seite suchen, sonst
+    // folgt die Vorschau beim naechsten Datensatz nicht mehr.
+    try {
+        const basis = chrome.runtime.getURL('pdf_viewer.html');
+        const tabs = await chrome.tabs.query({});
+        const treffer = (tabs || []).find(t => t.url && t.url.indexOf(basis) === 0);
+        if (treffer) return await uebernehmen(treffer.id, treffer.windowId);
+    } catch (e) {
+        // Ohne Tab-Zugriff bleibt es beim Neuöffnen
+    }
+
+    if (request.onlyIfOpen) return { windowId: null, reused: false, skipped: true };
+
+    // Bewusst ein normales Fenster statt eines Popups: Firefox-Popups haben
+    // keine Fensterknoepfe, laufen an Snap-Layouts vorbei und liessen sich
+    // praktisch nicht groesser ziehen.
+    const neu = await chrome.windows.create({
+        url: url, type: 'normal',
+        width: request.width || 900, height: request.height || 1050
+    });
+    popupWindowId = neu.id;
+    return { windowId: neu.id, reused: false };
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "fetchData") {
         fetchMetadata(request.doi)
@@ -62,6 +172,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "registerDoraTab") {
         activeDoraTabId = sender.tab.id;
         sendResponse({ success: true });
+        return true;
+    }
+
+    if (request.action === "openDownloadedFile") {
+        openDownloadedFile(request.downloadId)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
+    if (request.action === "openPdfExternally") {
+        openPdfExternally(request.url)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
+    if (request.action === "openPopupWindow") {
+        openPopupWindow(request)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
     }
 

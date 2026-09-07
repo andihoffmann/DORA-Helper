@@ -56,6 +56,61 @@ const SUPPLEMENT_BLOCK_RE = /just a moment|attention required|access denied|are 
 
 let supplementCacheByDoi = new Map();   // doi -> { items, quellen }
 
+// Damit Edit-Formular und PDF-Verwaltung dieselbe Aussage zeigen, wird das
+// Prüfergebnis seitenübergreifend gemerkt (der Verlagsabruf gelingt nicht
+// jedes Mal gleich). Ein Klick auf die Schaltfläche prüft trotzdem neu.
+const SUPPLEMENT_CACHE_KEY = 'doraSupplementBefunde';
+const SUPPLEMENT_CACHE_TTL = 12 * 60 * 60 * 1000; // 12 Stunden
+const SUPPLEMENT_CACHE_MAX = 200;
+
+function supplementCacheLesen(doi, callback) {
+    if (supplementCacheByDoi.has(doi)) { callback(supplementCacheByDoi.get(doi)); return; }
+    try {
+        chrome.storage.local.get({ [SUPPLEMENT_CACHE_KEY]: {} }, (gespeichert) => {
+            const alle = gespeichert[SUPPLEMENT_CACHE_KEY] || {};
+            const eintrag = alle[doi];
+            if (eintrag && eintrag.zeit && (Date.now() - eintrag.zeit) < SUPPLEMENT_CACHE_TTL) {
+                supplementCacheByDoi.set(doi, eintrag.ergebnis);
+                callback(eintrag.ergebnis);
+            } else {
+                callback(null);
+            }
+        });
+    } catch (e) {
+        callback(null);
+    }
+}
+
+function supplementCacheSchreiben(doi, ergebnis) {
+    supplementCacheByDoi.set(doi, ergebnis);
+    try {
+        chrome.storage.local.get({ [SUPPLEMENT_CACHE_KEY]: {} }, (gespeichert) => {
+            const alle = gespeichert[SUPPLEMENT_CACHE_KEY] || {};
+            alle[doi] = { zeit: Date.now(), ergebnis: ergebnis };
+
+            // Abgelaufenes verwerfen und die Ablage begrenzt halten
+            const schluessel = Object.keys(alle)
+                .filter(k => alle[k] && alle[k].zeit && (Date.now() - alle[k].zeit) < SUPPLEMENT_CACHE_TTL)
+                .sort((a, b) => alle[b].zeit - alle[a].zeit)
+                .slice(0, SUPPLEMENT_CACHE_MAX);
+            const neu = {};
+            schluessel.forEach(k => { neu[k] = alle[k]; });
+            chrome.storage.local.set({ [SUPPLEMENT_CACHE_KEY]: neu });
+        });
+    } catch (e) { /* Ablage nicht verfügbar - der Speicher im Tab genügt */ }
+}
+
+function supplementCacheEntfernen(doi) {
+    supplementCacheByDoi.delete(doi);
+    try {
+        chrome.storage.local.get({ [SUPPLEMENT_CACHE_KEY]: {} }, (gespeichert) => {
+            const alle = gespeichert[SUPPLEMENT_CACHE_KEY] || {};
+            delete alle[doi];
+            chrome.storage.local.set({ [SUPPLEMENT_CACHE_KEY]: alle });
+        });
+    } catch (e) { }
+}
+
 // Schont die DORA-Instanz: die einmal erfolgreiche Basis-URL wird gemerkt,
 // Vokabular-Antworten werden sitzungsübergreifend zwischengespeichert.
 let fundingAutocompleteBaseWorking = null;
@@ -254,6 +309,111 @@ function createFloatingBox() {
         borderRadius: '5px', padding: '10px', boxShadow: '0 5px 20px rgba(0,0,0,0.15)'
     });
     return box;
+}
+
+// --- ERGEBNISBOX: MINIMIEREN STATT SCHLIESSEN ---
+// Wer die Box schliesst, muss sie ueber einen neuen Abruf zurueckholen.
+// Eingeklappt bleibt sie als schmale Leiste stehen; der Zustand ueberlebt
+// weitere Abfragen, damit die Box beim Durcharbeiten nicht staendig
+// aufspringt.
+let ergebnisBoxMinimiert = false;
+
+function erzeugeBoxSteuerung(box, beimSchliessen, kurzText) {
+    const leiste = createEl('div', '');
+    leiste.dataset.doraSteuerung = 'ja';
+    // Eigener heller Grund und Innenabstand: die Symbole bleiben lesbar,
+    // auch wenn ein langer Titel bis dicht heranreicht.
+    leiste.style.cssText = 'position: absolute; top: 2px; right: 4px; display: flex; gap: 10px; '
+        + 'align-items: center; padding: 2px 6px; border-radius: 4px; '
+        + 'background: rgba(255,255,255,.92); z-index: 2;';
+
+    const minBtn = createEl('div', 'dora-min-btn', '–');
+    minBtn.id = 'dora-box-minimize';
+    minBtn.title = 'Box einklappen (bleibt als Leiste erreichbar)';
+    minBtn.style.cssText = 'cursor: pointer; font-size: 1.2em; line-height: 1; color: #666; user-select: none;';
+    minBtn.addEventListener('click', () => {
+        if (box.dataset.doraMinimiert === 'ja') stelleBoxWiederHer(box);
+        else minimiereBox(box, kurzText);
+    });
+
+    const closeBtn = createEl('div', 'dora-close-btn', '×');
+    closeBtn.id = 'dora-box-close';
+    closeBtn.title = 'Box schließen';
+    closeBtn.style.cssText = 'cursor: pointer; font-size: 1.2em; line-height: 1; color: #666; user-select: none;';
+    closeBtn.addEventListener('click', () => {
+        ergebnisBoxMinimiert = false;
+        if (typeof beimSchliessen === 'function') beimSchliessen();
+        box.remove();
+    });
+
+    leiste.appendChild(minBtn);
+    leiste.appendChild(closeBtn);
+    return leiste;
+}
+
+// Mehrfach aufrufbar: bereits verborgene Kinder werden uebersprungen. Das
+// ist wichtig, weil die Box nach jedem Abruf neu aufgebaut wird.
+function minimiereBox(box, kurzText) {
+    if (!box) return;
+    box.dataset.doraMinimiert = 'ja';
+    ergebnisBoxMinimiert = true;
+
+    Array.from(box.children).forEach(kind => {
+        if (!kind.dataset || kind.dataset.doraSteuerung === 'ja') return;
+        if (kind.id === 'dora-box-min-label') return;
+        if (kind.style.display === 'none') return; // war schon verborgen
+        kind.dataset.doraEingeklappt = 'ja';
+        kind.style.display = 'none';
+    });
+
+    let anzeige = box.querySelector('#dora-box-min-label');
+    if (!anzeige) {
+        anzeige = createEl('div', '');
+        anzeige.id = 'dora-box-min-label';
+        anzeige.style.cssText = 'display:flex; align-items:center; gap:6px; cursor:pointer; font-family:sans-serif; font-size:12px; font-weight:600; color:#0073e6; padding-right:52px; white-space:nowrap;';
+        anzeige.title = 'Klicken, um die Box wieder zu öffnen';
+        anzeige.addEventListener('click', () => stelleBoxWiederHer(box));
+        box.appendChild(anzeige);
+    }
+    anzeige.replaceChildren();
+    const logo = createEl('img');
+    logo.src = chrome.runtime.getURL('icons/logo-48.png');
+    logo.style.cssText = 'width:18px; height:18px;';
+    anzeige.appendChild(logo);
+    anzeige.appendChild(document.createTextNode(kurzText || 'DORA Helper – Ergebnis'));
+    anzeige.style.display = 'flex';
+
+    box.style.width = 'auto';
+    box.style.padding = '6px 10px';
+    const minBtn = box.querySelector('#dora-box-minimize');
+    if (minBtn) {
+        minBtn.textContent = '▢';
+        minBtn.title = 'Box wieder aufklappen';
+    }
+}
+
+function stelleBoxWiederHer(box) {
+    if (!box) return;
+    box.dataset.doraMinimiert = 'nein';
+    ergebnisBoxMinimiert = false;
+
+    const anzeige = box.querySelector('#dora-box-min-label');
+    if (anzeige) anzeige.style.display = 'none';
+
+    Array.from(box.children).forEach(kind => {
+        if (kind.dataset && kind.dataset.doraEingeklappt === 'ja') {
+            kind.style.display = '';
+            delete kind.dataset.doraEingeklappt;
+        }
+    });
+
+    box.style.width = '320px';
+    box.style.padding = '10px';
+    const minBtn = box.querySelector('#dora-box-minimize');
+    if (minBtn) {
+        minBtn.textContent = '–';
+        minBtn.title = 'Box einklappen (bleibt als Leiste erreichbar)';
+    }
 }
 
 // --- FETCHING ---
@@ -534,18 +694,17 @@ function showLoadingBox() {
 function renderErrorBox(msgText) {
     let box = createFloatingBox();
     box.replaceChildren();
+    box.dataset.doraMinimiert = 'nein'; // Inhalt ist neu, Zustand kommt unten
     box.style.borderLeft = '5px solid #e53e3e';
 
-    const closeBtn = createEl('div', 'dora-close-btn', '×');
-    closeBtn.id = 'dora-box-close';
-    closeBtn.style.cssText = 'position: absolute; top: 5px; right: 10px; cursor: pointer; font-size: 1.2em; color: #666;';
-    closeBtn.addEventListener('click', () => box.remove());
-
     const msgDiv = createEl('div', '', `❌ Fehler: ${msgText}`);
-    msgDiv.style.cssText = 'color:#e53e3e; padding:10px; font-weight:bold; font-family:sans-serif; white-space: pre-wrap;';
+    msgDiv.style.cssText = 'color:#e53e3e; padding:10px 46px 10px 10px; font-weight:bold; '
+        + 'font-family:sans-serif; white-space: pre-wrap;';
 
-    box.appendChild(closeBtn);
+    box.appendChild(erzeugeBoxSteuerung(box, null, 'DORA Helper – Fehler'));
     box.appendChild(msgDiv);
+
+    if (ergebnisBoxMinimiert) minimiereBox(box, 'DORA Helper – Fehler');
 }
 
 // --- RESULT BOX (Secure Render) ---
@@ -566,13 +725,11 @@ function renderResultBox(data) {
 
     let box = createFloatingBox();
     box.replaceChildren(); // Reset
+    box.dataset.doraMinimiert = 'nein'; // Inhalt ist neu, Zustand kommt unten
 
-    // 1. Close Button
-    const closeBtn = createEl('div', 'dora-close-btn', '×');
-    closeBtn.id = 'dora-box-close';
-    closeBtn.style.cssText = 'position: absolute; top: 5px; right: 10px; cursor: pointer; font-size: 1.2em; color: #666;';
-    closeBtn.addEventListener('click', () => {
-        box.remove();
+    // 1. Steuerung: einklappen oder schliessen
+    const kurzText = meta && meta.DOI ? `DORA Helper – ${meta.DOI}` : 'DORA Helper – Ergebnis';
+    box.appendChild(erzeugeBoxSteuerung(box, () => {
         // Restore the Bulk Data Tool button so it's accessible without DOI box
         const bulkTool = document.getElementById('dora-bulk-data-tool');
         if (bulkTool) {
@@ -583,11 +740,13 @@ function renderResultBox(data) {
             if (icon) icon.textContent = '▼';
             bulkTool.style.width = 'auto';
         }
-    });
-    box.appendChild(closeBtn);
+    }, kurzText));
 
     // 2. Header
     const header = createEl('div', 'dora-meta-header');
+    // Platz fuer die Knoepfe oben rechts freihalten - lange Titel liefen
+    // sonst unter das Minus- und Schliessen-Symbol.
+    header.style.paddingRight = '46px';
 
     // Logo (Clickable to toggle Bulk tool)
     const logo = createEl('img');
@@ -889,6 +1048,7 @@ function renderResultBox(data) {
         pdfBtn.appendChild(document.createTextNode(' PDF ansehen (Unpaywall)'));
         pdfBtn.style.flex = '1';
         pdfBtn.style.fontSize = '12px'; // Reduced
+        verknuepfePdfVorschau(pdfBtn, 'Open-Access-PDF');
         pdfActionRow.appendChild(pdfBtn);
 
         const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary');
@@ -976,6 +1136,10 @@ function renderResultBox(data) {
     chrome.runtime.sendMessage({ action: "registerDoraTab" });
 
     box.appendChild(dropZone);
+
+    // War die Box eingeklappt, bleibt sie es auch beim naechsten Abruf -
+    // sonst springt sie beim Durcharbeiten staendig wieder auf.
+    if (ergebnisBoxMinimiert) minimiereBox(box, kurzText);
 }
 
 async function addMissingRows(containerRef, requiredCount) {
@@ -2124,6 +2288,40 @@ function formatKeyword(text) {
 }
 
 // --- PUBLISHER PAGE SCANNER (Zotero-style) ---
+// PDF im mitgelieferten Betrachter oeffnen (eigenes Fenster, Marker fuer
+// Lizenz/Foerderung/Keywords). Genutzt vom Batch-QC-Dashboard und von den
+// PDF-Schaltern in der Ergebnisbox.
+function openPdfPreviewFenster(pdfUrl, nurWennOffen) {
+    if (!pdfUrl) return;
+    const viewerUrl = `${chrome.runtime.getURL('pdf_viewer.html')}?file=${encodeURIComponent(pdfUrl)}`;
+    try {
+        chrome.runtime.sendMessage({
+            action: 'openPopupWindow', url: viewerUrl,
+            onlyIfOpen: !!nurWennOffen, width: 900, height: 1050
+        }, (antwort) => {
+            // Rückfall nur beim ausdruecklichen Klick, nicht beim Mitziehen
+            if (nurWennOffen) return;
+            if (!antwort || !antwort.success) window.open(viewerUrl, 'dora-qc-pdf');
+        });
+    } catch (e) {
+        if (!nurWennOffen) window.open(viewerUrl, 'dora-qc-pdf');
+    }
+}
+
+// Einen PDF-Link der Ergebnisbox auf die Vorschau umbiegen. Der href bleibt
+// erhalten: Strg-, Umschalt- und Mittelklick oeffnen weiterhin den Rohlink -
+// wichtig, wenn ein Verlag die Datei nicht ausliefert.
+function verknuepfePdfVorschau(anker, beschreibung) {
+    if (!anker || anker.dataset.doraVorschau === 'ja') return;
+    anker.dataset.doraVorschau = 'ja';
+    anker.title = `${beschreibung || 'PDF'} in der Helper-Vorschau öffnen (mit Markern für Lizenz, Förderung, Keywords). Strg- oder Mittelklick öffnet den Originallink.`;
+    anker.addEventListener('click', (e) => {
+        if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+        e.preventDefault();
+        openPdfPreviewFenster(anker.href, false);
+    });
+}
+
 function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
     const url = `https://doi.org/${doi}`;
 
@@ -2154,7 +2352,7 @@ function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
                 icon.style.marginRight = '5px';
                 mainBtn.appendChild(icon);
                 mainBtn.appendChild(document.createTextNode(' PDF (Verlag)'));
-                mainBtn.title = "Direkter Link via Verlags-Metadaten gefunden";
+                mainBtn.title = "Direkter Link via Verlags-Metadaten gefunden – öffnet die Helper-Vorschau (Strg-/Mittelklick: Originallink)";
                 mainBtn.style.border = "1px solid #2b6cb0";
                 mainBtn.style.color = "#2b6cb0";
 
@@ -2176,6 +2374,7 @@ function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
                 pubPdfBtn.style.flex = '1';
                 pubPdfBtn.style.fontSize = '12px'; // Reduced
                 pubPdfBtn.style.padding = '6px 4px';
+                verknuepfePdfVorschau(pubPdfBtn, 'Verlags-PDF');
 
                 const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary');
                 analyzeBtn.textContent = '⚡';
@@ -4086,26 +4285,90 @@ function initBatchQcDashboard(pids) {
     middle.appendChild(middleIframe);
     middle.appendChild(middleBottomToolbar);
 
-    // Right (PDF)
+    // Rechte Spalte: PDF-Verwaltung des Datensatzes.
+    // Die eingebettete PDF-Vorschau war hier zu starr (feste Breite, kein
+    // Zoom, kein Blaettern nebenher). Die Vorschau laeuft deshalb in einem
+    // eigenen Fenster; die Spalte zeigt stattdessen, welche PDFs am Objekt
+    // haengen (lib4ridora_pdf_management).
     const right = document.createElement('div');
-    right.style.cssText = 'flex: 1.2; display: flex; flex-direction: column; background: #f8fafc; border-left: 1px solid #e2e8f0;';
+    right.style.cssText = 'flex: 1.2; display: flex; flex-direction: column; background: #f8fafc; border-left: 1px solid #e2e8f0; min-width: 320px;';
 
     const rightToolbar = document.createElement('div');
-    rightToolbar.style.cssText = 'padding: 10px 16px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; gap: 10px;';
+    rightToolbar.style.cssText = 'padding: 8px 12px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;';
 
     const rightTitle = document.createElement('span');
-    rightTitle.textContent = '📄 PDF Vorschau (scrollbar)';
+    rightTitle.textContent = '📎 PDF-Verwaltung';
     rightTitle.style.cssText = 'font-weight: 600; font-size: 12px; color: #475569;';
     rightToolbar.appendChild(rightTitle);
 
+    const rightButtons = document.createElement('div');
+    rightButtons.style.cssText = 'display: flex; gap: 6px; align-items: center;';
+
+    const kleinerButton = (text, farbe, hoverFarbe, titel) => {
+        const b = document.createElement('button');
+        b.textContent = text;
+        b.title = titel || '';
+        b.style.cssText = `background: ${farbe}; color: white; border: none; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; transition: background 0.15s;`;
+        b.onmouseenter = () => b.style.background = hoverFarbe;
+        b.onmouseleave = () => b.style.background = farbe;
+        return b;
+    };
+
+    const pdfWindowBtn = kleinerButton('📄 PDF-Vorschau ↗', '#3b82f6', '#2563eb',
+        'Oeffnet das PDF in einem eigenen, frei skalierbaren Fenster');
+    const pdfTabBtn = kleinerButton('🗂 Verwaltung ↗', '#64748b', '#475569',
+        'Oeffnet die PDF-Verwaltung in einem neuen Tab');
+    const rightReloadBtn = kleinerButton('↻', '#64748b', '#475569', 'PDF-Verwaltung neu laden');
+
+    rightButtons.appendChild(pdfWindowBtn);
+    rightButtons.appendChild(pdfTabBtn);
+    rightButtons.appendChild(rightReloadBtn);
+    rightToolbar.appendChild(rightButtons);
+
+    pdfWindowBtn.onclick = () => openPdfPreviewWindow(currentPid, false);
+    pdfTabBtn.onclick = () => {
+        if (currentPid) window.open(pdfManagementUrl(currentPid), '_blank');
+    };
+    rightReloadBtn.onclick = () => {
+        if (currentPid) rightIframe.src = pdfManagementUrl(currentPid);
+    };
+
     const rightIframe = document.createElement('iframe');
-    rightIframe.style.cssText = 'flex: 1; border: none; width: 100%;';
+    rightIframe.style.cssText = 'flex: 1; border: none; width: 100%; background: #fff;';
 
     right.appendChild(rightToolbar);
     right.appendChild(rightIframe);
 
+    // Ziehbare Trennlinie: die Breitenaufteilung war fest verdrahtet, je nach
+    // Datensatz braucht man mal mehr Formular, mal mehr Dateiliste.
+    const splitter = document.createElement('div');
+    splitter.title = 'Breite der PDF-Spalte ziehen';
+    splitter.style.cssText = 'width: 6px; cursor: col-resize; background: #e2e8f0; flex: 0 0 6px;';
+    splitter.onmouseenter = () => splitter.style.background = '#94a3b8';
+    splitter.onmouseleave = () => splitter.style.background = '#e2e8f0';
+    splitter.onmousedown = (ev) => {
+        ev.preventDefault();
+        const ziehen = (e) => {
+            const breite = Math.min(Math.max(window.innerWidth - e.clientX, 280), window.innerWidth * 0.7);
+            right.style.flex = `0 0 ${Math.round(breite)}px`;
+        };
+        const beenden = () => {
+            document.removeEventListener('mousemove', ziehen);
+            document.removeEventListener('mouseup', beenden);
+            // Iframes wieder klickbar machen
+            middleIframe.style.pointerEvents = '';
+            rightIframe.style.pointerEvents = '';
+        };
+        // Waehrend des Ziehens duerfen die Iframes die Maus nicht schlucken
+        middleIframe.style.pointerEvents = 'none';
+        rightIframe.style.pointerEvents = 'none';
+        document.addEventListener('mousemove', ziehen);
+        document.addEventListener('mouseup', beenden);
+    };
+
     body.appendChild(sidebar);
     body.appendChild(middle);
+    body.appendChild(splitter);
     body.appendChild(right);
     overlay.appendChild(body);
 
@@ -4166,6 +4429,132 @@ function initBatchQcDashboard(pids) {
 
     document.body.appendChild(overlay);
 
+    function pdfManagementUrl(pid) {
+        return `/${getInstitutionPath()}/islandora/object/${encodeURIComponent(pid)}/lib4ridora_pdf_management`;
+    }
+
+    function pdfDatastreamUrl(pid) {
+        return `${window.location.origin}/${getInstitutionPath()}/islandora/object/${encodeURIComponent(pid)}/datastream/PDF/view`;
+    }
+
+    // Vorschau öffnen. Je nach Einstellung entweder im mitgelieferten
+    // PDF.js-Fenster oder direkt in Adobe Acrobat (Einstellung
+    // "pdfOpenInAdobe"). nurWennOffen = still folgen, nicht neu oeffnen -
+    // im Adobe-Modus passiert dabei bewusst nichts, sonst würde beim
+    // Blättern jeder Datensatz einen Download auslösen.
+    function openPdfPreviewWindow(pid, nurWennOffen) {
+        if (!pid) return;
+
+        // Ein offenes Vorschaufenster folgt dem Datensatz immer - auch im
+        // Adobe-Modus. Nur der ausdrueckliche Klick entscheidet anhand der
+        // Einstellung, ob Adobe geladen wird; automatische Downloads beim
+        // Blaettern soll es weiterhin nicht geben.
+        if (nurWennOffen) {
+            oeffneInViewer(pid, true);
+            return;
+        }
+
+        chrome.storage.local.get({ pdfOpenInAdobe: false }, (einstellung) => {
+            if (einstellung.pdfOpenInAdobe) oeffneInAdobe(pid);
+            else oeffneInViewer(pid, false);
+        });
+    }
+
+    function oeffneInAdobe(pid) {
+        const url = pdfDatastreamUrl(pid);
+        pdfWindowBtn.textContent = '📥 lädt für Adobe …';
+        chrome.runtime.sendMessage({ action: 'openPdfExternally', url: url }, (antwort) => {
+            const daten = antwort && antwort.success ? antwort.data : null;
+            if (daten && daten.opened) {
+                pdfButtonBeschriftungSetzen(true);
+                return;
+            }
+            if (daten && daten.downloaded) {
+                // Firefox hat das Starten abgelehnt (nur aus einem Klick
+                // erlaubt) - der naechste Klick holt es nach.
+                pdfWindowBtn.textContent = '📂 In Adobe starten';
+                pdfWindowBtn.onclick = () => {
+                    chrome.runtime.sendMessage(
+                        { action: 'openDownloadedFile', downloadId: daten.downloadId },
+                        () => {
+                            pdfWindowBtn.onclick = () => openPdfPreviewWindow(currentPid, false);
+                            pdfButtonBeschriftungSetzen(true);
+                        });
+                };
+                return;
+            }
+            pdfWindowBtn.textContent = '⚠ Adobe-Start fehlgeschlagen';
+            console.log('DORA Helper: Adobe-Öffnen fehlgeschlagen:',
+                (antwort && antwort.error) || (daten && daten.note) || 'unbekannt');
+            setTimeout(() => pdfButtonBeschriftungSetzen(true), 4000);
+        });
+    }
+
+    function oeffneInViewer(pid, nurWennOffen) {
+        openPdfPreviewFenster(pdfDatastreamUrl(pid), nurWennOffen);
+    }
+
+    // Der Button sagt, was passiert - Vorschaufenster oder Adobe
+    function pdfButtonBeschriftungSetzen(adobeModus) {
+        pdfWindowBtn.textContent = adobeModus ? '📥 In Adobe öffnen' : '📄 PDF-Vorschau ↗';
+        pdfWindowBtn.title = adobeModus
+            ? 'Öffnet das PDF in Adobe Acrobat (Einstellung: PDFs in Adobe öffnen)'
+            : 'Öffnet das PDF in einem eigenen, frei skalierbaren Fenster';
+    }
+
+    chrome.storage.local.get({ pdfOpenInAdobe: false }, (e) => pdfButtonBeschriftungSetzen(!!e.pdfOpenInAdobe));
+    if (chrome.storage.onChanged) {
+        chrome.storage.onChanged.addListener((aenderungen, bereich) => {
+            if (!document.body.contains(pdfWindowBtn)) return; // Dashboard geschlossen
+            if (bereich === 'local' && aenderungen.pdfOpenInAdobe) {
+                pdfButtonBeschriftungSetzen(!!aenderungen.pdfOpenInAdobe.newValue);
+            }
+        });
+    }
+
+    // Die PDF-Verwaltung ist eine vollstaendige Drupal-Seite; in der
+    // schmalen Spalte bleibt nur die Dateiliste interessant.
+    function slimPdfManagementFrame() {
+        try {
+            const doc = rightIframe.contentDocument || rightIframe.contentWindow.document;
+            if (!doc) return;
+
+            ['header', 'footer', 'toolbar', 'branding', 'navigation', 'nav', 'breadcrumb',
+                'sidebar-first', 'sidebar-second', 'admin-menu'].forEach(id => {
+                    const el = doc.getElementById(id);
+                    if (el) el.style.display = 'none';
+                });
+            const frameTabs = doc.querySelector('ul.tabs');
+            if (frameTabs) frameTabs.style.display = 'none';
+
+            if (doc.getElementById('dora-pdfmgmt-style')) return;
+            const style = doc.createElement('style');
+            style.id = 'dora-pdfmgmt-style';
+            style.textContent = `
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+                    background: #ffffff !important; padding: 10px !important; font-size: 12px !important;
+                }
+                #sidebar-first, #sidebar-second, .region-sidebar-first, .region-sidebar-second,
+                #navigation, #nav, .sidebar, #breadcrumb, .breadcrumb, #admin-menu {
+                    display: none !important; width: 0 !important;
+                }
+                #main, #content, #main-wrapper, #content-wrapper, .main-content, .content, #center {
+                    width: 100% !important; max-width: 100% !important; margin: 0 !important;
+                    padding: 0 !important; float: none !important;
+                }
+                table { width: 100% !important; border-collapse: collapse !important; font-size: 11px !important; }
+                table td, table th { padding: 4px 6px !important; vertical-align: middle !important; }
+                input[type="text"], select { max-width: 100% !important; box-sizing: border-box !important; }
+                fieldset { margin: 8px 0 !important; padding: 8px !important; border: 1px solid #e2e8f0 !important; border-radius: 6px !important; }
+                legend { font-size: 11px !important; font-weight: 700 !important; text-transform: uppercase !important; }
+            `;
+            doc.head.appendChild(style);
+        } catch (e) {
+            console.log('DORA Helper: PDF-Verwaltung nicht anpassbar:', e);
+        }
+    }
+
     // Automatically load first
     if (pids.length > 0) {
         sidebar.children[0].click();
@@ -4185,12 +4574,15 @@ function initBatchQcDashboard(pids) {
         });
 
         const inst = getInstitutionPath();
-        const pdfUrl = `/${inst}/islandora/object/${pid}/datastream/PDF/view`;
 
-        // PDF Iframe (Uses locally bundled PDF.js viewer to bypass Adobe Acrobat browser settings)
-        const viewerUrl = chrome.runtime.getURL('pdf_viewer.html');
-        const absolutePdfUrl = window.location.origin + pdfUrl;
-        rightIframe.src = `${viewerUrl}?file=${encodeURIComponent(absolutePdfUrl)}`;
+        // Rechts die PDF-Verwaltung des Objekts laden: sie zeigt alle
+        // angehaengten Dateien mitsamt Zugriffsrechten und Versionen.
+        rightIframe.onload = () => slimPdfManagementFrame();
+        rightIframe.src = pdfManagementUrl(pid);
+
+        // Ein bereits geoeffnetes Vorschaufenster folgt dem Datensatz,
+        // ohne dass beim Blaettern ein neues Fenster aufgeht.
+        openPdfPreviewWindow(pid, true);
 
 
         // Inject script into iframe to hide header/footer (Bound BEFORE setting src to avoid race conditions!)
@@ -4352,6 +4744,17 @@ function initBatchQcDashboard(pids) {
                     /* Hilfsklasse zum erzwungenen Ausblenden (überschreibt display: block !important) */
                     .dora-hidden { display: none !important; }
 
+                    /* IDs müssen in der QC immer sichtbar sein: Drupal klappt das
+                       Identifier-Fieldset per Voreinstellung zu, und die
+                       Ausblend-Logik darf es nicht mehr erwischen. */
+                    fieldset[data-dora-keep] { display: block !important; }
+                    fieldset[data-dora-keep] > .fieldset-wrapper,
+                    [data-dora-keep] > .fieldset-wrapper { display: block !important; }
+                    [data-dora-keep] { display: block !important; }
+                    [data-dora-keep].dora-hidden { display: block !important; }
+                    td[data-dora-keep], th[data-dora-keep] { display: table-cell !important; }
+
+
                     /* Validierungsfehler-Hervorhebung */
                     .dora-error, input.dora-error, select.dora-error, textarea.dora-error {
                         border: 2px solid #e53e3e !important;
@@ -4382,8 +4785,98 @@ function initBatchQcDashboard(pids) {
                 `;
                 doc.head.appendChild(style);
 
+                // DOI, ISBN, PMID & Co. sind für die Qualitätskontrolle
+                // unverzichtbar. Sie waren aus zwei Gründen nicht zu sehen:
+                // Drupal liefert das Identifier-Fieldset eingeklappt aus, und
+                // die Ausblend-Logik unten hat Wrapper mitgenommen. Deshalb
+                // werden diese Felder markiert (data-dora-keep), zwangsweise
+                // aufgeklappt und von der Ausblendung ausgenommen.
+                const ID_TEXT_RE = /(\bdoi\b|\bisbn\b|\bissn\b|\bpmid\b|pubmed|web of science|\bwos\b|\bisi\b|scopus|\beid\b|arxiv|\bhandle\b|\burn\b|accession|patent number|report number|identifier|identifikator)/;
+
+                const istIdFeld = (el) => {
+                    const attrs = `${el.id || ''} ${el.name || ''}`.toLowerCase();
+                    if (/edit-identifiers|identifiers\[|identifier/.test(attrs)) return true;
+                    if (/\b(doi|isbn|issn|pmid|wos|isi|scopus|eid|arxiv)\b/.test(attrs.replace(/[-_[\]]/g, ' '))) return true;
+                    if (el.id) {
+                        const label = doc.querySelector(`label[for="${el.id}"]`);
+                        if (label && ID_TEXT_RE.test(label.textContent.toLowerCase())) return true;
+                    }
+                    return false;
+                };
+
+                // Drupal-Rahmen (Menü, Tabs, Kopf-/Fusszeile) bleibt verborgen -
+                // der Aufwärts-Durchlauf unten darf ihn nicht wieder einschalten.
+                const CHROME_IDS = ['header', 'footer', 'toolbar', 'branding', 'page-title',
+                    'navigation', 'nav', 'breadcrumb', 'sidebar-first', 'sidebar-second', 'admin-menu'];
+                const istSeitenrahmen = (el) => {
+                    if (!el || el.nodeType !== 1) return false;
+                    if (el.id && CHROME_IDS.includes(el.id)) return true;
+                    if (el.classList && (el.classList.contains('tabs') || el.classList.contains('sidebar') ||
+                        el.classList.contains('breadcrumb'))) return true;
+                    return false;
+                };
+
+                // Vom Feld aufwärts alles wieder sichtbar machen und
+                // eingeklappte Fieldsets öffnen - aber nur innerhalb des
+                // Formulars, damit die Seitennavigation verborgen bleibt.
+                const idFeldFreilegen = (el) => {
+                    const grenze = doc.getElementById('islandora-xml-form-builder-form') || doc.querySelector('form');
+                    let knoten = el;
+                    while (knoten && knoten !== doc.body && knoten.nodeType === 1) {
+                        if (istSeitenrahmen(knoten)) break;
+
+                        knoten.classList.remove('dora-hidden');
+                        if (knoten.style && knoten.style.display === 'none') knoten.style.display = '';
+
+                        if (knoten.tagName === 'FIELDSET') {
+                            knoten.classList.remove('collapsed');
+                            knoten.setAttribute('data-dora-keep', 'true');
+                            const wrapper = knoten.querySelector('.fieldset-wrapper');
+                            if (wrapper) {
+                                wrapper.style.display = 'block';
+                                wrapper.classList.remove('dora-hidden');
+                            }
+                        } else if (knoten.tagName === 'DETAILS') {
+                            knoten.open = true;
+                        } else if (knoten.classList.contains('form-item') ||
+                            knoten.classList.contains('form-wrapper') ||
+                            knoten.tagName === 'TD' || knoten.tagName === 'TH') {
+                            knoten.setAttribute('data-dora-keep', 'true');
+                        }
+
+                        if (knoten === grenze) break; // nicht über das Formular hinaus
+                        knoten = knoten.parentElement;
+                    }
+                };
+
+                const keepIdFieldsVisible = () => {
+                    doc.querySelectorAll('input, textarea, select').forEach(el => {
+                        if (el.type === 'hidden') return;
+                        if (istIdFeld(el)) idFeldFreilegen(el);
+                    });
+
+                    // Legenden wie "Identifiers" zusätzlich aufklappen, auch
+                    // wenn die Felder darin anders benannt sind.
+                    doc.querySelectorAll('legend, .fieldset-legend').forEach(legend => {
+                        if (!ID_TEXT_RE.test(legend.textContent.toLowerCase())) return;
+                        const fieldset = legend.closest('fieldset') || legend.closest('.form-wrapper');
+                        if (fieldset) idFeldFreilegen(fieldset.querySelector('input, select, textarea') || fieldset);
+                    });
+                };
+
+                // Schutzprüfung für die Ausblend-Durchläufe unten
+                const istGeschuetzt = (el) => {
+                    if (!el || el.nodeType !== 1) return false;
+                    if (el.hasAttribute('data-dora-keep')) return true;
+                    if (el.closest && el.closest('[data-dora-keep]')) return true;
+                    return !!(el.querySelector && el.querySelector('[data-dora-keep]'));
+                };
+
                 // Spezifische Felder anhand ihrer Beschriftung & Element-Attribute ausblenden (Dual-Strategie für maximale Zuverlässigkeit)
                 const hideSpecificFields = () => {
+                    // IDs zuerst freilegen, damit die Durchläufe sie erkennen
+                    keepIdFieldsVisible();
+
                     // Strategie 1: Text-basierte Übereinstimmung für Labels, Legenden und Tabellenköpfe
                     const textTargets = [
                         "corresponding author's e-mail",
@@ -4415,10 +4908,11 @@ function initBatchQcDashboard(pids) {
 
                     // A: Zuerst alle Formularfelder (input, textarea, select) nach ID/Name/Klasse durchsuchen
                     doc.querySelectorAll('input, textarea, select').forEach(el => {
+                        if (istGeschuetzt(el)) return;
                         if (matchesAttribute(el.id) || matchesAttribute(el.name) || matchesAttribute(el.className)) {
                             // Wrapper des Formularfelds ausblenden
                             const wrapper = el.closest('.form-item') || el.closest('.form-wrapper') || el.closest('td') || el.parentElement;
-                            if (wrapper && !wrapper.classList.contains('dora-hidden')) {
+                            if (wrapper && !istGeschuetzt(wrapper) && !wrapper.classList.contains('dora-hidden')) {
                                 wrapper.classList.add('dora-hidden');
                             }
                             // Dazugehörige Labels ebenfalls ausblenden (über das 'for'-Attribut)
@@ -4438,7 +4932,7 @@ function initBatchQcDashboard(pids) {
                     doc.querySelectorAll('label').forEach(label => {
                         if (matchesText(label.textContent) || matchesAttribute(label.getAttribute('for'))) {
                             const wrapper = label.closest('.form-item') || label.closest('.form-wrapper') || label.closest('td') || label.parentElement;
-                            if (wrapper && !wrapper.classList.contains('dora-hidden')) {
+                            if (wrapper && !istGeschuetzt(wrapper) && !wrapper.classList.contains('dora-hidden')) {
                                 wrapper.classList.add('dora-hidden');
                             }
                         }
@@ -4448,7 +4942,7 @@ function initBatchQcDashboard(pids) {
                     doc.querySelectorAll('legend, .fieldset-legend').forEach(legend => {
                         if (matchesText(legend.textContent)) {
                             const fieldset = legend.closest('fieldset') || legend.closest('.form-wrapper');
-                            if (fieldset && !fieldset.classList.contains('dora-hidden')) {
+                            if (fieldset && !istGeschuetzt(fieldset) && !fieldset.classList.contains('dora-hidden')) {
                                 fieldset.classList.add('dora-hidden');
                             }
                         }
@@ -4456,6 +4950,7 @@ function initBatchQcDashboard(pids) {
 
                     // D: Tabellenköpfe nach Textinhalt durchsuchen (für ganze Spalten wie in Autorentabellen)
                     doc.querySelectorAll('th').forEach(th => {
+                        if (istGeschuetzt(th)) return;
                         if (matchesText(th.textContent)) {
                             const index = Array.from(th.parentElement.children).indexOf(th);
                             const table = th.closest('table');
@@ -4463,7 +4958,7 @@ function initBatchQcDashboard(pids) {
                                 th.classList.add('dora-hidden');
                                 table.querySelectorAll(`tr`).forEach(tr => {
                                     const cells = tr.children;
-                                    if (cells[index]) {
+                                    if (cells[index] && !istGeschuetzt(cells[index])) {
                                         cells[index].classList.add('dora-hidden');
                                     }
                                 });
@@ -4473,12 +4968,20 @@ function initBatchQcDashboard(pids) {
 
                     // E: Hilfstexte und Beschreibungen extrem aggressiv ausblenden
                     doc.querySelectorAll('.description, .help-block, div.description, p.help, .form-desc, .fieldset-description, [class*="description"]').forEach(el => {
+                        // Nie etwas ausblenden, das selbst ein Eingabefeld trägt -
+                        // sonst verschwinden Felder mit "description" im Klassennamen.
+                        if (el.querySelector('input, select, textarea')) return;
                         el.style.display = 'none';
                         el.classList.add('dora-hidden');
                     });
 
                     // F: Formular restrukturieren (QC-Felder an den Anfang)
                     restructureFormForQc();
+
+                    // Nach dem Umsortieren erneut sicherstellen, dass die IDs
+                    // offen und sichtbar sind (Drupal klappt beim Verschieben
+                    // gelegentlich wieder zu).
+                    keepIdFieldsVisible();
                 };
 
                 const restructureFormForQc = () => {
@@ -4665,16 +5168,18 @@ function initBatchQcDashboard(pids) {
                         console.error('Error rendering DORA QC Card at bottom:', cardError);
                     }
 
-                    // Wichtige Abschnitte suchen
-                    let doiFieldset = null;
+                    // Wichtige Abschnitte suchen. Die ID-Abschnitte werden
+                    // ausdrücklich NICHT verschoben: sie stecken im Formular
+                    // teils in denselben Fieldsets wie die QC-Felder, das Ganze
+                    // nach oben zu ziehen hat das Formular durcheinander
+                    // gebracht. Sie bleiben unten und werden nur sichtbar
+                    // gehalten (keepIdFieldsVisible).
                     let titleFieldset = null;
                     let authorFieldset = null;
 
                     doc.querySelectorAll('legend, .fieldset-legend').forEach(legend => {
                         const text = legend.textContent.toLowerCase();
-                        if (text.includes('identifier') || text.includes('identifikator') || text.includes('doi')) {
-                            doiFieldset = legend.closest('fieldset') || legend.closest('.form-wrapper');
-                        } else if (text.includes('title') || text.includes('titel')) {
+                        if (text.includes('title') || text.includes('titel')) {
                             titleFieldset = legend.closest('fieldset') || legend.closest('.form-wrapper');
                         } else if (text.includes('author') || text.includes('autoren')) {
                             authorFieldset = legend.closest('fieldset') || legend.closest('.form-wrapper');
@@ -4684,20 +5189,14 @@ function initBatchQcDashboard(pids) {
                     // Physisches Umsortieren am Anfang des Formulars (einmalig markiert per Attribut)
                     const next = form.firstChild;
 
-                    if (doiFieldset && doiFieldset.getAttribute('data-dora-moved') !== 'true') {
-                        form.insertBefore(doiFieldset, next);
-                        doiFieldset.style.borderLeft = '4px solid #3b82f6';
-                        doiFieldset.style.paddingLeft = '12px';
-                        doiFieldset.setAttribute('data-dora-moved', 'true');
-                    }
                     if (titleFieldset && titleFieldset.getAttribute('data-dora-moved') !== 'true') {
-                        form.insertBefore(titleFieldset, doiFieldset ? doiFieldset.nextSibling : next);
+                        form.insertBefore(titleFieldset, next);
                         titleFieldset.style.borderLeft = '4px solid #3b82f6';
                         titleFieldset.style.paddingLeft = '12px';
                         titleFieldset.setAttribute('data-dora-moved', 'true');
                     }
                     if (authorFieldset && authorFieldset.getAttribute('data-dora-moved') !== 'true') {
-                        form.insertBefore(authorFieldset, titleFieldset ? titleFieldset.nextSibling : (doiFieldset ? doiFieldset.nextSibling : next));
+                        form.insertBefore(authorFieldset, titleFieldset ? titleFieldset.nextSibling : next);
                         authorFieldset.style.borderLeft = '4px solid #3b82f6';
                         authorFieldset.style.paddingLeft = '12px';
                         authorFieldset.classList.add('dora-authors-fieldset');
@@ -5866,17 +6365,29 @@ function extractSupplementsFromHtml(html, baseUrl) {
 }
 
 // Metadaten und Verlagsseite zusammenführen (pro DOI nur einmal)
-function loadSupplements(doi, callback) {
+function loadSupplements(doi, callback, erneutPruefen) {
     if (!doi) { callback({ items: [], geprueft: true }); return; }
-    if (supplementCacheByDoi.has(doi)) { callback(supplementCacheByDoi.get(doi)); return; }
 
+    if (erneutPruefen) {
+        supplementCacheEntfernen(doi);
+        pruefeSupplements(doi, callback);
+        return;
+    }
+
+    supplementCacheLesen(doi, (gespeichert) => {
+        if (gespeichert) callback(gespeichert);
+        else pruefeSupplements(doi, callback);
+    });
+}
+
+function pruefeSupplements(doi, callback) {
     const ergebnis = { items: [], geprueft: false, quellen: { meta: false, verlag: 'offen' } };
     let offen = 2;
 
     const fertig = () => {
         if (--offen > 0) return;
         ergebnis.geprueft = true;
-        supplementCacheByDoi.set(doi, ergebnis);
+        supplementCacheSchreiben(doi, ergebnis);
         callback(ergebnis);
     };
 
@@ -5962,40 +6473,55 @@ function createSupplementButton(doi, optionen) {
     wrap.appendChild(liste);
 
     btn.addEventListener('click', () => {
+        if (btn.dataset.zustand === 'leer') { erneutPruefen(); return; }
+        if (btn.dataset.zustand !== 'treffer') return;
         const zu = liste.style.display === 'none';
         liste.style.display = zu ? 'block' : 'none';
     });
 
-    loadSupplements(doi, (ergebnis) => {
-        const items = ergebnis.items || [];
-        const verlag = (ergebnis.quellen && ergebnis.quellen.verlag) || 'offen';
-        const metaOk = !!(ergebnis.quellen && ergebnis.quellen.meta);
+    // Die Aussage lautet immer "Kein Supplement gefunden" - gefunden wurde
+    // nämlich keines, aber ausgeschlossen ist damit nichts. Blieb die Prüfung
+    // unvollständig (Verlagsseite gesperrt, Quelle stumm), sagt das ⚠ das
+    // ausdrücklich. Beides ist im Formular und in der PDF-Verwaltung gleich.
+    const zeigeErgebnis = (ergebnis) => {
+        const items = (ergebnis && ergebnis.items) || [];
+        const verlag = (ergebnis && ergebnis.quellen && ergebnis.quellen.verlag) || 'offen';
+        const metaOk = !!(ergebnis && ergebnis.quellen && ergebnis.quellen.meta);
+
+        btn.style.opacity = '';
+        btn.style.borderColor = '';
+        btn.style.color = '';
 
         if (!items.length) {
-            if (verlag === 'gesperrt' || verlag === 'fehler') {
-                // Wichtig zu unterscheiden: hier ist nichts belegt, aber auch
-                // nichts ausgeschlossen - die Verlagsseite war nicht lesbar.
-                btn.textContent = '📎 nicht prüfbar';
-                btn.style.borderColor = '#d69e2e';
-                btn.style.color = '#8a5a10';
-                btn.title = verlag === 'gesperrt'
-                    ? 'Keine strukturierten Angaben in Crossref, OpenAIRE oder figshare — und die Verlagsseite hat den Abruf blockiert. '
-                    + 'Ob es Supporting Information gibt, ist damit offen: bitte auf der Artikelseite selbst nachsehen.'
-                    : 'Keine strukturierten Angaben gefunden, und die Verlagsseite war nicht erreichbar. '
+            btn.dataset.zustand = 'leer';
+            btn.disabled = false;
+
+            let grund = '';
+            if (verlag === 'gesperrt') {
+                grund = 'Crossref, OpenAIRE und figshare führen keines — und die Verlagsseite hat den Abruf blockiert. '
+                    + 'Ob es Supporting Information gibt, ist damit offen: bitte auf der Artikelseite selbst nachsehen.';
+            } else if (verlag === 'fehler') {
+                grund = 'Crossref, OpenAIRE und figshare führen keines, und die Verlagsseite war nicht erreichbar. '
                     + 'Ob es Supporting Information gibt, ist damit offen.';
             } else if (!metaOk) {
-                btn.textContent = '📎 nicht prüfbar';
+                grund = 'Die Metadatenquellen haben nicht geantwortet; nur die Verlagsseite konnte geprüft werden.';
+            }
+
+            if (grund) {
+                btn.textContent = '📎 Kein Supplement gefunden ⚠';
                 btn.style.borderColor = '#d69e2e';
                 btn.style.color = '#8a5a10';
-                btn.title = 'Die Metadatenquellen haben nicht geantwortet.';
+                btn.title = 'Prüfung unvollständig. ' + grund + '\nKlicken für eine erneute Prüfung.';
             } else {
-                btn.textContent = '📎 kein Supplement';
-                btn.title = 'Geprüft: Crossref, OpenAIRE und figshare führen keines, und auf der Verlagsseite steht keines.';
+                btn.textContent = '📎 Kein Supplement gefunden';
                 btn.style.opacity = '.6';
+                btn.title = 'Geprüft: Crossref, OpenAIRE, figshare und die Verlagsseite verzeichnen keines. '
+                    + 'Ein Blick auf die Artikelseite kann sich trotzdem lohnen.\nKlicken für eine erneute Prüfung.';
             }
             return;
         }
 
+        btn.dataset.zustand = 'treffer';
         btn.disabled = false;
         btn.textContent = `📎 ${items.length} Supplement${items.length > 1 ? 's' : ''}`;
         btn.title = 'Anzeigen und herunterladen';
@@ -6003,7 +6529,17 @@ function createSupplementButton(doi, optionen) {
         btn.style.color = '#2b6cb0';
 
         renderSupplementList(liste, items, verlag);
-    });
+    };
+
+    const erneutPruefen = () => {
+        btn.dataset.zustand = 'laeuft';
+        btn.disabled = true;
+        btn.textContent = '📎 prüft erneut …';
+        btn.title = 'Die Quellen werden noch einmal abgefragt';
+        loadSupplements(doi, zeigeErgebnis, true);
+    };
+
+    loadSupplements(doi, zeigeErgebnis);
 
     return wrap;
 }
