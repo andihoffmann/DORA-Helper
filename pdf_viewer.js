@@ -55,6 +55,7 @@ institutTagSetzen();
 // auch Quellen mit Schluessel in der Adresse funktionieren.
 let downloadLaeuft = false;
 let downloadFertig = false;
+let abgelegteDatei = null; // Download-ID der bereits gespeicherten Datei
 
 function pdfAblegen(stillschweigend) {
     if (downloadLaeuft || downloadFertig) return;
@@ -70,9 +71,12 @@ function pdfAblegen(stillschweigend) {
         filename: dateiName
     }, (antwort) => {
         downloadLaeuft = false;
+        if (antwort && antwort.success && antwort.data && antwort.data.downloadId !== undefined) {
+            downloadFertig = true;
+            abgelegteDatei = antwort.data.downloadId;
+        }
         if (!saveBtn) return;
         if (antwort && antwort.success) {
-            downloadFertig = true;
             saveBtn.textContent = '✓ gespeichert';
             saveBtn.title = 'Liegt im Download-Ordner: ' + (antwort.data && antwort.data.filename || '');
         } else {
@@ -80,6 +84,27 @@ function pdfAblegen(stillschweigend) {
             saveBtn.title = 'Download fehlgeschlagen: ' + ((antwort && antwort.error) || 'keine Antwort');
         }
     });
+}
+
+// Hinweisleiste, wenn nur die Vorschauseite ankam.
+function vorschauWarnungZeigen() {
+    if (document.getElementById('vorschau-warnung')) return;
+
+    const leiste = document.createElement('div');
+    leiste.id = 'vorschau-warnung';
+    leiste.textContent = 'Nur eine Seite erhalten – die Elsevier-API gibt ohne Volltext-Berechtigung '
+        + 'bloss die Vorschauseite heraus; eine automatisch gespeicherte Datei enthält ebenfalls nur '
+        + 'diese Seite. Läuft der Zugang über die Instituts-IP, fehlt der Lizenz vermutlich die '
+        + 'Volltext-Freigabe für die API – dann hilft eine andere Quelle oder der Weg über den Verlag.';
+
+    const knopf = document.createElement('button');
+    knopf.type = 'button';
+    knopf.textContent = 'Beim Verlag öffnen';
+    knopf.onclick = () => window.open('https://doi.org/' + elsevierDoi, '_blank');
+    leiste.appendChild(knopf);
+
+    const behaelter = document.getElementById('canvas-container');
+    if (behaelter && behaelter.parentNode) behaelter.parentNode.insertBefore(leiste, behaelter);
 }
 
 function ladeUeberHintergrund(auftrag) {
@@ -113,14 +138,31 @@ if (fileUrl || elsevierDoi) {
     // liegt eine echte Nutzeraktion vor.
     let geladeneDatei = null;
 
-    adobeBtn.onclick = () => {
-        if (geladeneDatei !== null && typeof chrome !== 'undefined' && chrome.downloads && chrome.downloads.open) {
-            Promise.resolve(chrome.downloads.open(geladeneDatei))
+    // Startet eine bereits geladene Datei. Der Aufruf sitzt bewusst direkt im
+    // Klick-Handler: Firefox erlaubt downloads.open() nur aus einer echten
+    // Nutzeraktion heraus.
+    const starteDatei = (id) => {
+        try {
+            Promise.resolve(chrome.downloads.open(id))
                 .then(() => { adobeBtn.textContent = '📥 In Adobe öffnen'; geladeneDatei = null; })
                 .catch(err => {
-                    console.log('DORA Helper: Start blockiert:', err && err.message);
-                    adobeBtn.textContent = '⚠ Start blockiert';
+                    console.log('DORA Helper: Start über downloads.open nicht möglich:', err && err.message);
+                    adobeBtn.textContent = '📥 speichert …';
+                    adobeDownloadAlsRueckfall();
                 });
+        } catch (e) {
+            console.log('DORA Helper: downloads.open nicht verfügbar:', e && e.message);
+            adobeDownloadAlsRueckfall();
+        }
+    };
+
+    adobeBtn.onclick = () => {
+        // Liegt die Datei schon im Download-Ordner (automatische Ablage oder
+        // vorheriger Versuch), genügt ein Start - und der klappt hier, weil
+        // wir mitten in einer Nutzeraktion sind.
+        const vorhanden = geladeneDatei !== null ? geladeneDatei : abgelegteDatei;
+        if (vorhanden !== null && typeof chrome !== 'undefined' && chrome.downloads && chrome.downloads.open) {
+            starteDatei(vorhanden);
             return;
         }
 
@@ -129,7 +171,11 @@ if (fileUrl || elsevierDoi) {
         // Blob-Download als Rückfallebene.
         if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
             adobeBtn.textContent = '📥 öffnet …';
-            chrome.runtime.sendMessage({ action: 'openPdfExternally', url: fileUrl }, (antwort) => {
+            chrome.runtime.sendMessage({
+                action: 'openPdfExternally',
+                url: elsevierDoi ? '' : fileUrl,
+                elsevierDoi: elsevierDoi || ''
+            }, (antwort) => {
                 const daten = antwort && antwort.success ? antwort.data : null;
                 if (daten && daten.opened) {
                     adobeBtn.textContent = '📥 In Adobe öffnen';
@@ -151,6 +197,12 @@ if (fileUrl || elsevierDoi) {
     };
 
     function adobeDownloadAlsRueckfall() {
+        if (!fileUrl) {
+            // Elsevier-Fall: ohne offene Adresse geht nur der Weg über das
+            // Hintergrundskript - der ist hier schon gescheitert.
+            adobeBtn.textContent = '⚠ Adobe nicht erreichbar';
+            return;
+        }
         // PDF über Blob-Download erzwingen, um direkt Adobe Acrobat Pro aufzurufen
         fetch(fileUrl)
             .then(resp => resp.blob())
@@ -200,6 +252,10 @@ if (fileUrl || elsevierDoi) {
             pdfDoc = pdfDoc_;
             pageCountEl.textContent = pdfDoc.numPages;
             loadingEl.style.display = 'none';
+
+            // Elsevier gibt ohne Volltext-Berechtigung nur die Vorschauseite
+            // heraus - eine einzelne Seite ist deshalb ein Warnsignal.
+            if (elsevierDoi && pdfDoc.numPages === 1) vorschauWarnungZeigen();
 
             // Render All Pages
             renderAllPages();

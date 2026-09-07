@@ -25,6 +25,12 @@
       Benötigt für den Affiliation-Check (Corresponding Author).
     </div>
     <input type="text" id="scopusKey" placeholder="Hier API Key einfügen...">
+    <div class="hint" style="margin-top: 12px; margin-bottom: 5px;">
+      <strong>Insttoken (optional):</strong> Ohne Volltext-Freigabe liefert die
+      Elsevier-API nur die erste Seite. Der von Elsevier ausgestellte Insttoken
+      schaltet den Volltext auch ausserhalb des Institutsnetzes frei.
+    </div>
+    <input type="text" id="elsevierInsttoken" placeholder="Elsevier Insttoken (optional)">
     <div style="margin-top: 10px;">
       <button id="saveScopus">Key Speichern</button>
       <span id="statusScopus" style="opacity:0; color:green; margin-left:10px; font-weight:bold;">Gespeichert!</span>

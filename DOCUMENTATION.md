@@ -135,6 +135,21 @@ HTML-Sperrseiten – genau deshalb wird angetestet statt vertraut.
 *   **Schlüssel bleibt geheim**: Die Elsevier-Adresse wird ohne `apiKey`
     angezeigt; geprüft und geladen wird im Hintergrundskript, das die Bytes an
     den Betrachter durchreicht (`fetchPdfBytes`).
+*   **Elsevier-Volltext braucht eine Freigabe**: Ohne sie gibt die API nur die
+    **Vorschauseite** heraus – ein gültiges PDF mit genau einer Seite. Der
+    Helper misst deshalb bei dieser Quelle die **Seitenzahl** (der Kandidat
+    wird ganz geladen und der Seitenbaum ausgewertet) und schreibt das
+    Ergebnis an: `nur Vorschauseite – kein Volltext` bzw. `14 Seiten`. Eine
+    Vorschauseite rutscht in der Rangfolge ganz nach hinten und wird nicht in
+    den Haupt-Knopf übernommen, solange es eine andere geprüfte Quelle gibt;
+    im Betrachter erscheint zusätzlich eine Hinweisleiste (die automatisch
+    abgelegte Datei enthält dann ebenfalls nur diese Seite).
+    Freigeschaltet wird der Volltext über die **Instituts-IP** oder einen
+    **Insttoken**, der in den Einstellungen neben dem Scopus-Key hinterlegt
+    werden kann (`elsevierInsttoken`, wird an Prüfung, Download und Vorschau
+    angehängt). Läuft der Zugang rein über die IP und kommt trotzdem nur die
+    Vorschau, fehlt der Lizenz die Volltext-Freigabe für die API – das ist
+    eine Frage ans Elsevier-Konto, nicht am Helper zu lösen.
 *   **Elsevier nur bei Elsevier**: Der API-Kandidat entsteht nur, wenn DOI-Präfix
     oder Crossref-Verlagsangabe auf Elsevier deuten – sonst stünde bei jedem
     fremden Verlag ein Kandidat in der Liste, der nie funktionieren kann.

@@ -589,6 +589,7 @@ function restoreOptions() {
   chrome.storage.local.get({
     exceptionList: defaultExceptions,
     scopusApiKey: '',
+    elsevierInsttoken: '',
     psiDataLastUpdated: '',
     enableBatchQc: true,
     qcInitials: '',
@@ -601,6 +602,7 @@ function restoreOptions() {
     if (document.getElementById('autoDownloadPreview')) document.getElementById('autoDownloadPreview').checked = items.autoDownloadPreview;
     if (document.getElementById('exceptions')) document.getElementById('exceptions').value = items.exceptionList;
     if (document.getElementById('scopusKey')) document.getElementById('scopusKey').value = items.scopusApiKey;
+    if (document.getElementById('elsevierInsttoken')) document.getElementById('elsevierInsttoken').value = items.elsevierInsttoken;
     if (document.getElementById('enableBatchQc')) document.getElementById('enableBatchQc').checked = items.enableBatchQc;
     if (document.getElementById('qcInitials')) document.getElementById('qcInitials').value = items.qcInitials;
     if (document.getElementById('lastUpdated') && items.psiDataLastUpdated) {
@@ -612,7 +614,9 @@ function restoreOptions() {
 // 2. Speichern Scopus
 function saveScopus() {
   const scopusKey = document.getElementById('scopusKey') ? document.getElementById('scopusKey').value : '';
-  chrome.storage.local.set({ scopusApiKey: scopusKey }, function () {
+  const insttoken = document.getElementById('elsevierInsttoken')
+    ? document.getElementById('elsevierInsttoken').value.trim() : '';
+  chrome.storage.local.set({ scopusApiKey: scopusKey, elsevierInsttoken: insttoken }, function () {
     showStatus('statusScopus');
   });
 }

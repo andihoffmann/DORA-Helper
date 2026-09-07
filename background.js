@@ -183,9 +183,23 @@ async function elsevierSchluessel() {
     }
 }
 
-function elsevierPdfUrl(doi, schluessel) {
+// Ohne Volltext-Berechtigung gibt Elsevier nur die Vorschauseite heraus.
+// Freigeschaltet wird sie durch die Instituts-IP oder einen Insttoken, den
+// Elsevier der Einrichtung ausstellt.
+async function elsevierInsttoken() {
+    try {
+        const gespeichert = await chrome.storage.local.get({ elsevierInsttoken: '' });
+        return (gespeichert.elsevierInsttoken || '').trim();
+    } catch (e) {
+        return '';
+    }
+}
+
+function elsevierPdfUrl(doi, schluessel, insttoken) {
     return 'https://api.elsevier.com/content/article/doi/' + encodeURIComponent(doi)
-        + '?apiKey=' + encodeURIComponent(schluessel) + '&httpAccept=application%2Fpdf';
+        + '?apiKey=' + encodeURIComponent(schluessel)
+        + (insttoken ? '&insttoken=' + encodeURIComponent(insttoken) : '')
+        + '&httpAccept=application%2Fpdf';
 }
 
 // Nur fuer Elsevier-Inhalte anbieten: bei fremden Verlagen antwortet die API
@@ -203,8 +217,13 @@ async function pdfKandidatenElsevier(doi, sammeln, verlag) {
     if (!istElsevier(doi, verlag)) return;
     const schluessel = await elsevierSchluessel();
     if (!schluessel) return;
-    sammeln('https://api.elsevier.com/content/article/doi/' + doi, 'Elsevier API',
-        { host: 'publisher', version: 'publishedVersion', elsevierApi: true, quellenName: 'Elsevier Article Retrieval' });
+
+    const insttoken = await elsevierInsttoken();
+    sammeln('https://api.elsevier.com/content/article/doi/' + doi, 'Elsevier API', {
+        host: 'publisher', version: 'publishedVersion', elsevierApi: true,
+        nurVorschau: !insttoken, // ohne Freischaltung meist nur die erste Seite
+        quellenName: 'Elsevier Article Retrieval'
+    });
 }
 
 // arXiv ueber den Titel finden. Die arXiv-API kennt keine DOI-Suche, der
@@ -284,6 +303,64 @@ function pdfKandidatenMuster(doi, sammeln, landeSeiten) {
     }
 }
 
+// Seitenzahl aus den Rohbytes schaetzen. Klappt bei klassisch aufgebauten
+// PDFs (Elseviers Vorschauseiten gehoeren dazu); bei komprimierten
+// Objektstroemen liefert sie 0 - dann wird eben nichts behauptet.
+function zaehlePdfSeiten(roh) {
+    if (!roh) return 0;
+
+    // Der Seitenbaum nennt die Gesamtzahl direkt
+    let groesste = 0;
+    const zaehler = /\/Type\s*\/Pages[^>]{0,400}?\/Count\s+(\d+)/g;
+    let treffer;
+    while ((treffer = zaehler.exec(roh)) !== null) {
+        const wert = parseInt(treffer[1], 10);
+        if (wert > groesste) groesste = wert;
+    }
+    if (groesste > 0) return groesste;
+
+    // Sonst die Seitenobjekte zaehlen
+    const seiten = roh.match(/\/Type\s*\/Page[^s]/g);
+    return seiten ? seiten.length : 0;
+}
+
+// Der Elsevier-Volltext haengt an der Berechtigung der Einrichtung (IP oder
+// Insttoken). Fehlt sie, kommt eine einseitige Vorschau - die sieht wie ein
+// gueltiges PDF aus und muss deshalb an der Seitenzahl erkannt werden.
+async function pruefeElsevierVolltext(url) {
+    const abbruch = new AbortController();
+    const uhr = setTimeout(() => abbruch.abort(), 15000);
+    try {
+        const antwort = await fetch(url, {
+            method: 'GET', credentials: 'include', redirect: 'follow',
+            headers: { 'Accept': 'application/pdf,*/*' }, signal: abbruch.signal
+        });
+        if (!antwort.ok) return { ok: false, status: antwort.status, grund: 'HTTP ' + antwort.status };
+
+        const puffer = await antwort.arrayBuffer();
+        const bytes = new Uint8Array(puffer);
+        if (String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]) !== '%PDF-') {
+            return { ok: false, status: antwort.status, grund: 'kein PDF' };
+        }
+
+        let roh = '';
+        const block = 0x8000;
+        for (let i = 0; i < bytes.length; i += block) {
+            roh += String.fromCharCode.apply(null, bytes.subarray(i, i + block));
+        }
+        const seiten = zaehlePdfSeiten(roh);
+        return {
+            ok: true, status: antwort.status, seiten: seiten,
+            nurVorschau: seiten === 1,
+            grund: seiten === 1 ? 'nur Vorschauseite (1 Seite)' : ''
+        };
+    } catch (e) {
+        return { ok: false, grund: e.name === 'AbortError' ? 'Zeitüberschreitung' : e.message };
+    } finally {
+        clearTimeout(uhr);
+    }
+}
+
 // Kurzer Bereichsabruf: liefert die Adresse wirklich ein PDF oder eine
 // Sperrseite? Cookies werden mitgeschickt, damit institutionelle Zugaenge
 // greifen.
@@ -342,6 +419,7 @@ function pdfRang(kandidat) {
     let punkte = 0;
     if (kandidat.geprueft) punkte += 100;
     if (kandidat.abgeleitet) punkte -= 4; // geraten, nicht gemeldet
+    if (kandidat.nurVorschau) punkte -= 60; // nur die erste Seite ist kein Volltext
     if (kandidat.version === 'publishedVersion' || kandidat.version === 'vor') punkte += 20;
     if (kandidat.version === 'acceptedVersion' || kandidat.version === 'am') punkte += 10;
     if (kandidat.host === 'publisher') punkte += 5;
@@ -393,7 +471,7 @@ async function downloadPdf(auftrag) {
     if (auftrag.elsevierDoi) {
         const schluessel = await elsevierSchluessel();
         if (!schluessel) throw new Error('Kein Scopus/Elsevier-Schlüssel hinterlegt.');
-        url = elsevierPdfUrl(auftrag.elsevierDoi, schluessel);
+        url = elsevierPdfUrl(auftrag.elsevierDoi, schluessel, await elsevierInsttoken());
     }
     if (!url) throw new Error('Keine URL angegeben.');
 
@@ -413,7 +491,7 @@ async function fetchPdfBytes(auftrag) {
     if (auftrag.elsevierDoi) {
         const schluessel = await elsevierSchluessel();
         if (!schluessel) throw new Error('Kein Scopus/Elsevier-Schlüssel hinterlegt.');
-        url = elsevierPdfUrl(auftrag.elsevierDoi, schluessel);
+        url = elsevierPdfUrl(auftrag.elsevierDoi, schluessel, await elsevierInsttoken());
     }
     if (!url) throw new Error('Keine URL angegeben.');
 
@@ -467,6 +545,7 @@ async function findPdfLinks(doi, erneut) {
             version: normalisiereVersion(zusatz && zusatz.version), license: (zusatz && zusatz.license) || '',
             quellenName: (zusatz && zusatz.quellenName) || pdfHost(sauber),
             elsevierApi: !!(zusatz && zusatz.elsevierApi),
+            nurVorschau: !!(zusatz && zusatz.nurVorschau), seiten: 0,
             abgeleitet: !!(zusatz && zusatz.abgeleitet),
             geprueft: false, status: 0, grund: '', blockiert: false
         });
@@ -505,17 +584,24 @@ async function findPdfLinks(doi, erneut) {
     kandidaten.sort((a, b) => pdfRang(a) - pdfRang(b));
 
     const schluessel = await elsevierSchluessel();
+    const insttoken = await elsevierInsttoken();
     const zuPruefen = kandidaten.slice(0, PDF_PRUEF_LIMIT);
     const ergebnisse = await Promise.allSettled(zuPruefen.map(k => {
+        // Bei Elsevier zaehlt nicht nur "ist ein PDF", sondern auch "ist der
+        // ganze Artikel" - deshalb dort der ausfuehrliche Test.
+        if (k.elsevierApi) return pruefeElsevierVolltext(elsevierPdfUrl(doi, schluessel, insttoken));
         const referer = Array.from(landeSeiten).find(seite => pdfHost(seite) === pdfHost(k.url)) || '';
-        return pruefePdfUrl(k.elsevierApi ? elsevierPdfUrl(doi, schluessel) : k.url, referer);
+        return pruefePdfUrl(k.url, referer);
     }));
     ergebnisse.forEach((e, i) => {
         const wert = e.status === 'fulfilled' ? e.value : { ok: false, grund: 'Prüfung fehlgeschlagen' };
         zuPruefen[i].geprueft = !!wert.ok;
         zuPruefen[i].status = wert.status || 0;
         zuPruefen[i].blockiert = !!wert.blockiert;
-        zuPruefen[i].grund = wert.ok ? '' : (wert.grund || 'nicht abrufbar');
+        if (wert.seiten) zuPruefen[i].seiten = wert.seiten;
+        // Der gemessene Befund ersticht die Vermutung aus der Einstellung
+        if (wert.ok && zuPruefen[i].elsevierApi) zuPruefen[i].nurVorschau = !!wert.nurVorschau;
+        zuPruefen[i].grund = wert.ok ? (wert.grund || '') : (wert.grund || 'nicht abrufbar');
     });
     kandidaten.slice(PDF_PRUEF_LIMIT).forEach(k => { k.grund = 'nicht angetestet'; });
 
@@ -536,7 +622,15 @@ chrome.windows.onRemoved.addListener(fensterId => {
 // einer Nutzeraktion. Klappt es hier nicht, meldet die Funktion das zurueck,
 // und der Aufrufer kann es aus einem Klick heraus erneut versuchen
 // (openDownloadedFile).
-async function openPdfExternally(url) {
+async function openPdfExternally(auftrag) {
+    // Aufruf mit einfacher URL oder mit einem Auftrag {url, elsevierDoi}
+    const angabe = (typeof auftrag === 'string') ? { url: auftrag } : (auftrag || {});
+    let url = angabe.url;
+    if (angabe.elsevierDoi) {
+        const schluessel = await elsevierSchluessel();
+        if (!schluessel) throw new Error('Kein Scopus/Elsevier-Schlüssel hinterlegt.');
+        url = elsevierPdfUrl(angabe.elsevierDoi, schluessel, await elsevierInsttoken());
+    }
     if (!url) throw new Error('Keine URL angegeben.');
 
     const downloadId = await chrome.downloads.download({ url: url, saveAs: false });
@@ -723,7 +817,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.action === "openPdfExternally") {
-        openPdfExternally(request.url)
+        openPdfExternally(request)
             .then(data => sendResponse({ success: true, data: data }))
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true;

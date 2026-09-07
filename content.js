@@ -47,7 +47,7 @@ const SUPPLEMENT_SKIP_RE = /supplement(ary)?[\s_-]?(issue|series)|\/journals?(\/
 const SUPPLEMENT_EXT_RE = /\.(pdf|docx?|xlsx?|csv|zip|txt|pptx?|tif{1,2}|mp4|xml)(\?|$)/i;
 // Verlage verlinken Zusatzmaterial oft direkt ins Repositorium (ACS z.B. nach
 // figshare). Solche Links tragen das Wort "supplement" nicht im Pfad.
-const SUPPLEMENT_REPO_RE = /(figshare\.com|zenodo\.org|datadryad\.org|dryad|osf\.io|pangaea\.de|dataverse\.|researchdata\.|opendata\.eawag|eric\.eawag|envidat\.ch)/i;
+const SUPPLEMENT_REPO_RE = /(figshare\.com|zenodo\.org|datadryad\.org|dryad|osf\.io|pangaea\.de|dataverse\.|researchdata\.|opendata\.eawag|eric\.eawag|envidat\.ch)/i;
 
 // Verlage antworten auf automatisierte Abrufe teils mit einer Sperrseite
 // (HTTP 403 oder eine Challenge mit HTTP 200) - das ist etwas anderes als
@@ -2500,6 +2500,9 @@ function createPdfSourceButton(doi, hauptBtn) {
             knopfBeschriftung(hauptBtn, `PDF (${bester.quellen[0]}) ✓`);
             hauptBtn.title = `Geprüfter Volltext über ${bester.quellen.join(', ')}`
                 + (bester.version ? ` — ${bester.version}` : '')
+                + (bester.nurVorschau
+                    ? '\nAchtung: diese Quelle liefert nur die Vorschauseite, nicht den Volltext.'
+                    : '')
                 + '\nÖffnet die Helper-Vorschau (Strg-/Mittelklick: Originallink).';
         }
 
@@ -2524,6 +2527,13 @@ function createPdfSourceButton(doi, hauptBtn) {
             if (k.license) teile.push(k.license);
             if (!k.geprueft && k.grund) teile.push(k.grund);
             if (!k.geprueft && k.blockiert) teile.push('im Browser meist erreichbar');
+            if (k.nurVorschau) {
+                teile.push(k.seiten === 1
+                    ? 'nur Vorschauseite – kein Volltext'
+                    : 'liefert oft nur die erste Seite');
+            } else if (k.seiten > 1) {
+                teile.push(`${k.seiten} Seiten`);
+            }
             const unten = createEl('div', '', teile.join(' · '));
             unten.style.cssText = 'font-size:10px; color:#718096; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
             unten.title = k.elsevierApi ? 'Elsevier Article Retrieval API (Schlüssel bleibt im Hintergrund)' : k.url;
