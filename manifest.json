@@ -77,7 +77,8 @@
         "pdf_viewer.html",
         "pdf_viewer.js",
         "pdf.min.js",
-        "pdf.worker.min.js"
+        "pdf.worker.min.js",
+        "handbuch.json"
       ],
       "matches": [
         "<all_urls>"

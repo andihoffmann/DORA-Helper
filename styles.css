@@ -127,6 +127,75 @@
     transition: all 0.2s;
 }
 
+/* ==========================================================================
+   HANDBUCH-SYMBOL AN DER FELDBESCHRIFTUNG
+   Ruhend zurückhaltend; beanstandet das Feld, leuchtet es auf - dort steht
+   dann meist genau die Regel, um die es geht.
+   ========================================================================== */
+.dora-handbuch-knopf {
+    display: inline-block;
+    cursor: pointer;
+    margin-left: 5px;
+    font-size: 0.95em;
+    line-height: 1;
+    opacity: 0.5;
+    transition: opacity 0.15s ease, transform 0.15s ease, filter 0.15s ease;
+    user-select: none;
+}
+
+.dora-handbuch-knopf:hover {
+    opacity: 1;
+    transform: scale(1.15);
+}
+
+/* Beanstandetes Feld: das Symbol bleibt ein Symbol, bekommt aber einen
+   deutlichen Schein. Zwei gestapelte Schatten tragen auf einem Emoji viel
+   besser als einer - ohne dass daraus ein Abzeichen wird. */
+.dora-handbuch-knopf.dora-handbuch-alarm {
+    opacity: 1;
+    transform: scale(1.2);
+    filter: drop-shadow(0 0 2px rgba(229, 62, 62, 1))
+            drop-shadow(0 0 7px rgba(229, 62, 62, 0.75));
+}
+
+.dora-handbuch-knopf.dora-handbuch-alarm:hover {
+    transform: scale(1.3);
+}
+
+/* Beim Wechsel kurz pulsieren - der Schein atmet, das zieht den Blick */
+@keyframes dora-handbuch-puls {
+    0%, 100% {
+        transform: scale(1.2);
+        filter: drop-shadow(0 0 2px rgba(229, 62, 62, 1))
+                drop-shadow(0 0 7px rgba(229, 62, 62, 0.75));
+    }
+    50% {
+        transform: scale(1.45);
+        filter: drop-shadow(0 0 3px rgba(229, 62, 62, 1))
+                drop-shadow(0 0 13px rgba(229, 62, 62, 0.95));
+    }
+}
+
+.dora-handbuch-knopf.dora-handbuch-blitz {
+    animation: dora-handbuch-puls 0.45s ease-in-out 3;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .dora-handbuch-knopf.dora-handbuch-blitz {
+        animation: none;
+    }
+}
+
+/* Kurz hervorheben, wenn aus der Fehlerliste zum Feld gesprungen wurde */
+@keyframes dora-handbuch-kasten-puls {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(43, 108, 176, 0); }
+    40% { box-shadow: 0 0 0 4px rgba(43, 108, 176, 0.35); }
+}
+
+.dora-handbuch-kasten.dora-handbuch-kasten-blitz {
+    animation: dora-handbuch-kasten-puls 0.45s ease-out 3;
+}
+
 /* PDF-Aktionen: feste Plätze, damit beim Nachladen nichts springt.
    Drei Zeilen - PDF, Quellen, Supplements - in immer gleicher Reihenfolge
    und Grösse; nur die Beschriftung wechselt. */

@@ -60,9 +60,66 @@ When an edit page is opened in DORA, the assistant automatically scans for a DOI
         Title Case („Physical Review B"). Dort wird nur noch auf
         Grossschreibung geprüft; Serientitel („WSL Berichte", „Proceedings of
         SPIE") nur auf gross geschriebene Funktionswörter.
+    *   **Kurze Titel zählen mit**: Sind *alle* inhaltstragenden Wörter gross,
+        gilt das ab zwei Wörtern als Title Case („Snow Cover Dynamics in the
+        Swiss Alps"). Diese scharfe Variante gilt nur für Englisch und
+        Spanisch – im Französischen und Italienischen sind kurze Namensketten
+        („Grand Tétras", „Vallée de la Sionne") zu häufig.
+    *   **Allerweltswörter im Eigennamen**: `Mountains`, `Park`, `Forest`,
+        `Lake` … werden nur übergangen, wenn sie in einer Kette
+        grossgeschriebener Wörter stehen, die auch einen echten Namen enthält
+        („Rodnei Mountains National Park"). Allein stehend sind sie gewöhnliche
+        Substantive – „Forest Ecosystems" bleibt also Title Case.
+    *   **Spracherkennung mit Endungen**: `in` zählt für Deutsch wie für
+        Englisch; Endungen wie `-ung`, `-ische`, `-tion`, `-zione` brechen den
+        Gleichstand („Genetische Vielfalt in Wildpflanzen-Samenmischungen" →
+        Deutsch, also kein Quotentest).
     *   Gemessen an **480 echten DORA-Titeln** (120 je Sprache): 0 % Fehlalarm
-        bei Deutsch, Französisch und Italienisch, 1 % bei Englisch (ein Titel,
-        der tatsächlich Title Case ist).
+        bei Deutsch, Französisch und Italienisch, 4 von 120 bei Englisch –
+        davon drei Titel, die tatsächlich in Title Case erfasst sind.
+    *   **Reihenfolge im Skript**: Die Blöcke für Sentence case,
+        Schlagwort-Schreibweise und Handbuch stehen bewusst **vor**
+        `startObserver()`. Auf einer bereits geladenen Seite prüft der
+        Beobachter sofort; weiter unten deklarierte `const`/`let` wären dann
+        noch nicht initialisiert (`ReferenceError: can't access lexical
+        declaration`). Ein Startlauf-Test injiziert content.js in eine fertig
+        geladene Seite und hält das fest.
+*   **📖 Handbuch am Feld**: Neben jeder bekannten Feldbeschriftung sitzt ein
+    kleines **📖**. Ein Klick zeigt unter dem Feld, was das **DORA-Handbuch**
+    (Confluence-Wiki) zu diesem Feld sagt – die Regeln des Abschnitts mit
+    Thema und Seiten-ID, ein weiterer Klick schliesst wieder. Das gilt
+    unabhängig davon, ob die Prüfung etwas beanstandet.
+*   **📖 Handbuch am Fehler**: Jede beanstandete Zeile bekommt den Verweis
+    **📖 Regel am Feld zeigen**. Er klappt nichts im schmalen Fehlerpanel auf,
+    sondern springt zum Feld im Formular und schlägt die Regel dort auf – dort
+    steht auch der Wert, um den es geht. Gezeigt werden die drei zur Meldung
+    passendsten Regeln; damit die richtige oben steht, überbrückt eine
+    Synonymtabelle den Wortschatz (Title Case ↔ Gross-/Kleinschreibung,
+    „fehlt“ ↔ „muss erfasst werden“). Der Sprung ist absichtlich hart
+    (`behavior: 'instant'`) und hebt den Kasten kurz hervor
+    (`.dora-handbuch-kasten-blitz`), damit sofort klar ist, wohin es ging.
+    Steht das Feld gerade nicht im Formular, klappen die Regeln als Rückfall
+    weiterhin im Panel auf.
+*   **📖 Symbol leuchtet bei Beanstandung**: Beanstandet die Prüfung ein Feld,
+    bekommt dessen 📖 einen roten Schein (zwei gestapelte `drop-shadow`,
+    kurzes Pulsieren) und im Tooltip die Meldung. Kein Abzeichen, kein
+    Farbklecks – das Symbol bleibt ein Symbol; bei `prefers-reduced-motion`
+    ohne Animation.
+    *   **Woher**: `handbuch.json` im Erweiterungsordner, erzeugt von
+        `scripts/handbuch/erzeuge_handbuch.js` aus dem Wiki-Export des
+        Projekts *DORA-MCP-Checker* (`docs/kb/wiki`, 926 Seiten → 126 Themen →
+        27 Formularfelder, 253 KB). Neu erzeugen nach einem Wiki-Export:
+        `node scripts/handbuch/erzeuge_handbuch.js`.
+    *   **Warum ein Auszug**: Die Wissensbasis dort ist eine Chroma-SQLite mit
+        lokalem Einbettungsmodell. Eine Browser-Erweiterung kann weder SQLite
+        lesen noch Vektoren rechnen, und es soll **kein lokaler Dienst** laufen
+        müssen. Der Auszug ist deshalb statisch, nach Feldern geordnet, offline
+        und kostenlos – und zugleich der Kontext, den eine spätere
+        LLM-Beurteilung mitschicken kann.
+    *   **Entwurfsfassungen**: Im Wiki liegen Arbeitsstände neben der gültigen
+        Seite (`Keywords_neu`, `Volume_in Abklärung`, `Kopie von …`). Der
+        Generator wählt die gültige Fassung (kein Entwurf, sonst die jüngere
+        Seiten-ID) und vermerkt, wie viele Fassungen es gibt.
 *   **🔍 Data Cross-Check**: An intelligent validation layer that compares sources:
     *   **Corresponding Author Check**: Validates if the corresponding author is affiliated with Eawag, Empa, PSI, or WSL (requires Scopus API key).
     *   **DOAJ Integration**: Warns if a "Gold OA" article is not listed in DOAJ or if a "Hybrid" article is listed.
