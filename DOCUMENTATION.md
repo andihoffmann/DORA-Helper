@@ -35,6 +35,34 @@ When an edit page is opened in DORA, the assistant automatically scans for a DOI
     *   **Open Access Status** (Gold, Green, Hybrid, Bronze, Closed).
     *   **License Information** (e.g., CC-BY) with direct links.
     *   **Version Detection** (Published Version/VoR vs. Accepted Manuscript/AAM).
+*   **Sentence case, sprachbewusst**: Die Prüfung von Artikel-, Buch-,
+    Proceedings- und Konferenztiteln arbeitet jetzt mehrsprachig
+    (de/fr/it/es/en, Sprache aus Funktionswörtern und Diakritika bestimmt):
+    *   **Satzgrenzen zählen**: Nach Punkt, Doppelpunkt, Frage-/Ausrufezeichen,
+        Gedankenstrich, Klammer und Anführung darf gross weitergehen – „Der
+        Schneehase in den Alpen. **Ein** Überlebenskünstler" ist korrekt und
+        wurde vorher beanstandet.
+    *   **Gross geschriebene Funktionswörter** mitten im Segment sind der
+        verlässliche Hinweis auf Title Case – in jeder Sprache und mit Nennung
+        der Wörter („enthält «Von», «Das»"). Artikel vor einem Namen sind
+        ausgenommen („Die Grüne Reihe", „Le Havre").
+    *   **Die Quote gross geschriebener Wörter** zählt nur in Sprachen, die
+        Substantive klein schreiben – im Deutschen also nicht, und nur wenn die
+        Sprache belegt ist.
+    *   **Ausgenommen**: Kursives (in DORA die Artnamen), Akronyme,
+        Binnenmajuskeln (`pH`, `eDNA`), Zahlen, taxonomische Endungen
+        (`-idae`, `-aceae`), Länder-/Regionennamen und Bestandteile
+        geografischer Eigennamen (Kanton, National Park, Alpi, Svizzera …).
+    *   **Neu erkannt**: durchgehende GROSSSCHREIBUNG und fehlender
+        Grossbuchstabe am Anfang.
+    *   **Feldgerecht**: Das Feld `edit-host-titleinfo-title` führt bei
+        Aufsätzen den **Journalnamen** – ein Eigenname, in DORA korrekt in
+        Title Case („Physical Review B"). Dort wird nur noch auf
+        Grossschreibung geprüft; Serientitel („WSL Berichte", „Proceedings of
+        SPIE") nur auf gross geschriebene Funktionswörter.
+    *   Gemessen an **480 echten DORA-Titeln** (120 je Sprache): 0 % Fehlalarm
+        bei Deutsch, Französisch und Italienisch, 1 % bei Englisch (ein Titel,
+        der tatsächlich Title Case ist).
 *   **🔍 Data Cross-Check**: An intelligent validation layer that compares sources:
     *   **Corresponding Author Check**: Validates if the corresponding author is affiliated with Eawag, Empa, PSI, or WSL (requires Scopus API key).
     *   **DOAJ Integration**: Warns if a "Gold OA" article is not listed in DOAJ or if a "Hybrid" article is listed.

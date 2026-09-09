@@ -2407,7 +2407,14 @@ const GEO_NAMEN = ['Afghanistan', 'Albania', 'Algeria', 'Andorra', 'Angola',
     'Southeast Asia', 'Siberia', 'Tibet',
     // Schweizer Bezuege, die haeufig als Schlagwort auftauchen
     'Basel', 'Bern', 'Geneva', 'Graubünden', 'Jura', 'Lausanne', 'Lucerne',
-    'Ticino', 'Valais', 'Zurich'];
+    'Ticino', 'Valais', 'Zurich',
+    // Deutsche, franzoesische und italienische Formen - DORA fuehrt vier Sprachen
+    'Schweiz', 'Suisse', 'Svizzera', 'Alpen', 'Alpes', 'Alpi', 'Deutschland',
+    'Allemagne', 'Germania', 'Italia', 'Italie', 'Italien', 'Frankreich',
+    'Österreich', 'Autriche', 'Europa', 'Afrika', 'Afrique', 'Asien', 'Asie',
+    'Tessin', 'Wallis', 'Grisons', 'Grigioni', 'Genf', 'Genève', 'Ginevra',
+    'Zürich', 'Berna', 'Basilea', 'Lugano', 'Locarno', 'Davos', 'Engadin',
+    'Karpaten', 'Carpathians', 'Pyrenees', 'Pyrenäen', 'Vosges', 'Balkan'];
 const GEO_NACH_KLEIN = new Map(GEO_NAMEN.map(n => [n.toLowerCase(), n]));
 
 const VOKAL_RE = /[aeiouyäöüàáâãéèêíìóôõúùü]/i;
@@ -3434,10 +3441,18 @@ function validateForm() {
     });
 
     // Rule 3: Sentence Case Checks
+    // Das Feld edit-host-titleinfo-title fuehrt bei Zeitschriftenaufsaetzen den
+    // Journalnamen - der ist ein Eigenname und in DORA korrekt in Title Case
+    // ("Physical Review B"). Nur bei Proceedings/Buechern gilt Sentence case.
+    const hostIstJournal = feldIstJournalname(procTitleEl);
+
     checkSentenceCase(titleEl, 'Article Title', errors);
     checkSentenceCase(confNameEl, 'Conference Name', errors);
-    checkSentenceCase(procTitleEl, 'Proceedings Title', errors);
-    checkSentenceCase(seriesTitleEl, 'Series Title', errors);
+    checkSentenceCase(procTitleEl, hostIstJournal ? 'Journal Title' : 'Proceedings Title', errors,
+        { eigenname: hostIstJournal });
+    // Serientitel sind haeufig Reihennamen ("WSL Berichte", "Proceedings of
+    // SPIE") - dort zaehlt nur der harte Hinweis auf Title Case.
+    checkSentenceCase(seriesTitleEl, 'Series Title', errors, { nurFunktionswoerter: true });
     checkSentenceCase(bookTitleEl, 'Book Title', errors);
 
     // Rule 4: Author Table Validation (including PSI Affiliation check)
@@ -3448,7 +3463,271 @@ function validateForm() {
     renderErrorSummary(errors);
 }
 
-function checkSentenceCase(el, label, errors) {
+// --- SENTENCE CASE ---------------------------------------------------------
+// Die alte Pruefung nahm eine feste Stoppwortliste, ignorierte Satzgrenzen und
+// kannte nur Englisch/Deutsch. Sie schlug deshalb bei deutschen und
+// franzoesischen Titeln Alarm ("Der Schneehase in den Alpen. Ein
+// Ueberlebenskuenstler" - "Ein" steht nach einem Punkt und ist korrekt) und
+// pruefte sogar Journaltitel, die als Eigennamen in Title Case gehoeren.
+//
+// Neu wird sprachbewusst geprueft:
+//   - Text von HTML befreien (die Felder enthalten <em>, <u>, <sub>)
+//   - in Segmente schneiden (Punkt, Doppelpunkt, Frage-/Ausrufezeichen,
+//     Gedankenstrich, Klammer, Anfuehrung) - jedes Segment darf gross anfangen
+//   - Sprache aus Funktionswoertern und Diakritika bestimmen
+//   - gross geschriebene Funktionswoerter mitten im Segment sind der
+//     verlaessliche Hinweis auf Title Case, in jeder Sprache
+//   - die Quote gross geschriebener Woerter zaehlt nur in Sprachen, die
+//     Substantive klein schreiben (also nicht im Deutschen)
+// ---------------------------------------------------------------------------
+
+const FUNKTIONSWOERTER = {
+    de: ['der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einer', 'eines', 'einem', 'einen',
+        'und', 'oder', 'aber', 'sondern', 'auch', 'wie', 'als', 'wenn', 'weil', 'dass', 'ob',
+        'in', 'im', 'am', 'an', 'auf', 'aus', 'bei', 'bis', 'durch', 'für', 'gegen', 'mit', 'nach',
+        'ohne', 'seit', 'über', 'um', 'unter', 'von', 'vom', 'vor', 'während', 'wegen', 'zu', 'zum',
+        'zur', 'zwischen', 'sowie', 'nicht', 'kein', 'keine', 'ist', 'sind', 'war', 'waren', 'wird',
+        'werden', 'wurde', 'wurden', 'sich', 'ihre', 'ihr', 'sein', 'seine', 'dieser', 'diese', 'dieses'],
+    fr: ['le', 'la', 'les', 'un', 'une', 'des', 'du', 'de', 'au', 'aux', 'et', 'ou', 'mais', 'donc',
+        'car', 'que', 'qui', 'dont', 'dans', 'sur', 'sous', 'pour', 'par', 'avec', 'sans', 'entre',
+        'chez', 'vers', 'depuis', 'pendant', 'selon', 'comme', 'en', 'à', 'ne', 'pas', 'plus',
+        'est', 'sont', 'était', 'étaient', 'ses', 'son', 'sa', 'leur', 'leurs', 'ce', 'cet', 'cette', 'ces'],
+    it: ['il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una', 'del', 'della', 'dei', 'delle',
+        'di', 'da', 'dal', 'dalla', 'e', 'ed', 'o', 'ma', 'che', 'chi', 'in', 'nel', 'nella',
+        'con', 'per', 'su', 'sul', 'tra', 'fra', 'come', 'non', 'è', 'sono', 'era', 'erano', 'suo', 'sua'],
+    es: ['el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'del', 'de', 'al', 'y', 'o', 'pero',
+        'que', 'quien', 'en', 'con', 'por', 'para', 'sobre', 'entre', 'desde', 'hasta', 'sin',
+        'como', 'no', 'es', 'son', 'era', 'eran', 'su', 'sus', 'este', 'esta', 'estos'],
+    en: ['the', 'a', 'an', 'and', 'or', 'but', 'nor', 'so', 'yet', 'of', 'in', 'on', 'at', 'to',
+        'for', 'from', 'by', 'with', 'without', 'into', 'onto', 'over', 'under', 'above', 'below',
+        'between', 'among', 'during', 'after', 'before', 'through', 'across', 'against', 'about',
+        'as', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'its', 'their', 'his', 'her',
+        'this', 'that', 'these', 'those', 'not', 'than', 'then', 'when', 'while', 'where', 'which',
+        'who', 'whose', 'how', 'why', 'if', 'per', 'via', 'up', 'out', 'off', 'do', 'does', 'did']
+};
+
+// Nur Artikel bilden mit einem folgenden Namen einen Eigennamen
+// ("Le Havre", "Die Grüne Reihe", "The Hague"). Praepositionen tun das nicht -
+// "Of Nitrogen" ist immer Title Case.
+const ARTIKEL = new Set([
+    'der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einer', 'eines',
+    'le', 'la', 'les', 'un', 'une', 'l', 'il', 'lo', 'gli', 'i', 'el', 'los', 'las',
+    'the', 'a', 'an'
+]);
+
+// Sprachen, die Substantive klein schreiben - nur dort sagt eine hohe Quote
+// gross geschriebener Woerter etwas aus.
+const KLEINSCHREIBENDE_SPRACHEN = ['en', 'fr', 'it', 'es'];
+
+const DIAKRITIKA = {
+    de: /[äöüßÄÖÜ]/,
+    fr: /[àâçéèêëîïôùûüœÀÂÇÉÈÊËÎÏÔÙÛÜŒ]/,
+    it: /[àèéìíòóùú]/,
+    es: /[áéíóúñ¿¡]/
+};
+
+// Roemische Zahlen und typische Abkuerzungen, die gross bleiben duerfen
+const ROEMISCH_RE = /^[IVXLCDM]+$/;
+const ABKUERZUNG_RE = /^[A-ZÄÖÜ][a-zäöü]{0,3}\.$/;   // Abb., Nr., Bd., Vol.
+
+function satzTextBereinigen(roh) {
+    return (roh || '')
+        // Kursives markiert in DORA Artnamen und fremdsprachige Begriffe
+        // (<em>Armillaria tabescens</em>) - das ist von der Schreibweisen-
+        // Pruefung ausgenommen und fliegt komplett heraus.
+        .replace(/<(em|i)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+        .replace(/<[^>]*>/g, ' ')              // restliche Auszeichnung
+        .replace(/&[a-z]+;|&#\d+;/gi, ' ')     // Entities
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function satzSpracheErkennen(text) {
+    const woerter = text.toLowerCase().split(/[^a-zà-öø-ÿ']+/).filter(Boolean);
+    const punkte = {};
+
+    Object.keys(FUNKTIONSWOERTER).forEach(sprache => {
+        const liste = FUNKTIONSWOERTER[sprache];
+        punkte[sprache] = woerter.filter(w => liste.indexOf(w) !== -1).length;
+    });
+
+    // Diakritika sind ein starker Hinweis, aber kein Beweis
+    Object.keys(DIAKRITIKA).forEach(sprache => {
+        if (DIAKRITIKA[sprache].test(text)) punkte[sprache] += 2;
+    });
+
+    let beste = 'en';
+    Object.keys(punkte).forEach(sprache => {
+        if (punkte[sprache] > punkte[beste]) beste = sprache;
+    });
+    // Ohne jeden Beleg bleibt es bei Englisch - aber das wird vermerkt,
+    // damit der Quotentest nicht auf Vermutungen losgeht.
+    return { sprache: punkte[beste] > 0 ? beste : 'en', belege: punkte[beste] };
+}
+
+// Satzgrenzen: nach jedem davon darf gross weitergehen.
+function satzSegmente(text) {
+    return text
+        .split(/(?:[.:;?!|\/]|\s[–—-]\s|\(|\)|"|«|»|„|“|”)+/)
+        .map(s => s.trim())
+        .filter(Boolean);
+}
+
+function satzWortKern(wort) {
+    return wort.replace(/^[^\p{L}\p{N}]+/u, '').replace(/[^\p{L}\p{N}.]+$/u, '');
+}
+
+function istGrossGeschrieben(kern) {
+    return /^[A-ZÄÖÜÀ-ÖØ-Þ]/.test(kern);
+}
+
+// Woerter, die als Bestandteil geografischer und institutioneller Eigennamen
+// gross geschrieben werden - mehrsprachig, weil DORA vier Sprachen fuehrt.
+const EIGENNAME_TEILE = new Set([
+    'canton', 'kanton', 'cantone', 'national', 'nationale', 'nazionale',
+    'park', 'parc', 'parco', 'reserve', 'réserve', 'riserva', 'reservat',
+    'mountains', 'mountain', 'berge', 'monti', 'monte', 'montagne', 'montagnes',
+    'lake', 'see', 'lac', 'lago', 'river', 'fluss', 'rivière', 'fiume',
+    'valley', 'tal', 'vallée', 'vallee', 'valle', 'vallata', 'forest', 'wald',
+    'forêt', 'foresta', 'university', 'universität', 'université', 'università',
+    'institute', 'institut', 'istituto', 'station', 'sottostazione', 'stazione',
+    'island', 'islands', 'insel', 'île', 'isola', 'sea', 'meer', 'mer', 'mare',
+    'nord', 'süd', 'sud', 'ost', 'est', 'west', 'ovest', 'north', 'south',
+    'eastern', 'western', 'northern', 'southern', 'central', 'zentral', 'centrale',
+    'basin', 'becken', 'bassin', 'bacino', 'plateau', 'massif', 'massiv'
+]);
+
+// Woerter, ueber die nichts auszusagen ist: Abkuerzungen, Formeln, Zahlen,
+// Eigennamen aus der Geo-Liste, Binnenmajuskeln.
+function satzWortUebergehen(kern) {
+    if (!kern || kern.length < 2) return true;
+    if (/\d/.test(kern)) return true;                       // Sentinel-2, 1935
+    if (kern === kern.toUpperCase()) return true;           // Akronyme
+    if (/[a-zäöü][A-ZÄÖÜ]/.test(kern)) return true;         // McDonald, pH, TiO2
+    if (ROEMISCH_RE.test(kern)) return true;
+    if (ABKUERZUNG_RE.test(kern)) return true;
+    if (typeof GEO_NACH_KLEIN !== 'undefined' && GEO_NACH_KLEIN.has(kern.toLowerCase())) return true;
+    if (EIGENNAME_TEILE.has(kern.toLowerCase())) return true;
+    // Taxonomische Raenge sind gross geschrieben: Tingidae, Poaceae, Rosales
+    if (/(?:idae|aceae|ales|inae|eae|opsida|phyta|mycota|viridae|bacteria|archaea)$/i.test(kern)) return true;
+    return false;
+}
+
+function pruefeSatzschreibung(rohtext, optionen) {
+    const opt = optionen || {};
+    const text = satzTextBereinigen(rohtext);
+    const leer = { ok: true, sprache: '', art: null, woerter: [], meldung: '' };
+    if (!text) return leer;
+
+    const alleWoerter = text.split(' ').filter(Boolean);
+    if (alleWoerter.length < 2) return leer;
+
+    // 1. Durchgehende Grossschreibung - gilt fuer jedes Feld, auch Eigennamen
+    const buchstaben = text.replace(/[^\p{L}]/gu, '');
+    const grossAnteil = buchstaben ? (buchstaben.replace(/[^A-ZÄÖÜÀ-ÖØ-Þ]/g, '').length / buchstaben.length) : 0;
+    if (alleWoerter.length >= 3 && grossAnteil > 0.9) {
+        return {
+            ok: false, sprache: '', art: 'grossbuchstaben', woerter: [],
+            meldung: 'steht ganz in Grossbuchstaben (bitte Sentence case verwenden).'
+        };
+    }
+
+    // Eigennamen-Felder (Journaltitel) werden nicht weiter geprueft
+    if (opt.eigenname) return { ok: true, sprache: '', art: null, woerter: [], meldung: '' };
+
+    // 2. Fehlender Grossbuchstabe am Anfang
+    if (!/[A-ZÄÖÜÀ-ÖØ-Þ]/.test(text) && alleWoerter.length >= 3) {
+        return {
+            ok: false, sprache: '', art: 'kleinanfang', woerter: [],
+            meldung: 'beginnt klein - der erste Buchstabe gehört gross.'
+        };
+    }
+
+    const erkannt = satzSpracheErkennen(text);
+    const sprache = erkannt.sprache;
+    const funktionswoerter = FUNKTIONSWOERTER[sprache] || FUNKTIONSWOERTER.en;
+
+    const verdaechtig = [];   // gross geschriebene Funktionswoerter
+    let inFrage = 0;          // bewertbare Woerter (fuer die Quote)
+    let grossGeschrieben = 0;
+
+    satzSegmente(text).forEach(segment => {
+        const woerter = segment.split(' ').filter(Boolean);
+
+        woerter.forEach((wort, index) => {
+            if (index === 0) return;             // Segmentanfang darf gross sein
+            const kern = satzWortKern(wort);
+            if (satzWortUebergehen(kern)) return;
+
+            const gross = istGrossGeschrieben(kern);
+            const istFunktionswort = funktionswoerter.indexOf(kern.toLowerCase()) !== -1;
+
+            if (gross && istFunktionswort) {
+                // "Le Havre", "Die Grüne Reihe", "The Hague": folgt ein weiteres
+                // grosses Wort, ist es eher ein Eigenname als Title Case.
+                const naechster = satzWortKern(woerter[index + 1] || '');
+                const naechsterGross = naechster && istGrossGeschrieben(naechster)
+                    && funktionswoerter.indexOf(naechster.toLowerCase()) === -1;
+                const istArtikel = ARTIKEL.has(kern.toLowerCase());
+                if (!(istArtikel && naechsterGross)) verdaechtig.push(kern);
+                return;
+            }
+
+            if (istFunktionswort) return;        // klein und Funktionswort: korrekt
+            inFrage += 1;
+            if (gross) grossGeschrieben += 1;
+        });
+    });
+
+    if (verdaechtig.length) {
+        const liste = Array.from(new Set(verdaechtig)).slice(0, 4).map(w => '«' + w + '»').join(', ');
+        return {
+            ok: false, sprache: sprache, art: 'funktionswort', woerter: verdaechtig,
+            meldung: `enthält gross geschriebene Funktionswörter (${liste}) – bitte Sentence case verwenden.`
+        };
+    }
+
+    // 3. Quote gross geschriebener Woerter - nur wo Substantive klein sind
+    // Nur wo Substantive klein geschrieben werden - und nur wenn die Sprache
+    // wirklich belegt ist, sonst wuerde jeder titelartige Nominalsatz ohne
+    // Funktionswoerter ("Bergsport Sommer. Technik, Taktik") aufschlagen.
+    if (KLEINSCHREIBENDE_SPRACHEN.indexOf(sprache) !== -1
+        && erkannt.belege >= 2 && !opt.nurFunktionswoerter) {
+        const quote = inFrage ? grossGeschrieben / inFrage : 0;
+        if (grossGeschrieben >= 3 && inFrage >= 4 && quote >= 0.6) {
+            return {
+                ok: false, sprache: sprache, art: 'titlecase', woerter: [],
+                meldung: `scheint Title Case zu sein (${grossGeschrieben} von ${inFrage} Wörtern gross) – bitte Sentence case verwenden.`
+            };
+        }
+    }
+
+    return { ok: true, sprache: sprache, art: null, woerter: [], meldung: '' };
+}
+
+// Traegt das Feld einen Journalnamen? Entscheidend ist die Beschriftung im
+// Formular - dasselbe Eingabefeld heisst bei Aufsaetzen "Journal Title" und
+// bei Tagungsbaenden "Title of the Conference Proceedings".
+function feldIstJournalname(el) {
+    if (!el) return false;
+
+    let beschriftung = '';
+    if (el.id) {
+        const label = document.querySelector('label[for="' + el.id + '"]');
+        if (label) beschriftung = label.innerText || label.textContent || '';
+    }
+    if (!beschriftung) {
+        const huelle = el.closest('.form-item') || el.parentElement;
+        const label = huelle ? huelle.querySelector('label') : null;
+        if (label) beschriftung = label.innerText || label.textContent || '';
+    }
+
+    const text = beschriftung.toLowerCase();
+    if (/proceeding|conference|book/.test(text)) return false;
+    return /journal|periodical|zeitschrift/.test(text);
+}
+
+function checkSentenceCase(el, label, errors, optionen) {
     if (!el) return;
 
     let val = el.value.trim();
@@ -3459,55 +3738,16 @@ function checkSentenceCase(el, label, errors) {
         if (cke) {
             const iframe = cke.querySelector('iframe');
             if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
-                const editorText = iframe.contentDocument.body.innerText.trim();
+                const editorText = iframe.contentDocument.body.innerHTML.trim();
                 if (editorText) val = editorText;
             }
         }
     }
 
-    if (val) {
-        const words = val.split(/\s+/);
-        if (words.length > 1) {
-            // Enhanced Stop Words (English + German)
-            const stopWords = [
-                'And', 'Or', 'But', 'The', 'A', 'An', 'In', 'On', 'Of', 'For', 'To', 'At', 'By', 'With', // EN
-                'Und', 'Oder', 'Der', 'Die', 'Das', 'Ein', 'Eine', 'Auf', 'Aus', 'Von', 'Zu', 'Mit', 'Für', 'Im', 'Am' // DE (Capitalized = potential error)
-            ];
-
-            // Check middle words (exclude first)
-            const middleWords = words.slice(1);
-
-            // 0. Detect German Context
-            // Look for special chars (ä, ö, ü, ß) OR common lowercase German particles
-            const hasGermanChars = /[äöüßÄÖÜ]/.test(val);
-            const germanParticles = ['und', 'oder', 'der', 'die', 'das', 'auf', 'aus', 'von', 'zu', 'mit', 'für', 'im', 'am'];
-            const hasGermanParticles = middleWords.some(w => germanParticles.includes(w.toLowerCase().replace(/[^\w]/g, '')));
-
-            const isGerman = hasGermanChars || hasGermanParticles;
-
-            // 1. Check for capitalized stop words (strong indicator of Title Case)
-            const hasCapStopWord = middleWords.some(w => {
-                const cleanW = w.replace(/[^\wäöüß]/g, ''); // remove punctuation
-                return stopWords.includes(cleanW);
-            });
-
-            // 2. Check ratio of capitalized words (excluding ALL CAPS acronyms)
-            // SKIPPED if isGerman is true (because German Nouns are always capitalized)
-            const mixedCaseCapWords = middleWords.filter(w => /^[A-ZÄÖÜ][a-zäöüß]+/.test(w));
-            const ratio = mixedCaseCapWords.length / middleWords.length;
-
-            if (hasCapStopWord) {
-                markError(el, true, `${label} enthält grossgeschriebene Stoppwörter (bitte Sentence case verwenden).`);
-                errors.push(`<b>${label}</b>: Enthält grossgeschriebene Stoppwörter (Sentence case verwenden).`);
-            } else if (!isGerman && mixedCaseCapWords.length > 1 && ratio > 0.6) {
-                markError(el, true, `${label} scheint Title Case zu sein (bitte Sentence case verwenden).`);
-                errors.push(`<b>${label}</b>: Scheint Title Case zu sein (Sentence case verwenden).`);
-            } else {
-                markError(el, false);
-            }
-        } else {
-            markError(el, false);
-        }
+    const befund = pruefeSatzschreibung(val, optionen || {});
+    if (!befund.ok) {
+        markError(el, true, label + ' ' + befund.meldung);
+        errors.push('<b>' + label + '</b>: ' + befund.meldung);
     } else {
         markError(el, false);
     }
