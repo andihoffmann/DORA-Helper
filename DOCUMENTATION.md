@@ -100,6 +100,18 @@ When an edit page is opened in DORA, the assistant automatically scans for a DOI
     (`.dora-handbuch-kasten-blitz`), damit sofort klar ist, wohin es ging.
     Steht das Feld gerade nicht im Formular, klappen die Regeln als Rückfall
     weiterhin im Panel auf.
+    Zugeklappte Fieldsets und nicht gewählte Reiter über dem Feld werden
+    vorher geöffnet (`macheFeldSichtbar`) – sonst springt der Browser zu
+    etwas Unsichtbarem und es sieht aus, als tue der Verweis nichts. Der
+    Aufstieg endet **am Formular**: ein Walk bis zum `body` hatte früher den
+    Seitenrahmen mitaufgedeckt.
+*   **Eine stolpernde Regel legt die Prüfung nicht still**: In `validateForm`
+    läuft jede Regelgruppe in ihrem eigenen `try/catch` (Helfer `regel()`),
+    und `handbuchSymbolAlarm` ist in `markError` abgeschirmt – es ist reine
+    Dekoration. Vorher hätte ein Fehler in einer Regel alle folgenden Felder
+    ungeprüft gelassen und ein veraltetes Fehlerpanel stehen lassen, weil
+    `renderErrorSummary` am Ende steht. Der Abbruch landet jetzt als
+    `console.error` mit Regelnamen in der Konsole.
 *   **📖 Symbol leuchtet bei Beanstandung**: Beanstandet die Prüfung ein Feld,
     bekommt dessen 📖 einen roten Schein (zwei gestapelte `drop-shadow`,
     kurzes Pulsieren) und im Tooltip die Meldung. Kein Abzeichen, kein

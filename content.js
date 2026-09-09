@@ -1021,6 +1021,7 @@ function oeffneHandbuchAmFeld(feld, daten, mitSprung) {
     }
 
     if (mitSprung) {
+        macheFeldSichtbar(huelle);
         if (typeof huelle.scrollIntoView === 'function') {
             try {
                 huelle.scrollIntoView({ behavior: 'instant', block: 'center' });
@@ -1037,6 +1038,38 @@ function oeffneHandbuchAmFeld(feld, daten, mitSprung) {
     }
 
     return true;
+}
+
+// Zugeklappte Fieldsets und nicht gewaehlte Reiter oberhalb des Feldes
+// oeffnen. Ohne das springt der Browser zu etwas Unsichtbarem und der Sprung
+// aus der Fehlerliste wirkt wie ein Aussetzer.
+//
+// Der Aufstieg endet bewusst am Formular: ein Walk bis zum body hat frueher
+// den Seitenrahmen mit aufgedeckt (Menue, versteckte Kopfzeilen). Und
+// display:none wird nur an den Huellen aufgehoben, die Drupal selbst zum
+// Zuklappen benutzt - nirgends sonst.
+function macheFeldSichtbar(el) {
+    const grenze = el.closest('form') || document.body;
+    let knoten = el;
+
+    while (knoten && knoten !== grenze) {
+        if (knoten.classList && knoten.classList.contains('collapsed')) {
+            // Drupal 7: fieldset.collapsible.collapsed versteckt .fieldset-wrapper
+            knoten.classList.remove('collapsed');
+            const inhalt = knoten.querySelector(':scope > .fieldset-wrapper');
+            if (inhalt && inhalt.style.display === 'none') inhalt.style.removeProperty('display');
+        }
+
+        // Islandora-Fieldpanels / vertikale Reiter: den zugehoerigen Reiter waehlen
+        if (knoten.id && knoten.classList
+            && (knoten.classList.contains('vertical-tabs-pane')
+                || knoten.classList.contains('horizontal-tabs-pane'))) {
+            const reiter = document.querySelector('a[href="#' + knoten.id + '"]');
+            if (reiter) { try { reiter.click(); } catch (e) { /* egal */ } }
+        }
+
+        knoten = knoten.parentElement;
+    }
 }
 
 function schliesseHandbuchAmFeld(feld) {
@@ -4079,20 +4112,29 @@ function validateForm() {
     // ("Physical Review B"). Nur bei Proceedings/Buechern gilt Sentence case.
     const hostIstJournal = feldIstJournalname(procTitleEl);
 
-    checkSentenceCase(titleEl, 'Article Title', errors);
-    checkSentenceCase(confNameEl, 'Conference Name', errors);
-    checkSentenceCase(procTitleEl, hostIstJournal ? 'Journal Title' : 'Proceedings Title', errors,
-        { eigenname: hostIstJournal });
+    // Jede Regelgruppe fuer sich: stolpert eine, werden die uebrigen Felder
+    // trotzdem geprueft und die Zusammenfassung stimmt weiterhin.
+    const regel = (name, fn) => {
+        try { fn(); }
+        catch (e) { console.error('DORA Helper: Regel «' + name + '» abgebrochen.', e); }
+    };
+
+    regel('Article Title', () => checkSentenceCase(titleEl, 'Article Title', errors));
+    regel('Conference Name', () => checkSentenceCase(confNameEl, 'Conference Name', errors));
+    regel('Host Title', () => checkSentenceCase(procTitleEl,
+        hostIstJournal ? 'Journal Title' : 'Proceedings Title', errors,
+        { eigenname: hostIstJournal }));
     // Serientitel sind haeufig Reihennamen ("WSL Berichte", "Proceedings of
     // SPIE") - dort zaehlt nur der harte Hinweis auf Title Case.
-    checkSentenceCase(seriesTitleEl, 'Series Title', errors, { nurFunktionswoerter: true });
-    checkSentenceCase(bookTitleEl, 'Book Title', errors);
+    regel('Series Title', () => checkSentenceCase(seriesTitleEl, 'Series Title', errors,
+        { nurFunktionswoerter: true }));
+    regel('Book Title', () => checkSentenceCase(bookTitleEl, 'Book Title', errors));
 
     // Rule 4: Author Table Validation (including PSI Affiliation check)
     const pubYear = pubYearEl ? pubYearEl.value.trim() : null;
-    validateAuthorRows(errors, pubYear);
+    regel('Autorenzeilen', () => validateAuthorRows(errors, pubYear));
 
-    // Render Summary
+    // Render Summary - immer, damit nie ein veralteter Stand stehen bleibt
     renderErrorSummary(errors);
 }
 
@@ -4617,7 +4659,13 @@ function markError(el, isError, msg = '', isWarning = false) {
 
     // Das Handbuch-Symbol an der Beschriftung mitziehen: bei einer
     // Beanstandung leuchtet es auf, weil dann meist genau dort die Regel steht.
-    handbuchSymbolAlarm(el, isError, msg);
+    // Nur Schmuck - ein Fehler darin darf die Pruefung der uebrigen Felder
+    // nicht abbrechen, denn markError laeuft mitten in validateForm.
+    try {
+        handbuchSymbolAlarm(el, isError, msg);
+    } catch (e) {
+        console.warn('DORA Helper: Handbuch-Symbol konnte nicht mitgezogen werden.', e);
+    }
 }
 
 // Das 📖 an der Beschriftung des Feldes hervorheben (oder beruhigen).
