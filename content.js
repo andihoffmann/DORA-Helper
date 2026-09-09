@@ -686,7 +686,9 @@ function fillFormFromPdfData(data) {
 
                     const inputField = createEl('input', 'dora-keyword-input');
                     inputField.type = 'text';
-                    inputField.value = cleanKw;
+                    inputField.value = formatKeyword(cleanKw);
+                    // Hausschreibweise aus DORA nachziehen, sobald sie da ist
+                    keywordSchreibweiseNachziehen(inputField, cleanKw);
 
                     const handle = createEl('span', 'dora-drag-handle', '☰');
 
@@ -1547,6 +1549,9 @@ function loadKeywordsIntoManager(topicContainer) {
             inputField.type = 'text';
             inputField.value = formattedValue;
 
+            // Hausschreibweise aus DORA nachziehen, sobald sie vorliegt
+            keywordSchreibweiseNachziehen(inputField, input.value);
+
             // Handle
             const handle = createEl('span', 'dora-drag-handle', '☰');
             handle.title = "Ziehen zum Sortieren";
@@ -2057,7 +2062,8 @@ async function processBulkKeywords(text, separatorMode) {
         const addBtn = container.querySelector('input[type="image"][src*="add.png"]');
 
         if (tagInput && addBtn) {
-            tagInput.value = kw;
+            // Schon beim Einfügen in DORAs Hausschreibweise bringen
+            tagInput.value = await keywordSchreibweiseVersprochen(kw);
             tagInput.dispatchEvent(new Event('input', { bubbles: true }));
             tagInput.dispatchEvent(new Event('change', { bubbles: true }));
 
@@ -2329,12 +2335,375 @@ function loadExceptionsFromStorage(callback) {
     });
 }
 
-function formatKeyword(text) {
-    if (!text) return "";
-    let out = text.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').toLowerCase().trim();
-    cachedExceptions.forEach(ex => { out = out.replace(ex.regex, ex.replacement); });
-    return out;
+// --- SCHREIBWEISE VON SCHLAGWORTEN ----------------------------------------
+// Frueher entschied allein eine feste Ausnahmeliste, was gross geschrieben
+// wird - neue Schlagworte fielen durch und wurden klein geschrieben. Jetzt
+// greifen drei Stufen:
+//   1. die manuelle Ausnahmeliste (hat Vorrang, fuer echte Sonderfaelle)
+//   2. die Hausschreibweise aus DORA selbst (Solr: welche Variante desselben
+//      Begriffs im Bestand ueberwiegt) - das waechst mit dem Bestand mit
+//   3. Regeln: chemische Formeln, Abkuerzungen, Laendernamen
+// ---------------------------------------------------------------------------
+
+// Alle Elementsymbole - Grundlage fuer das Erkennen chemischer Formeln
+const ELEMENTSYMBOLE = ['H', 'He', 'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne',
+    'Na', 'Mg', 'Al', 'Si', 'P', 'S', 'Cl', 'Ar', 'K', 'Ca', 'Sc', 'Ti', 'V',
+    'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn', 'Ga', 'Ge', 'As', 'Se', 'Br',
+    'Kr', 'Rb', 'Sr', 'Y', 'Zr', 'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Ag',
+    'Cd', 'In', 'Sn', 'Sb', 'Te', 'I', 'Xe', 'Cs', 'Ba', 'La', 'Ce', 'Pr',
+    'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho', 'Er', 'Tm', 'Yb', 'Lu',
+    'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb', 'Bi',
+    'Po', 'At', 'Rn', 'Fr', 'Ra', 'Ac', 'Th', 'Pa', 'U', 'Np', 'Pu', 'Am',
+    'Cm', 'Bk', 'Cf', 'Es', 'Fm', 'Md', 'No', 'Lr', 'Rf', 'Db', 'Sg', 'Bh',
+    'Hs', 'Mt', 'Ds', 'Rg', 'Cn', 'Nh', 'Fl', 'Mc', 'Lv', 'Ts', 'Og'];
+// Fuer das Zerlegen von Formeln zaehlen nur Elemente, die in Umwelt- und
+// Materialforschung wirklich vorkommen. Sonst waere "nh4" mehrdeutig, weil
+// es auch als Nihonium (Nh) gelesen werden koennte.
+const FORMEL_ELEMENTE = ['H', 'He', 'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne',
+    'Na', 'Mg', 'Al', 'Si', 'P', 'S', 'Cl', 'Ar', 'K', 'Ca', 'Sc', 'Ti', 'V',
+    'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn', 'Ga', 'Ge', 'As', 'Se', 'Br',
+    'Kr', 'Rb', 'Sr', 'Y', 'Zr', 'Nb', 'Mo', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd',
+    'In', 'Sn', 'Sb', 'Te', 'I', 'Xe', 'Cs', 'Ba', 'La', 'Ce', 'Nd', 'Sm',
+    'Eu', 'Gd', 'Tb', 'Dy', 'Er', 'Yb', 'Lu', 'Hf', 'Ta', 'W', 'Re', 'Os',
+    'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb', 'Bi', 'Th', 'U'];
+const ELEMENT_NACH_KLEIN = new Map(FORMEL_ELEMENTE.map(e => [e.toLowerCase(), e]));
+
+// Laender- und Regionennamen (ISO 3166 plus gaengige Grossraeume). Anders als
+// die Ausnahmeliste ist das eine feststehende Groesse, die nicht mit jedem
+// neuen Schlagwort waechst.
+const GEO_NAMEN = ['Afghanistan', 'Albania', 'Algeria', 'Andorra', 'Angola',
+    'Argentina', 'Armenia', 'Australia', 'Austria', 'Azerbaijan', 'Bahrain',
+    'Bangladesh', 'Belarus', 'Belgium', 'Belize', 'Benin', 'Bhutan', 'Bolivia',
+    'Bosnia and Herzegovina', 'Botswana', 'Brazil', 'Brunei', 'Bulgaria',
+    'Burkina Faso', 'Burundi', 'Cambodia', 'Cameroon', 'Canada', 'Chad',
+    'Chile', 'China', 'Colombia', 'Congo', 'Costa Rica', 'Croatia', 'Cuba',
+    'Cyprus', 'Czech Republic', 'Czechia', 'Denmark', 'Djibouti',
+    'Dominican Republic', 'Ecuador', 'Egypt', 'El Salvador', 'Eritrea',
+    'Estonia', 'Eswatini', 'Ethiopia', 'Fiji', 'Finland', 'France', 'Gabon',
+    'Gambia', 'Georgia', 'Germany', 'Ghana', 'Greece', 'Greenland',
+    'Guatemala', 'Guinea', 'Guyana', 'Haiti', 'Honduras', 'Hungary',
+    'Iceland', 'India', 'Indonesia', 'Iran', 'Iraq', 'Ireland', 'Israel',
+    'Italy', 'Ivory Coast', 'Jamaica', 'Japan', 'Jordan', 'Kazakhstan',
+    'Kenya', 'Kosovo', 'Kuwait', 'Kyrgyzstan', 'Laos', 'Latvia', 'Lebanon',
+    'Lesotho', 'Liberia', 'Libya', 'Liechtenstein', 'Lithuania', 'Luxembourg',
+    'Madagascar', 'Malawi', 'Malaysia', 'Maldives', 'Mali', 'Malta',
+    'Mauritania', 'Mauritius', 'Mexico', 'Moldova', 'Monaco', 'Mongolia',
+    'Montenegro', 'Morocco', 'Mozambique', 'Myanmar', 'Namibia', 'Nepal',
+    'Netherlands', 'New Zealand', 'Nicaragua', 'Niger', 'Nigeria',
+    'North Macedonia', 'Norway', 'Oman', 'Pakistan', 'Palestine', 'Panama',
+    'Papua New Guinea', 'Paraguay', 'Peru', 'Philippines', 'Poland',
+    'Portugal', 'Qatar', 'Romania', 'Russia', 'Rwanda', 'Saudi Arabia',
+    'Senegal', 'Serbia', 'Sierra Leone', 'Singapore', 'Slovakia', 'Slovenia',
+    'Somalia', 'South Africa', 'South Korea', 'South Sudan', 'Spain',
+    'Sri Lanka', 'Sudan', 'Suriname', 'Sweden', 'Switzerland', 'Syria',
+    'Taiwan', 'Tajikistan', 'Tanzania', 'Thailand', 'Togo', 'Tunisia',
+    'Turkey', 'Turkmenistan', 'Uganda', 'Ukraine', 'United Arab Emirates',
+    'United Kingdom', 'United States', 'Uruguay', 'Uzbekistan', 'Venezuela',
+    'Vietnam', 'Yemen', 'Zambia', 'Zimbabwe',
+    // Grossraeume, Meere und Gebirge
+    'Africa', 'Antarctica', 'Arctic', 'Asia', 'Atlantic', 'Alps', 'Amazon',
+    'Baltic', 'Caribbean', 'Europe', 'Himalaya', 'Mediterranean',
+    'North America', 'Pacific', 'Sahara', 'Scandinavia', 'South America',
+    'Southeast Asia', 'Siberia', 'Tibet',
+    // Schweizer Bezuege, die haeufig als Schlagwort auftauchen
+    'Basel', 'Bern', 'Geneva', 'Graubünden', 'Jura', 'Lausanne', 'Lucerne',
+    'Ticino', 'Valais', 'Zurich'];
+const GEO_NACH_KLEIN = new Map(GEO_NAMEN.map(n => [n.toLowerCase(), n]));
+
+const VOKAL_RE = /[aeiouyäöüàáâãéèêíìóôõúùü]/i;
+
+// Alle moeglichen Zerlegungen eines Buchstabenlaufs in Elementsymbole.
+// Nur wenn alle Zerlegungen dieselbe Schreibweise ergeben, ist die Formel
+// eindeutig - "co2" waere sonst Co2 (Cobalt) oder CO2 (Kohlendioxid).
+function elementZerlegungen(lauf) {
+    if (!lauf) return [''];
+    const ergebnisse = [];
+
+    [2, 1].forEach(laenge => {
+        if (lauf.length < laenge) return;
+        const symbol = ELEMENT_NACH_KLEIN.get(lauf.slice(0, laenge).toLowerCase());
+        if (!symbol) return;
+        elementZerlegungen(lauf.slice(laenge)).forEach(rest => {
+            if (rest !== null) ergebnisse.push(symbol + rest);
+        });
+    });
+
+    return ergebnisse;
 }
+
+// Chemische Formel in kanonische Schreibweise bringen - nur bei Ziffern oder
+// Ladungsangaben, sonst waere jedes "as" plötzlich Arsen.
+function chemischeFormel(token) {
+    if (!token || !/\d/.test(token)) return '';
+    if (!/^[A-Za-z0-9().·+\-\u2212]+$/.test(token)) return '';
+    if (!/[A-Za-z]/.test(token)) return '';
+
+    let ergebnis = '';
+    let position = 0;
+    while (position < token.length) {
+        const lauf = (/^[A-Za-z]+/.exec(token.slice(position)) || [''])[0];
+        if (!lauf) {
+            ergebnis += token[position];
+            position += 1;
+            continue;
+        }
+
+        const varianten = new Set(elementZerlegungen(lauf));
+        if (varianten.size !== 1) return ''; // mehrdeutig - DORA entscheidet
+        ergebnis += Array.from(varianten)[0];
+        position += lauf.length;
+    }
+    return ergebnis;
+}
+
+// Schreibweise, die der Nutzer offensichtlich absichtlich gewaehlt hat:
+// Binnenmajuskel (pH, TiO2, mRNA) oder eine Abkuerzung in Grossbuchstaben.
+function istGewollteSchreibweise(token) {
+    const kern = token.replace(/[^A-Za-zÄÖÜäöü0-9]/g, '');
+    if (kern.length < 2) return false;
+    if (/[a-zäöü][A-ZÄÖÜ]/.test(kern)) return true;              // pH, TiO2, mRNA
+    if (/^[A-ZÄÖÜ]{2,8}[0-9]*$/.test(kern)) return true;         // DNA, HPLC, ERA5
+    return false;
+}
+
+// Schreit die ganze Eingabe in Grossbuchstaben (typisch fuer Scopus-Exporte),
+// zaehlt das nicht als gewollte Schreibweise.
+function istGeschrien(text) {
+    if (text !== text.toUpperCase()) return false;
+    return text.split(/[\s\-\/,]+/).some(w => w.length > 4 && VOKAL_RE.test(w));
+}
+
+function tokenSchreibweise(token, geschrien) {
+    // Satzzeichen am Rand unangetastet lassen
+    const rand = /^([^A-Za-z0-9ÄÖÜäöü]*)(.*?)([^A-Za-z0-9ÄÖÜäöü]*)$/.exec(token);
+    const vorn = rand[1], kern = rand[2], hinten = rand[3];
+    if (!kern) return token;
+
+    if (!geschrien && istGewollteSchreibweise(kern)) return vorn + kern + hinten;
+
+    const geo = GEO_NACH_KLEIN.get(kern.toLowerCase());
+    if (geo) return vorn + geo + hinten;
+
+    const formel = chemischeFormel(kern);
+    if (formel) return vorn + formel + hinten;
+
+    // Abkuerzung ohne Vokal - auch mit Ziffern dahinter (nmr, hplc, pm10)
+    const buchstaben = kern.replace(/[^A-Za-zÄÖÜäöü]/g, '');
+    if (buchstaben.length >= 2 && buchstaben.length <= 6 && !VOKAL_RE.test(buchstaben)) {
+        return vorn + kern.toUpperCase() + hinten;
+    }
+
+    return vorn + kern.toLowerCase() + hinten;
+}
+
+// Regelbasierte Schreibweise - laeuft sofort, ohne Netz.
+function keywordRegeln(text) {
+    const sauber = (text || '').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!sauber) return '';
+
+    const geschrien = istGeschrien(sauber);
+
+    // Mehrwortige Namen zuerst: "united kingdom", "south africa",
+    // "north america" wuerden Wort fuer Wort auseinanderfallen.
+    const alsGanzes = GEO_NACH_KLEIN.get(sauber.toLowerCase());
+    if (alsGanzes) return alsGanzes;
+
+    return sauber.split(' ').map(wort =>
+        // Bindestrich-Verbindungen Teil fuer Teil (x-ray, SARS-CoV-2)
+        wort.split(/(-|\/)/).map(teil =>
+            (teil === '-' || teil === '/') ? teil : tokenSchreibweise(teil, geschrien)
+        ).join('')
+    ).join(' ');
+}
+
+// --- Hausschreibweise aus DORA (Solr) --------------------------------------
+const KEYWORD_CACHE_KEY = 'doraKeywordSchreibweisen';
+const KEYWORD_CACHE_TTL = 30 * 24 * 60 * 60 * 1000;      // gefundene Formen
+const KEYWORD_CACHE_TTL_LEER = 3 * 24 * 60 * 60 * 1000;  // Fehlanzeigen
+const KEYWORD_CACHE_MAX = 800;
+const KEYWORD_MIN_BELEGE = 3;      // darunter ist die Mehrheit Zufall
+const KEYWORD_MIN_ANTEIL = 0.6;    // klare Mehrheit verlangt
+const keywordSpeicher = new Map(); // Zwischenspeicher im Tab
+
+function keywordCacheLesen(begriff, callback) {
+    const schluessel = begriff.toLowerCase();
+    if (keywordSpeicher.has(schluessel)) { callback(keywordSpeicher.get(schluessel)); return; }
+    try {
+        chrome.storage.local.get({ [KEYWORD_CACHE_KEY]: {} }, (gespeichert) => {
+            const eintrag = (gespeichert[KEYWORD_CACHE_KEY] || {})[schluessel];
+            const frist = eintrag && eintrag.form ? KEYWORD_CACHE_TTL : KEYWORD_CACHE_TTL_LEER;
+            if (eintrag && eintrag.zeit && (Date.now() - eintrag.zeit) < frist) {
+                keywordSpeicher.set(schluessel, eintrag);
+                callback(eintrag);
+            } else {
+                callback(null);
+            }
+        });
+    } catch (e) {
+        callback(null);
+    }
+}
+
+function keywordCacheSchreiben(begriff, eintrag) {
+    const schluessel = begriff.toLowerCase();
+    keywordSpeicher.set(schluessel, eintrag);
+    try {
+        chrome.storage.local.get({ [KEYWORD_CACHE_KEY]: {} }, (gespeichert) => {
+            const alle = gespeichert[KEYWORD_CACHE_KEY] || {};
+            alle[schluessel] = eintrag;
+            const behalten = Object.keys(alle)
+                .sort((a, b) => (alle[b].zeit || 0) - (alle[a].zeit || 0))
+                .slice(0, KEYWORD_CACHE_MAX);
+            const neu = {};
+            behalten.forEach(k => { neu[k] = alle[k]; });
+            chrome.storage.local.set({ [KEYWORD_CACHE_KEY]: neu });
+        });
+    } catch (e) { /* ohne Ablage genuegt der Tab-Speicher */ }
+}
+
+// Wie schreibt DORA diesen Begriff? Gesucht wird im analysierten Feld
+// (kleingeschrieben, tokenisiert), gezaehlt werden die Original-Schreibweisen
+// der Treffer. Das alte Solr kennt weder facet.contains noch ignoreCase.
+function keywordSchreibweiseAusDora(begriff, callback) {
+    const gesucht = (begriff || '').trim();
+    if (gesucht.length < 2 || !/[A-Za-zÄÖÜäöü]/.test(gesucht)) { callback(null); return; }
+
+    keywordCacheLesen(gesucht, (gespeichert) => {
+        if (gespeichert) { callback(gespeichert.form ? gespeichert : null); return; }
+
+        const phrase = gesucht.replace(/["\\]/g, ' ');
+        const url = 'http://lib-dora-prod1.emp-eaw.ch:8080/solr/collection1/select'
+            + '?q=' + encodeURIComponent('mods_subject_topic_mt:"' + phrase + '"')
+            + '&rows=120&wt=json&fl=mods_subject_topic_ms';
+
+        chrome.runtime.sendMessage({ action: 'searchAutocomplete', url: url }, (antwort) => {
+            if (!antwort || !antwort.success || !antwort.data || !antwort.data.response) {
+                callback(null);
+                return;
+            }
+
+            const zaehler = new Map();
+            (antwort.data.response.docs || []).forEach(doc => {
+                (doc.mods_subject_topic_ms || []).forEach(wert => {
+                    if (String(wert).toLowerCase().trim() !== gesucht.toLowerCase()) return;
+                    zaehler.set(wert, (zaehler.get(wert) || 0) + 1);
+                });
+            });
+
+            const sortiert = Array.from(zaehler.entries()).sort((a, b) => b[1] - a[1]);
+            const gesamt = sortiert.reduce((summe, e) => summe + e[1], 0);
+            const bester = sortiert[0];
+
+            const belastbar = !!bester
+                && bester[1] >= KEYWORD_MIN_BELEGE
+                && (bester[1] / gesamt) >= KEYWORD_MIN_ANTEIL;
+
+            const eintrag = {
+                zeit: Date.now(),
+                form: belastbar ? bester[0] : '',
+                belege: belastbar ? bester[1] : 0,
+                gesamt: gesamt
+            };
+            keywordCacheSchreiben(gesucht, eintrag);
+            callback(belastbar ? eintrag : null);
+        });
+    });
+}
+
+// Regeln jetzt, Hausschreibweise sobald sie da ist. Der Rueckruf bekommt
+// { text, quelle, belege } - quelle ist 'liste', 'dora' oder 'regel'.
+function formatKeywordSmart(text, callback) {
+    const ausListe = keywordAusAusnahmeliste(text);
+    if (ausListe) {
+        if (callback) callback({ text: ausListe, quelle: 'liste' });
+        return ausListe;
+    }
+
+    const nachRegeln = keywordRegeln(text);
+    if (!callback) return nachRegeln;
+
+    const roh = (text || '').replace(/\s+/g, ' ').trim();
+    keywordSchreibweiseAusDora(roh, (befund) => {
+        if (befund && befund.form && befund.form !== nachRegeln) {
+            callback({ text: befund.form, quelle: 'dora', belege: befund.belege });
+        } else {
+            callback({ text: nachRegeln, quelle: befund ? 'dora' : 'regel', belege: befund ? befund.belege : 0 });
+        }
+    });
+    return nachRegeln;
+}
+
+// Manuelle Ausnahmeliste: gilt nur, wenn sie den ganzen Begriff trifft oder
+// einzelne Woerter darin ersetzt. Sie behaelt Vorrang vor allem anderen.
+function keywordAusAusnahmeliste(text) {
+    if (!cachedExceptions.length) return '';
+    const sauber = (text || '').replace(/\s+/g, ' ').trim();
+    if (!sauber) return '';
+
+    let out = sauber;
+    let getroffen = false;
+    cachedExceptions.forEach(ex => {
+        ex.regex.lastIndex = 0;
+        if (ex.regex.test(out)) {
+            ex.regex.lastIndex = 0;
+            out = out.replace(ex.regex, ex.replacement);
+            getroffen = true;
+        }
+    });
+    return getroffen ? out : '';
+}
+
+function formatKeyword(text) {
+    const ausListe = keywordAusAusnahmeliste(text);
+    if (ausListe) return ausListe;
+    return keywordRegeln(text);
+}
+// Dasselbe als Versprechen - fuer Abläufe, die ohnehin warten (Bulk-Einfügen).
+function keywordSchreibweiseVersprochen(text) {
+    return new Promise(erfuellen => {
+        let erledigt = false;
+        const antwort = (befund) => {
+            if (erledigt) return;
+            erledigt = true;
+            erfuellen((befund && befund.text) || formatKeyword(text));
+        };
+        formatKeywordSmart(text, antwort);
+        // Der Lookup darf das Einfügen nicht aufhalten
+        setTimeout(() => antwort(null), 2500);
+    });
+}
+
+// Schreibweise eines Eingabefelds an DORA ausrichten, sobald der Lookup
+// antwortet. Der Nutzer soll dabei nicht ueberfahren werden: hat er das Feld
+// schon selbst angefasst, bleibt seine Fassung stehen.
+function keywordSchreibweiseNachziehen(feld, rohwert) {
+    if (!feld || !rohwert) return;
+    const vorher = feld.value;
+
+    formatKeywordSmart(rohwert, (befund) => {
+        if (!befund || !befund.text) return;
+        if (feld.value !== vorher) return;          // inzwischen selbst bearbeitet
+        if (befund.text === feld.value) {
+            if (befund.quelle === 'dora') {
+                feld.title = `Schreibweise wie in DORA (${befund.belege} Belege)`;
+            }
+            return;
+        }
+
+        feld.value = befund.text;
+        feld.title = befund.quelle === 'dora'
+            ? `Schreibweise aus DORA übernommen (${befund.belege} Belege)`
+            : 'Schreibweise automatisch angepasst';
+
+        // Kurz aufblitzen, damit die Änderung nicht unbemerkt bleibt
+        const vorherigerGrund = feld.style.backgroundColor;
+        feld.style.backgroundColor = befund.quelle === 'dora' ? '#e6f7ff' : '#f0fdf4';
+        setTimeout(() => { feld.style.backgroundColor = vorherigerGrund; }, 1200);
+
+        feld.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+}
+
 
 // --- PUBLISHER PAGE SCANNER (Zotero-style) ---
 // PDF im mitgelieferten Betrachter oeffnen (eigenes Fenster, Marker fuer

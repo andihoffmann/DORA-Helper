@@ -220,8 +220,44 @@ Replaces the standard keyword input with a sophisticated management tool.
 
 *   **Edit & Sort**: Click to load keywords into a draggable list.
 *   **Drag & Drop**: Easily reorder keywords for the final record.
-*   **Auto-Formatting**: Corrects case based on a customizable exception list (e.g., `dna -> DNA`, `ph -> pH`).
 *   **Direct Sync**: Changes are instantly written back to the hidden DORA fields.
+
+#### Schreibweise: DORAs eigener Bestand statt fester Liste
+Früher entschied allein eine Ausnahmeliste, was gross geschrieben wird — neue
+Schlagworte fielen durch und landeten klein. Jetzt greifen drei Stufen, in
+dieser Reihenfolge:
+
+1.  **Manuelle Ausnahmeliste** (Optionen) — behält Vorrang, wird aber nur noch
+    für echte Sonderfälle gebraucht.
+2.  **Hausschreibweise aus DORA** (Solr): Gesucht wird im analysierten Feld
+    `mods_subject_topic_mt` (kleingeschrieben, tokenisiert), gezählt werden die
+    Original-Schreibweisen der Treffer in `mods_subject_topic_ms`. Die
+    Mehrheitsvariante gewinnt — verlangt werden mindestens **3 Belege** und
+    **60 % Anteil**, sonst gilt der Befund als Zufall. Ergebnis 30 Tage
+    zwischengespeichert (Fehlanzeigen 3 Tage), höchstens 800 Begriffe.
+    Das wächst mit dem Bestand mit und trifft auch, was keine Regel wüsste:
+    `lidar` → **LiDAR** (56 Belege), `edna` → **eDNA**, `qpcr` → **qPCR**.
+3.  **Regeln** für alles, was DORA noch nicht kennt:
+    *   **Chemische Formeln** über das Periodensystem: `nh4` → `NH4`,
+        `tio2` → `TiO2`, `al2o3` → `Al2O3`, `h2so4` → `H2SO4`. Nur mit Ziffer
+        im Token (sonst würde jedes „as" zu Arsen) und nur bei **eindeutiger**
+        Zerlegung — `co2` (C+O oder Co) und `sio2` (Si+O oder S+I+O) sind
+        mehrdeutig und bleiben dem Bestand überlassen, der sie kennt.
+    *   **Abkürzungen** ohne Vokal, auch mit Ziffern: `nmr` → `NMR`,
+        `hplc` → `HPLC`, `pm10` → `PM10`.
+    *   **Bereits gewollte Schreibweisen bleiben stehen** — Binnenmajuskeln
+        (`pH`, `mRNA`, `SARS-CoV-2`) und getippte Kürzel (`HPLC`, `ERA5`).
+        Das war der eigentliche Bruch: vorher wurde alles erst kleingeschrieben.
+    *   **Länder und Regionen** (ISO 3166 plus Grossräume), auch mehrwortig:
+        `united kingdom` → `United Kingdom`, `south africa` → `South Africa`.
+    *   Gebrüllte Exporte werden entschärft: `WATER QUALITY` → `water quality`.
+    *   Alles andere bleibt klein — DORAs Konvention für Schlagworte.
+
+Im Keyword-Manager erscheint die Regelform sofort, die DORA-Form zieht nach,
+sobald der Lookup antwortet; das Feld blitzt kurz auf und der Tooltip nennt die
+Herkunft samt Belegzahl. Wer selbst getippt hat, wird nicht überschrieben.
+Beim Bulk-Einfügen wird schon der eingetragene Wert normalisiert (mit 2,5 s
+Zeitfenster, damit der Lookup das Einfügen nicht aufhält).
 
 ---
 
@@ -341,7 +377,9 @@ Customization via the **Options** page:
     ausgeblendet. Die Analyse selbst ist unverändert vorhanden – die
     Schaltflächen werden nur verborgen und kommen mit dieser Option sofort
     zurück, ohne Neuladen.
-2.  **Keyword Exceptions**: Define your own formatting rules (`pattern -> replacement`).
+2.  **Keyword Exceptions**: Nur noch Sonderfälle (`pattern -> replacement`) –
+    die Schreibweise kommt jetzt aus DORAs Bestand und den Regeln (§6). Die
+    Liste behält Vorrang, wenn beides daneben liegt.
 3.  **PSI Affiliation Data**: Upload `psi_data.js` updates here.
 
 ---
