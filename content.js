@@ -889,6 +889,1026 @@ function pruefeSatzschreibung(rohtext, optionen) {
 // Formular - dasselbe Eingabefeld heisst bei Aufsaetzen "Journal Title" und
 // bei Tagungsbaenden "Title of the Conference Proceedings".
 
+// --- JOURNAL NEU ABFRAGEN --------------------------------------------------
+// Die Journalangaben (Abkuerzung, Publisher, ISSN, E-ISSN, PID) stammen aus
+// einem MADS-Objekt in der Sammlung journals: und werden ueber den Titel
+// gefunden. Aendert sich dort etwas - etwa weil ein Verlag uebernommen wurde -
+// bleibt der Datensatz auf dem alten Stand.
+//
+// Warum nicht per Solr nachschlagen: die Abfrage soll dieselbe sein wie im
+// Formular. Darum steuern wir die Autovervollständigung der Seite fern,
+// statt eine eigene zu bauen: derselbe Authority-Endpunkt, dieselbe Sitzung,
+// derselbe Code-Pfad - und was die Seite beim Auswaehlen in die Nachbarfelder
+// schreibt, schreibt sie genauso wie bei einer Eingabe von Hand.
+//
+// Die Feldnamen sind ueber alle Formularfassungen stabil, die IDs nicht: im
+// Ingest-Formular sind sie zufaellig ("form-fGroc...--00000000668c..."), im
+// Edit-Formular sprechend ("edit-host-titleinfo-title"). Darum ueber name.
+//
+// Alle Funktionen hier nehmen Dokument und Fenster entgegen, damit derselbe
+// Ablauf im eigenen Formular und in einem fremden iframe laeuft - die
+// Stapelpruefung der Batch-QC oeffnet jeden Datensatz in einem solchen.
+const JOURNAL_FELDER = [
+    { schluessel: 'title', name: 'host[titleInfo][title]', label: 'Journal Title' },
+    { schluessel: 'abbr', name: 'host[titleInfo][abbr_title]', label: 'Abkürzung' },
+    { schluessel: 'publisher', name: 'host[titleInfo][publisher]', label: 'Publisher' },
+    { schluessel: 'issn', name: 'host[titleInfo][issn]', label: 'ISSN' },
+    { schluessel: 'eissn', name: 'host[titleInfo][e-issn]', label: 'E-ISSN' },
+    { schluessel: 'pid', name: 'host[titleInfo][pid]', label: 'PID' }
+];
+
+function journalFelder(doc) {
+    const d = doc || document;
+    const gefunden = {};
+    JOURNAL_FELDER.forEach(f => {
+        const el = d.querySelector('input[name="' + f.name + '"]');
+        if (el) gefunden[f.schluessel] = el;
+    });
+    return gefunden;
+}
+
+function journalStand(felder) {
+    const stand = {};
+    Object.keys(felder).forEach(k => { stand[k] = felder[k].value; });
+    return stand;
+}
+
+// Titel vergleichbar machen: Gross-/Kleinschreibung, "&"/"and", Satzzeichen
+// und Mehrfachleerzeichen sollen keinen Unterschied machen.
+function journalTitelSchluessel(text) {
+    return String(text || '')
+        .toLowerCase()
+        .replace(/&/g, ' and ')
+        .replace(/[^a-z0-9äöüàâçéèêëîïôûùüÿñæœ]+/gi, ' ')
+        .trim()
+        .replace(/\s+/g, ' ');
+}
+
+// Die Autovervollständigung der Seite anstossen und auf ihre Vorschlagsliste
+// warten. Drupal haengt dazu <div id="autocomplete"> neben das Eingabefeld.
+function journalVorschlaegeHolen(input, fenster, zeitlimit) {
+    const f = fenster || window;
+    const doc = f.document;
+    const grenze = zeitlimit || 9000;
+
+    return new Promise((fertig) => {
+        // Drupal hoert auf keyup und ignoriert Steuertasten; ein Tastenereignis
+        // ohne keyCode faellt in den Normalfall und loest die Suche aus. Die
+        // Ereignisse muessen aus dem Fenster des Formulars stammen.
+        try { input.focus(); } catch (e) { /* egal */ }
+        ['keydown', 'keyup'].forEach(typ => {
+            input.dispatchEvent(new f.KeyboardEvent(typ, { bubbles: true, key: 'a' }));
+        });
+
+        const start = Date.now();
+        const schauen = () => {
+            const popup = doc.getElementById('autocomplete');
+            const posten = popup ? Array.from(popup.querySelectorAll('li')) : [];
+            if (posten.length) { fertig(posten); return; }
+
+            // "Keine Treffer" meldet Drupal mit einem leeren Popup
+            if (popup && Date.now() - start > 2500) { fertig([]); return; }
+            if (Date.now() - start > grenze) { fertig(null); return; }
+            setTimeout(schauen, 120);
+        };
+        setTimeout(schauen, 150);
+    });
+}
+
+// Einen Vorschlag auswaehlen wie ein Mausklick: Drupal haengt seinen Handler
+// an mousedown des inneren <div>, und daran haengt auch, was die Seite in die
+// Nachbarfelder schreibt.
+function journalVorschlagWaehlen(li, input, fenster) {
+    const f = fenster || window;
+    const ziel = li.querySelector('div') || li;
+    ['mouseover', 'mousedown'].forEach(typ => {
+        ziel.dispatchEvent(new f.MouseEvent(typ, { bubbles: true, cancelable: true, view: f }));
+    });
+    // Nachklappern, damit auch Handler an change/blur greifen
+    setTimeout(() => {
+        input.dispatchEvent(new f.Event('change', { bubbles: true }));
+        input.dispatchEvent(new f.Event('blur', { bubbles: true }));
+    }, 50);
+}
+
+function journalPostenText(li) {
+    return (li.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+function journalDiffText(geaendert, vorher, nachher) {
+    return geaendert.map(f => {
+        const alt = vorher[f.schluessel] || '(leer)';
+        const neu = nachher[f.schluessel] || '(leer)';
+        return f.label + ': ' + alt + ' → ' + neu;
+    }).join('\n');
+}
+
+// Der gemeinsame Kern: im uebergebenen Formular den Titel nachschlagen und
+// - wenn eindeutig - uebernehmen. Liefert, was dabei herauskam, ohne zu
+// speichern. Einzelknopf und Stapellauf benutzen beide diesen Weg.
+async function journalAbfrageAusfuehren(fenster) {
+    const f = fenster || window;
+    const doc = f.document;
+    const felder = journalFelder(doc);
+
+    if (!felder.title) return { art: 'keinjournal', text: 'Kein Journalfeld im Formular' };
+
+    const suchtext = felder.title.value.trim();
+    if (!suchtext) return { art: 'keinjournal', text: 'Journaltitel ist leer' };
+
+    const vorher = journalStand(felder);
+    const posten = await journalVorschlaegeHolen(felder.title, f);
+
+    if (posten === null) {
+        return { art: 'fehler', text: 'Autovervollständigung hat nicht geantwortet', vorher: vorher };
+    }
+    if (!posten.length) {
+        return { art: 'keintreffer', text: 'Kein Journal mit diesem Titel gefunden', vorher: vorher };
+    }
+
+    const gesucht = journalTitelSchluessel(suchtext);
+    const genau = posten.filter(li => journalTitelSchluessel(journalPostenText(li)) === gesucht);
+
+    if (genau.length !== 1) {
+        // Nicht raten: "Water Research" traefe sonst auch "Water Research X".
+        return {
+            art: 'mehrdeutig',
+            text: genau.length > 1
+                ? genau.length + ' Journals tragen genau diesen Titel'
+                : 'Kein exakter Titeltreffer',
+            kandidaten: posten.map(journalPostenText).slice(0, 25),
+            posten: posten,
+            felder: felder,
+            vorher: vorher
+        };
+    }
+
+    journalVorschlagWaehlen(genau[0], felder.title, f);
+    // Warten, bis die Seite die Nachbarfelder gefuellt hat - aber nur so
+    // lange wie noetig. Ein fester Puffer ist bei einem Stapel von
+    // Datensaetzen schnell eine Minute Leerlauf.
+    // 800 ms Obergrenze: aendert sich etwas, ist es meist nach ein paar
+    // Dutzend Millisekunden da. Aendert sich nichts, wird die Grenze voll
+    // ausgeschoepft - bei einem Stapel unveraenderter Datensaetze zaehlt
+    // jede Zehntelsekunde.
+    await journalAufAenderungWarten(felder, vorher, 800);
+
+    const nachher = journalStand(felder);
+    const geaendert = JOURNAL_FELDER.filter(x => felder[x.schluessel]
+        && vorher[x.schluessel] !== nachher[x.schluessel]);
+
+    if (!geaendert.length) {
+        return { art: 'aktuell', text: 'Journal war bereits aktuell', vorher: vorher, felder: felder };
+    }
+    return {
+        art: 'aenderung',
+        text: journalDiffText(geaendert, vorher, nachher),
+        geaendert: geaendert,
+        vorher: vorher,
+        nachher: nachher,
+        felder: felder
+    };
+}
+
+// Auf die Antwort der Seite warten, statt einen festen Puffer abzusitzen.
+// Bricht ab, sobald sich ein Feld geruehrt hat; der Rest der Zeit ist nur
+// noch Sicherheitsnetz fuer langsame Nachzuegler.
+function journalAufAenderungWarten(felder, vorher, grenze) {
+    const bis = Date.now() + (grenze || 1200);
+    return new Promise((fertig) => {
+        const schauen = () => {
+            const jetzt = journalStand(felder);
+            const geruehrt = Object.keys(vorher).some(k => vorher[k] !== jetzt[k]);
+            if (geruehrt || Date.now() > bis) { fertig(geruehrt); return; }
+            setTimeout(schauen, 60);
+        };
+        setTimeout(schauen, 60);
+    });
+}
+
+// --- Einzelknopf am Formular -----------------------------------------------
+async function journalNeuAbfragen(knopf, melde) {
+    const felder = journalFelder(document);
+    if (!felder.title) { melde('Kein Journal-Titelfeld im Formular gefunden.', 'fehler'); return; }
+    if (!felder.title.value.trim()) { melde('Bitte zuerst einen Journaltitel eintragen.', 'fehler'); return; }
+
+    knopf.disabled = true;
+    melde('Frage «' + felder.title.value.trim() + '» ab …', 'laeuft');
+
+    const ergebnis = await journalAbfrageAusfuehren(window);
+    knopf.disabled = false;
+
+    if (ergebnis.art === 'aenderung') {
+        ergebnis.geaendert.forEach(x => journalFeldHervorheben(felder[x.schluessel]));
+        melde(ergebnis.text, 'geaendert',
+            () => journalZuruecknehmen(felder, ergebnis.vorher, melde));
+        return;
+    }
+    if (ergebnis.art === 'aktuell') { melde('Journal war bereits aktuell – nichts geändert.', 'gleich'); return; }
+    if (ergebnis.art === 'mehrdeutig') {
+        journalAuswahlZeigen(ergebnis.posten, felder, ergebnis.vorher, knopf, melde,
+            ergebnis.text + ' – bitte wählen:');
+        return;
+    }
+    if (ergebnis.art === 'keintreffer') { melde('Kein Journal mit diesem Titel gefunden. Schreibweise prüfen.', 'fehler'); return; }
+    melde(ergebnis.text + '. Steht der Cursor im Titelfeld und ist die Seite fertig geladen?', 'fehler');
+}
+
+function journalZuruecknehmen(felder, vorher, melde) {
+    Object.keys(vorher).forEach(k => {
+        if (felder[k]) {
+            felder[k].value = vorher[k];
+            felder[k].style.removeProperty('background-color');
+        }
+    });
+    melde('Zurückgenommen – die alten Werte stehen wieder im Formular.', 'gleich');
+}
+
+function journalFeldHervorheben(el) {
+    el.style.setProperty('background-color', '#fefcbf', 'important');
+    setTimeout(() => el.style.removeProperty('background-color'), 6000);
+}
+
+// Auswahl, wenn der Titel nicht eindeutig trifft.
+function journalAuswahlZeigen(posten, felder, vorher, knopf, melde, ueberschrift) {
+    knopf.disabled = false;
+    const kasten = createEl('div', 'dora-journal-auswahl');
+    kasten.style.cssText = 'margin-top:6px; border:1px solid #cbd5e0; border-radius:4px; '
+        + 'background:#fff; max-height:190px; overflow-y:auto; font-size:12px;';
+
+    posten.slice(0, 25).forEach(li => {
+        const zeile = createEl('div', '', journalPostenText(li));
+        zeile.style.cssText = 'padding:6px 9px; cursor:pointer; border-bottom:1px solid #edf2f7;';
+        zeile.addEventListener('mouseenter', () => zeile.style.background = '#ebf8ff');
+        zeile.addEventListener('mouseleave', () => zeile.style.background = '#fff');
+        zeile.addEventListener('click', () => {
+            knopf.disabled = true;
+            melde('Übernehme «' + journalPostenText(li) + '» …', 'laeuft');
+            journalVorschlagWaehlen(li, felder.title, window);
+            setTimeout(() => {
+                const nachher = journalStand(felder);
+                const geaendert = JOURNAL_FELDER.filter(x => felder[x.schluessel]
+                    && vorher[x.schluessel] !== nachher[x.schluessel]);
+                knopf.disabled = false;
+                if (!geaendert.length) { melde('Journal war bereits aktuell – nichts geändert.', 'gleich'); return; }
+                geaendert.forEach(x => journalFeldHervorheben(felder[x.schluessel]));
+                melde(journalDiffText(geaendert, vorher, nachher), 'geaendert',
+                    () => journalZuruecknehmen(felder, vorher, melde));
+            }, 700);
+        });
+        kasten.appendChild(zeile);
+    });
+
+    melde(ueberschrift, 'auswahl', null, kasten);
+}
+
+// --- Knopf und Meldezeile am Formular --------------------------------------
+function injectJournalReloadButton() {
+    const felder = journalFelder(document);
+    if (!felder.title) return;
+
+    const huelle = felder.title.closest('.form-item') || felder.title.parentNode;
+    if (!huelle || huelle.querySelector('.dora-journal-knopf')) return;
+
+    // Nur bei echten Journalfeldern anbieten: bei Tagungsbaenden traegt
+    // dasselbe Eingabefeld den Proceedings-Titel, dort gibt es kein MADS-Objekt.
+    if (!feldIstJournalname(felder.title)) return;
+
+    const leiste = createEl('div', 'dora-journal-leiste');
+    leiste.style.cssText = 'margin-top:5px;';
+
+    const knopf = createEl('button', 'dora-journal-knopf', '⟳ Journal neu abfragen');
+    knopf.type = 'button';
+    knopf.title = 'Fragt die Journalangaben über die Autovervollständigung des '
+        + 'Formulars neu ab (Titel, Abkürzung, Publisher, ISSN, E-ISSN, PID)';
+    knopf.style.cssText = 'padding:4px 9px; font-size:12px; font-weight:600; cursor:pointer; '
+        + 'background:#f8fafc; color:#475569; border:1px solid #cbd5e0; border-radius:4px;';
+
+    const meldung = createEl('div', 'dora-journal-meldung');
+    meldung.style.cssText = 'display:none; margin-top:5px; padding:6px 9px; border-radius:4px; '
+        + 'font-size:12px; line-height:1.45; white-space:pre-line;';
+
+    const melde = (text, art, zuruecknehmen, anhang) => {
+        meldung.replaceChildren();
+        meldung.style.display = 'block';
+        const farben = {
+            laeuft: ['#edf2f7', '#2d3748', '#cbd5e0'],
+            fehler: ['#fff5f5', '#9b2c2c', '#fc8181'],
+            gleich: ['#f0fff4', '#276749', '#9ae6b4'],
+            geaendert: ['#fffaf0', '#975a16', '#f6ad55'],
+            auswahl: ['#ebf8ff', '#2a4365', '#90cdf4']
+        }[art] || ['#edf2f7', '#2d3748', '#cbd5e0'];
+        meldung.style.background = farben[0];
+        meldung.style.color = farben[1];
+        meldung.style.border = '1px solid ' + farben[2];
+
+        meldung.appendChild(document.createTextNode(text));
+
+        if (zuruecknehmen) {
+            const rueck = createEl('span', '', '↩ Rückgängig');
+            rueck.style.cssText = 'display:inline-block; margin-top:5px; cursor:pointer; '
+                + 'text-decoration:underline; font-weight:600;';
+            rueck.addEventListener('click', zuruecknehmen);
+            meldung.appendChild(createEl('br'));
+            meldung.appendChild(rueck);
+        }
+        if (anhang) meldung.appendChild(anhang);
+    };
+
+    knopf.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        journalNeuAbfragen(knopf, melde).catch(err => {
+            console.error('DORA Helper: Journalabfrage abgebrochen.', err);
+            melde('Abfrage fehlgeschlagen: ' + err.message, 'fehler');
+            knopf.disabled = false;
+        });
+    });
+
+    leiste.appendChild(knopf);
+    leiste.appendChild(meldung);
+    huelle.appendChild(leiste);
+}
+
+// --- Stapellauf fuer die Batch-QC ------------------------------------------
+// Bewusst zweistufig. Erst wird nur geprueft - jeder Datensatz wird in einem
+// verborgenen iframe geoeffnet, nachgeschlagen und wieder verworfen, ohne zu
+// speichern. Erst danach entscheidet der Mensch, welche der gefundenen
+// Aenderungen wirklich geschrieben werden. Ein Massenschreibzugriff auf echte
+// Datensaetze soll nicht an einem einzigen Klick haengen.
+//
+// Der Lauf ist absichtlich seriell: der Server bekommt nicht 50 Formulare auf
+// einmal, und der Fortschritt bleibt nachvollziehbar.
+// Die Masse des Batch-QC-Knopfes inline mit "important" setzen.
+//
+// Ueber das Stylesheet ging es nicht: Regeln aus einem Content-Script werden
+// VOR die Stylesheets der Seite gehaengt, und eine Theme-Regel wie
+// "#content button { padding: 0 }" hat ohnehin die hoehere Spezifitaet als
+// unsere Klasse. Dann faellt die Klickflaeche auf die Textbreite zusammen -
+// und der Knopf reagiert nur noch ueber der Schrift. Inline mit "important"
+// schlaegt jede Regel der Seite.
+function setzeKnopfMasse(knopf) {
+    const masse = {
+        'display': 'inline-flex',
+        'align-items': 'center',
+        'justify-content': 'center',
+        'box-sizing': 'border-box',
+        'width': 'auto',
+        'min-height': '38px',
+        'padding': '8px 18px',
+        'margin': '0',
+        'line-height': '1.2',
+        'background-image': 'none',
+        // cursor bewusst NICHT hier: der gesperrte Zustand braucht
+        // 'not-allowed', und inline mit important waere das nicht mehr
+        // zu ueberschreiben. Das regelt styles.css je Zustand.
+        'pointer-events': 'auto',
+        'position': 'relative',
+        'z-index': '1'
+    };
+    Object.keys(masse).forEach(eigenschaft => {
+        knopf.style.setProperty(eigenschaft, masse[eigenschaft], 'important');
+    });
+}
+
+// Nachsehen, ob die Klickflaeche wirklich der sichtbaren Flaeche entspricht.
+// Weicht sie ab, liegt etwas darueber oder eine Regel hat doch gewonnen -
+// dann steht es in der Konsole, statt dass man raten muss.
+function pruefeKnopfFlaeche(knopf) {
+    try {
+        const kasten = knopf.getBoundingClientRect();
+        if (!kasten.width || !kasten.height) return;
+        const x = Math.round(kasten.left + kasten.width - 6);
+        const y = Math.round(kasten.top + kasten.height / 2);
+        const getroffen = document.elementFromPoint(x, y);
+        if (getroffen && (getroffen === knopf || knopf.contains(getroffen))) return;
+        console.warn('DORA Helper: Am Rand des Batch-QC-Knopfes liegt etwas anderes.',
+            {
+                knopf: Math.round(kasten.width) + '×' + Math.round(kasten.height),
+                getroffen: getroffen ? (getroffen.tagName + '.' + getroffen.className) : '(nichts)',
+                polsterung: window.getComputedStyle(knopf).padding,
+                anzeige: window.getComputedStyle(knopf).display
+            });
+    } catch (e) { /* Diagnose darf nie stoeren */ }
+}
+
+// --- STILLE RAHMEN ---------------------------------------------------------
+// Der Stapellauf oeffnet jeden Datensatz in einem verborgenen iframe. Weil
+// das Content-Script mit "all_frames": true laeuft, startet es DORT NOCH
+// EINMAL komplett: es holt die DOI, baut eine Ergebnisbox und kann ueber
+// openPopupWindow sogar ein echtes Browserfenster aufziehen. Bei zwanzig
+// Datensaetzen zwanzig Mal - das war der Grund fuer die uebereinander
+// liegenden, grau bleibenden Fenster.
+//
+// Der Rahmen bekommt darum einen Namen, den seine eigene Instanz erkennt und
+// daraufhin gar nichts tut. Gesteuert wird das Formular ohnehin von aussen.
+const DORA_STILLER_RAHMEN = 'dora-journal-still';
+
+function istStillerRahmen() {
+    try {
+        return window.name === DORA_STILLER_RAHMEN;
+    } catch (e) {
+        return false;
+    }
+}
+
+// --- AUTORENZEILEN IN DER BATCH-QC KOMPAKT HALTEN --------------------------
+// Die Zeilen tragen je nach DORA-Stand eine Tabelle, ein Raster oder Flexbox.
+// Auf Klassennamen ist darum kein Verlass - wohl aber auf die Eingabefelder
+// selbst. Gesucht wird der naechste gemeinsame Vorfahr von mindestens drei
+// davon: das ist die Zeile eines Autors. Sie bekommt eine eigene Marke, und
+// die Kompaktregeln greifen nur noch darin.
+const AUTOR_FELDER = ['[valName]', '[family]', '[given]', '[affiliation]',
+    '[section_name]', '[department_name]', '[division_name]'];
+
+function autorFeldAnzahl(el) {
+    if (!el || !el.querySelectorAll) return 0;
+    let n = 0;
+    AUTOR_FELDER.forEach(endung => {
+        n += el.querySelectorAll('input[name$="' + endung + '"]').length;
+    });
+    return n;
+}
+
+function markiereAutorenzeilen(doc) {
+    if (!doc) return 0;
+
+    const anker = [];
+    AUTOR_FELDER.forEach(endung => {
+        doc.querySelectorAll('input[name$="' + endung + '"]').forEach(el => anker.push(el));
+    });
+    if (!anker.length) return 0;
+
+    const zeilen = new Set();
+    anker.forEach(feld => {
+        // Hochsteigen, bis der Vorfahr die Felder eines ganzen Autors
+        // umschliesst - aber nicht so weit, dass er mehrere Autoren fasst.
+        let knoten = feld.parentElement;
+        let zeile = null;
+        let felderDerZeile = 0;
+        for (let tiefe = 0; knoten && tiefe < 8; tiefe++) {
+            const anzahl = autorFeldAnzahl(knoten);
+            if (anzahl >= 3) { zeile = knoten; felderDerZeile = anzahl; break; }
+            knoten = knoten.parentElement;
+        }
+        if (!zeile) return;
+
+        // Weiter hoch, solange kein WEITERER Autor dazukommt: so landet die
+        // Marke auf der ganzen Zeile (mitsamt Knopfleiste) statt auf einem
+        // <tbody> tief darin - sonst bleibt deren Polsterung stehen.
+        for (let tiefe = 0; tiefe < 6; tiefe++) {
+            const eltern = zeile.parentElement;
+            if (!eltern || eltern === doc.body) break;
+            if (autorFeldAnzahl(eltern) !== felderDerZeile) break;
+            zeile = eltern;
+        }
+        zeilen.add(zeile);
+    });
+
+    // Wenn ein gefundener Knoten einen anderen gefundenen enthaelt, ist er zu
+    // weit oben (er fasst mehrere Autoren) - den lassen wir weg.
+    const endgueltig = Array.from(zeilen).filter(a =>
+        !Array.from(zeilen).some(b => b !== a && a.contains(b)));
+
+    endgueltig.forEach(zeile => zeile.classList.add('dora-autorenzeile'));
+    return endgueltig.length;
+}
+
+function journalFormularUrl(pid, instPfad) {
+    return '/' + instPfad + '/islandora/object/' + encodeURIComponent(pid) + '/lib4ridora_edit_mods';
+}
+
+// Warten, bis das Formular im Rahmen wirklich steht.
+//
+// Beim Ladeereignis ist ein Drupal-Formular serverseitig schon fertig - kurz
+// nachgefasst wird nur fuer Teile, die per AJAX nachkommen. Darum ein kleines
+// Budget: es kostet im Normalfall nichts, weil das Journalfeld meist sofort
+// da ist, und laesst einen Datensatz ohne Journalfeld nicht minutenlang
+// haengen.
+function journalAufFormularWarten(rahmen, grenze) {
+    const bis = Date.now() + (grenze || 2500);
+    return new Promise((fertig) => {
+        const schauen = () => {
+            let doc = null;
+            try { doc = rahmen.contentDocument; } catch (e) { /* gleich behandelt */ }
+            if (!doc) { fertig({ doc: null, grund: 'nicht lesbar' }); return; }
+
+            if (doc.querySelector('input[name="host[titleInfo][title]"]')) {
+                fertig({ doc: doc, grund: 'journal' }); return;
+            }
+            if (Date.now() > bis) {
+                const formular = doc.getElementById('islandora-xml-form-builder-form')
+                    || doc.getElementById('islandora-ingest-form')
+                    || doc.querySelector('form.node-form');
+                fertig({ doc: doc, grund: formular ? 'formular-ohne-journal' : 'kein-formular' });
+                return;
+            }
+            setTimeout(schauen, 150);
+        };
+        schauen();
+    });
+}
+
+// Beschreiben, was im Rahmen statt des Journalfeldes steht - sonst heisst es
+// nur "kein Journalfeld" und man weiss nicht, ob es am Datensatz oder am
+// Laden lag.
+function journalLageBeschreiben(doc) {
+    if (!doc) return 'Formular nicht lesbar';
+    const titel = (doc.title || '').replace(/\s+/g, ' ').trim();
+    if (/zugriff|access denied|anmelden|log in/i.test(titel)) {
+        return 'Keine Berechtigung oder nicht angemeldet (Seite: ' + titel + ')';
+    }
+    const art = doc.getElementById('edit-publication-type');
+    const artText = art ? (art.value || '') : '';
+    if (artText) return 'Formular geladen, aber kein Journalfeld (Publication Type: ' + artText + ')';
+    const formular = doc.getElementById('islandora-xml-form-builder-form')
+        || doc.getElementById('islandora-ingest-form');
+    if (!formular) return 'Kein Bearbeitungsformular auf der Seite (Seite: ' + (titel || '?') + ')';
+    return 'Formular geladen, aber kein Journalfeld darin';
+}
+
+// Alles vom Stapellauf wegraeumen: das Fenster und jeden verborgenen Rahmen.
+//
+// Ein Rahmen ist eine voll gerenderte Drupal-Seite mit eigenem JS. Bleiben
+// mehrere davon liegen - etwa weil die Batch-QC geschlossen wurde, waehrend
+// ein Lauf noch lief - kostet das nicht nur Speicher, es bringt auch die
+// Darstellung durcheinander.
+function journalStapelAufraeumen() {
+    document.querySelectorAll('iframe.dora-journal-rahmen').forEach(r => {
+        try { r.src = 'about:blank'; } catch (e) { /* egal */ }
+        try { r.remove(); } catch (e) { /* egal */ }
+    });
+    const fenster = document.getElementById('dora-journal-stapel');
+    if (fenster) fenster.remove();
+}
+
+// Beim Verlassen der Seite sicher aufraeumen - ein haengender Rahmen haelt
+// sonst eine ganze Seite am Leben.
+window.addEventListener('pagehide', journalStapelAufraeumen);
+
+// Einen Datensatz in einem verborgenen iframe oeffnen und dort etwas tun.
+function journalImRahmen(pid, instPfad, arbeit, zeitlimit) {
+    return new Promise((fertig) => {
+        const rahmen = document.createElement('iframe');
+        rahmen.className = 'dora-journal-rahmen';
+        // Absolut statt fixiert: position:fixed zwingt den Browser zu einer
+        // eigenen Zeichenebene, und das fuer ein Dokument, das nie zu sehen
+        // ist. Klicks und Tabulator gehen ebenfalls daran vorbei.
+        rahmen.style.cssText = 'position:absolute; left:-10000px; top:0; width:1100px; '
+            + 'height:760px; border:0; visibility:hidden; pointer-events:none;';
+        rahmen.setAttribute('aria-hidden', 'true');
+        rahmen.setAttribute('tabindex', '-1');
+        // VOR dem Setzen der Adresse: nur dann kennt die Instanz des
+        // Content-Scripts im Rahmen ihren Namen schon beim Start.
+        rahmen.name = DORA_STILLER_RAHMEN;
+        let erledigt = false;
+
+        const schliessen = (ergebnis) => {
+            if (erledigt) return;
+            erledigt = true;
+            clearTimeout(wecker);
+            if (ergebnis && ergebnis.behalten) {
+                // Offen lassen: beim Speichern spart das ein komplettes
+                // Neuladen samt zweiter Abfrage.
+                ergebnis.rahmen = rahmen;
+            } else {
+                // Erst entladen, dann entfernen: sonst laeuft das Skript der
+                // Seite im Rahmen unter Umstaenden noch weiter.
+                try { rahmen.src = 'about:blank'; } catch (e) { /* egal */ }
+                try { rahmen.remove(); } catch (e) { /* egal */ }
+            }
+            fertig(ergebnis);
+        };
+
+        const wecker = setTimeout(
+            () => schliessen({ pid: pid, art: 'fehler', text: 'Zeitüberschreitung beim Laden' }),
+            zeitlimit || 60000);
+
+        rahmen.addEventListener('load', async () => {
+            if (erledigt) return;
+
+            // Das leere Startdokument meldet ebenfalls "load". Faellt der Lauf
+            // darauf herein, sieht jeder Datensatz aus wie ein leeres Formular.
+            let adresse = '';
+            try { adresse = rahmen.contentWindow.location.href; } catch (e) { /* egal */ }
+            if (!adresse || adresse === 'about:blank') return;
+
+            const lage = await journalAufFormularWarten(rahmen);
+            if (erledigt) return;
+
+            if (lage.grund !== 'journal') {
+                schliessen({
+                    pid: pid,
+                    art: lage.grund === 'nicht lesbar' ? 'fehler' : 'keinjournal',
+                    text: journalLageBeschreiben(lage.doc)
+                });
+                return;
+            }
+
+            try {
+                const erg = await arbeit(rahmen);
+                schliessen(Object.assign({ pid: pid }, erg));
+            } catch (err) {
+                schliessen({ pid: pid, art: 'fehler', text: String(err && err.message || err) });
+            }
+        });
+
+        // Erst die Adresse, dann einhaengen - so entsteht gar kein Ladeereignis
+        // fuer das leere Startdokument.
+        rahmen.src = journalFormularUrl(pid, instPfad);
+        document.body.appendChild(rahmen);
+    });
+}
+
+// Wie viele gepruefte Formulare offen bleiben duerfen.
+//
+// Zwanzig, weil die Trefferliste genau so viele Publikationen zeigt: mehr
+// kann in einem Lauf gar nicht ausgewaehlt sein, und so landet kein
+// Datensatz auf dem langsamen Weg (neu laden plus zweite Abfrage).
+// Jedes offene Formular ist eine gerenderte Seite - wird der Browser bei
+// zwanzig gleichzeitig geaenderten Datensaetzen zaeh, ist diese Zahl die
+// einzige Stellschraube.
+const JOURNAL_PARKPLAETZE = 20;
+
+// Stufe 1: nachschlagen, nichts speichern.
+//
+// Datensaetze mit einer Aenderung bleiben offen stehen (bis zur Obergrenze).
+// Beim Speichern ist dann nur noch ein Klick noetig statt Neuladen plus
+// zweiter Abfrage - das halbiert die Wartezeit des ganzen Laufs.
+async function journalStapelPruefen(pids, instPfad, fortschritt, abbruch) {
+    const ergebnisse = [];
+    let geparkt = 0;
+
+    for (let i = 0; i < pids.length; i++) {
+        if (abbruch && abbruch.abgebrochen) break;
+        const pid = pids[i];
+        fortschritt(i, pids.length, pid, null);
+
+        const erg = await journalImRahmen(pid, instPfad, async (rahmen) => {
+            const abfrage = await journalAbfrageAusfuehren(rahmen.contentWindow);
+            if (abfrage.art === 'aenderung' && geparkt < JOURNAL_PARKPLAETZE) {
+                abfrage.behalten = true;
+                geparkt += 1;
+            }
+            return abfrage;
+        });
+
+        // Verweise auf Elemente im Rahmen nicht in der Liste festhalten -
+        // ausser dem Rahmen selbst, den brauchen wir noch.
+        delete erg.felder; delete erg.posten;
+        ergebnisse.push(erg);
+        fortschritt(i + 1, pids.length, pid, erg);
+    }
+    return ergebnisse;
+}
+
+// In einem offenen Formular speichern und die Navigation abwarten.
+// In einem offenen Formular speichern.
+//
+// Nicht auf das "load" der Zielseite warten: das faellt erst, wenn auch noch
+// jedes Bild und Skript der Objektansicht geladen ist - reine Wartezeit,
+// nachdem laengst gespeichert wurde. Es genuegt, dass ein NEUES Dokument da
+// ist; danach wird der Rahmen sofort leer geschaltet.
+//
+// Und wichtiger: "load" allein ist kein Beleg fuers Speichern. Lehnt Drupal
+// das Formular ab, liefert es dasselbe Formular mit Fehlermeldungen erneut
+// aus - das feuert ebenfalls "load".
+//
+// Woran es NICHT zu erkennen ist: daran, dass wieder ein Formular da steht.
+// DORA fuehrt nach dem Speichern zur Bearbeitung zurueck, das Formular ist
+// also auch im Erfolgsfall wieder da. Das verlaessliche Zeichen ist Drupals
+// eigene Fehlermeldung.
+function journalSpeichern(rahmen, grenze) {
+    const vorher = rahmen.contentDocument;
+    const knopf = vorher && (vorher.getElementById('edit-submit')
+        || vorher.querySelector('input[type="submit"][value="Save"]')
+        || vorher.querySelector('input[type="submit"][value="Speichern"]'));
+    if (!knopf) return Promise.resolve({ art: 'fehler', text: 'Speichern-Knopf nicht gefunden' });
+
+    return new Promise((fertig) => {
+        const bis = Date.now() + (grenze || 90000);
+
+        const schauen = () => {
+            let jetzt = null;
+            try { jetzt = rahmen.contentDocument; } catch (e) { /* mitten in der Navigation */ }
+
+            // Erst reagieren, wenn die Antwort wirklich ein anderes Dokument ist
+            if (jetzt && jetzt !== vorher && jetzt.readyState !== 'loading') {
+                const meldung = jetzt.querySelector(
+                    '.messages.error, .messages--error, .error.messages, div.error');
+
+                if (meldung) {
+                    const text = String(meldung.textContent || '')
+                        .replace(/\s+/g, ' ').trim().slice(0, 200);
+                    fertig({ art: 'fehler', text: 'Nicht gespeichert – ' + text });
+                    return;
+                }
+
+                // Gespeichert. Den Rest der Zielseite gar nicht erst laden.
+                try { rahmen.src = 'about:blank'; } catch (e) { /* egal */ }
+                fertig({ art: 'gespeichert', text: '' });
+                return;
+            }
+
+            if (Date.now() > bis) { fertig({ art: 'fehler', text: 'Speichern hat nicht geantwortet' }); return; }
+            setTimeout(schauen, 120);
+        };
+
+        knopf.click();
+        setTimeout(schauen, 120);
+    });
+}
+
+// Stufe 2: speichern.
+//
+// Steht das Formular noch offen, wird nur gespeichert. Nur fuer Datensaetze
+// ohne Parkplatz wird neu geladen - und dann nochmal nachgeschlagen, weil
+// der alte Stand nicht mehr im Formular steht.
+async function journalStapelSchreiben(eintraege, instPfad, fortschritt, abbruch) {
+    const ergebnisse = [];
+
+    for (let i = 0; i < eintraege.length; i++) {
+        if (abbruch && abbruch.abgebrochen) break;
+        const eintrag = eintraege[i];
+        const pid = eintrag.pid;
+        fortschritt(i, eintraege.length, pid, null);
+
+        let erg;
+        const rahmen = eintrag.rahmen;
+        const nochDa = rahmen && rahmen.isConnected && rahmen.contentDocument
+            && rahmen.contentDocument.querySelector('input[name="host[titleInfo][title]"]');
+
+        if (nochDa) {
+            const gespeichert = await journalSpeichern(rahmen);
+            erg = {
+                pid: pid,
+                art: gespeichert.art,
+                text: gespeichert.art === 'gespeichert' ? eintrag.text : gespeichert.text
+            };
+            try { rahmen.src = 'about:blank'; } catch (e) { /* egal */ }
+            try { rahmen.remove(); } catch (e) { /* egal */ }
+        } else {
+            // Kein Parkplatz mehr gehabt: neu laden und nochmal nachschlagen.
+            erg = await journalImRahmen(pid, instPfad, async (r) => {
+                const abfrage = await journalAbfrageAusfuehren(r.contentWindow);
+                if (abfrage.art !== 'aenderung') {
+                    return { art: abfrage.art, text: abfrage.text };
+                }
+                const gespeichert = await journalSpeichern(r);
+                return {
+                    art: gespeichert.art,
+                    text: gespeichert.art === 'gespeichert' ? abfrage.text : gespeichert.text
+                };
+            }, 90000);
+        }
+
+        ergebnisse.push(erg);
+        fortschritt(i + 1, eintraege.length, pid, erg);
+    }
+
+    // Was nicht mehr drankam (Abbruch), nicht offen stehen lassen
+    journalParkplaetzeRaeumen();
+    return ergebnisse;
+}
+
+function journalParkplaetzeRaeumen() {
+    document.querySelectorAll('iframe.dora-journal-rahmen').forEach(r => {
+        try { r.src = 'about:blank'; } catch (e) { /* egal */ }
+        try { r.remove(); } catch (e) { /* egal */ }
+    });
+}
+
+// --- Fenster fuer den Stapellauf -------------------------------------------
+const JOURNAL_ARTEN = {
+    aenderung: { zeichen: '✱', farbe: '#975a16', hintergrund: '#fffaf0', wort: 'Änderung' },
+    gespeichert: { zeichen: '✓', farbe: '#276749', hintergrund: '#f0fff4', wort: 'gespeichert' },
+    aktuell: { zeichen: '=', farbe: '#4a5568', hintergrund: '#f7fafc', wort: 'aktuell' },
+    mehrdeutig: { zeichen: '?', farbe: '#2a4365', hintergrund: '#ebf8ff', wort: 'mehrdeutig' },
+    keintreffer: { zeichen: '–', farbe: '#9b2c2c', hintergrund: '#fff5f5', wort: 'kein Treffer' },
+    keinjournal: { zeichen: '·', farbe: '#718096', hintergrund: '#f7fafc', wort: 'kein Journal' },
+    fehler: { zeichen: '!', farbe: '#9b2c2c', hintergrund: '#fff5f5', wort: 'Fehler' }
+};
+
+function journalStapelFenster(pids, instPfad) {
+    if (document.getElementById('dora-journal-stapel')) return;
+
+    const schirm = createEl('div');
+    schirm.id = 'dora-journal-stapel';
+    schirm.style.cssText = 'position:fixed; inset:0; z-index:2147483000; background:rgba(15,23,42,.55); '
+        + 'display:flex; align-items:center; justify-content:center; font-family:"Segoe UI",sans-serif;';
+
+    const kasten = createEl('div');
+    kasten.style.cssText = 'background:#fff; width:min(760px,92vw); max-height:86vh; border-radius:10px; '
+        + 'display:flex; flex-direction:column; box-shadow:0 20px 50px rgba(0,0,0,.35); overflow:hidden;';
+
+    const kopf = createEl('div');
+    kopf.style.cssText = 'padding:14px 18px; border-bottom:1px solid #e2e8f0; display:flex; '
+        + 'justify-content:space-between; align-items:center; background:#f8fafc;';
+    const titel = createEl('div', '', '⟳ Journal für ' + pids.length + ' Datensätze prüfen');
+    titel.style.cssText = 'font-weight:700; color:#1a202c;';
+    const zu = createEl('span', '', '✕');
+    zu.style.cssText = 'cursor:pointer; font-size:18px; color:#718096; padding:0 6px;';
+    kopf.appendChild(titel);
+    kopf.appendChild(zu);
+
+    const hinweis = createEl('div');
+    hinweis.style.cssText = 'padding:10px 18px; font-size:12px; color:#4a5568; background:#fffaf0; '
+        + 'border-bottom:1px solid #f6e05e; line-height:1.5;';
+    hinweis.textContent = 'Erst wird nur geprüft: jeder Datensatz wird kurz im Hintergrund geöffnet, '
+        + 'das Journal über die Autovervollständigung des Formulars nachgeschlagen und wieder '
+        + 'verworfen. Gespeichert wird nichts, bevor Sie es unten ausdrücklich auslösen.';
+
+    const balkenHuelle = createEl('div');
+    balkenHuelle.style.cssText = 'height:4px; background:#e2e8f0;';
+    const balken = createEl('div');
+    balken.style.cssText = 'height:100%; width:0%; background:#3182ce; transition:width .2s;';
+    balkenHuelle.appendChild(balken);
+
+    const stand = createEl('div');
+    stand.style.cssText = 'padding:8px 18px; font-size:12px; color:#4a5568; border-bottom:1px solid #edf2f7;';
+    stand.textContent = 'Bereit.';
+
+    const liste = createEl('div');
+    liste.style.cssText = 'flex:1; overflow-y:auto; padding:4px 0; font-size:12px;';
+
+    const fuss = createEl('div');
+    fuss.style.cssText = 'padding:12px 18px; border-top:1px solid #e2e8f0; display:flex; gap:8px; '
+        + 'align-items:center; background:#f8fafc;';
+
+    const knopfStil = (farbe) => 'padding:8px 16px; border:none; border-radius:6px; cursor:pointer; '
+        + 'font-weight:600; font-size:13px; color:#fff; background:' + farbe + ';';
+
+    const starten = createEl('button', '', 'Prüfung starten');
+    starten.type = 'button';
+    starten.style.cssText = knopfStil('#3182ce');
+
+    const abbrechen = createEl('button', '', 'Abbrechen');
+    abbrechen.type = 'button';
+    abbrechen.style.cssText = knopfStil('#a0aec0');
+    abbrechen.style.display = 'none';
+
+    const schreiben = createEl('button', '', 'Ausgewählte speichern');
+    schreiben.type = 'button';
+    schreiben.style.cssText = knopfStil('#dd6b20');
+    schreiben.style.display = 'none';
+
+    const zusammen = createEl('div');
+    zusammen.style.cssText = 'margin-left:auto; font-size:12px; color:#4a5568; text-align:right;';
+
+    fuss.appendChild(starten);
+    fuss.appendChild(abbrechen);
+    fuss.appendChild(schreiben);
+    fuss.appendChild(zusammen);
+
+    kasten.appendChild(kopf);
+    kasten.appendChild(hinweis);
+    kasten.appendChild(balkenHuelle);
+    kasten.appendChild(stand);
+    kasten.appendChild(liste);
+    kasten.appendChild(fuss);
+    schirm.appendChild(kasten);
+    document.body.appendChild(schirm);
+
+    const abbruch = { abgebrochen: false };
+    let ergebnisse = [];
+    const haken = {};   // pid -> checkbox
+
+    const schliessen = () => {
+        abbruch.abgebrochen = true;
+        journalStapelAufraeumen();
+    };
+    zu.addEventListener('click', schliessen);
+
+    function zeileZeichen(erg, mitHaken) {
+        const art = JOURNAL_ARTEN[erg.art] || JOURNAL_ARTEN.fehler;
+        const zeile = createEl('div');
+        zeile.style.cssText = 'display:flex; gap:9px; padding:7px 18px; border-bottom:1px solid #f7fafc; '
+            + 'align-items:flex-start; background:' + art.hintergrund + ';';
+
+        if (mitHaken) {
+            const h = document.createElement('input');
+            h.type = 'checkbox';
+            h.checked = true;
+            h.style.marginTop = '2px';
+            haken[erg.pid] = h;
+            zeile.appendChild(h);
+        } else {
+            const z = createEl('span', '', art.zeichen);
+            z.style.cssText = 'width:13px; font-weight:700; color:' + art.farbe + ';';
+            zeile.appendChild(z);
+        }
+
+        const rechts = createEl('div');
+        rechts.style.cssText = 'min-width:0; flex:1;';
+        const kopfzeile = createEl('div');
+        kopfzeile.style.cssText = 'font-weight:600; color:#2d3748;';
+        kopfzeile.textContent = erg.pid + ' · ' + art.wort;
+        rechts.appendChild(kopfzeile);
+
+        if (erg.text) {
+            const detail = createEl('div', '', erg.text);
+            detail.style.cssText = 'color:' + art.farbe + '; white-space:pre-line; margin-top:2px;';
+            rechts.appendChild(detail);
+        }
+        if (erg.kandidaten && erg.kandidaten.length) {
+            const k = createEl('div', '', 'Gefunden: ' + erg.kandidaten.slice(0, 5).join(' · ')
+                + (erg.kandidaten.length > 5 ? ' …' : ''));
+            k.style.cssText = 'color:#4a5568; margin-top:2px; font-style:italic;';
+            rechts.appendChild(k);
+        }
+
+        zeile.appendChild(rechts);
+        liste.appendChild(zeile);
+    }
+
+    function zaehlen(liste2) {
+        const n = {};
+        liste2.forEach(e => { n[e.art] = (n[e.art] || 0) + 1; });
+        return Object.keys(n)
+            .map(a => (JOURNAL_ARTEN[a] || JOURNAL_ARTEN.fehler).wort + ': ' + n[a])
+            .join(' · ');
+    }
+
+    const fortschritt = (fertig, gesamt, pid, erg) => {
+        balken.style.width = Math.round(fertig / gesamt * 100) + '%';
+        stand.textContent = erg
+            ? fertig + ' von ' + gesamt + ' geprüft'
+            : fertig + 1 + ' von ' + gesamt + ': ' + pid + ' …';
+    };
+
+    starten.addEventListener('click', async () => {
+        starten.style.display = 'none';
+        abbrechen.style.display = '';
+        liste.replaceChildren();
+        abbruch.abgebrochen = false;
+        // Ein zweiter Durchgang faengt bei null an: was vom ersten noch
+        // offen steht, wird nicht mehr gebraucht.
+        journalParkplaetzeRaeumen();
+
+        ergebnisse = await journalStapelPruefen(pids, instPfad, (f, g, pid, erg) => {
+            fortschritt(f, g, pid, erg);
+            if (erg) zeileZeichen(erg, false);
+        }, abbruch);
+
+        abbrechen.style.display = 'none';
+        const zuSchreiben = ergebnisse.filter(e => e.art === 'aenderung');
+        zusammen.textContent = zaehlen(ergebnisse);
+        stand.textContent = abbruch.abgebrochen
+            ? 'Abgebrochen nach ' + ergebnisse.length + ' von ' + pids.length + '.'
+            : 'Prüfung fertig.';
+
+        if (!zuSchreiben.length) {
+            starten.style.display = '';
+            starten.textContent = 'Nochmal prüfen';
+            return;
+        }
+
+        // Nur die Aenderungen erneut zeigen - diesmal zum Ankreuzen.
+        liste.replaceChildren();
+        const ueber = createEl('div', '', zuSchreiben.length
+            + ' Datensätze würden geändert. Abwählen, was nicht geschrieben werden soll:');
+        ueber.style.cssText = 'padding:9px 18px; font-weight:600; color:#975a16; background:#fffaf0;';
+        liste.appendChild(ueber);
+        zuSchreiben.forEach(e => zeileZeichen(e, true));
+
+        schreiben.style.display = '';
+        schreiben.textContent = 'Ausgewählte speichern (' + zuSchreiben.length + ')';
+    });
+
+    abbrechen.addEventListener('click', () => {
+        abbruch.abgebrochen = true;
+        abbrechen.textContent = 'Breche ab …';
+    });
+
+    schreiben.addEventListener('click', async () => {
+        // Die ganzen Ergebnisse weiterreichen: darin steckt der offene
+        // Rahmen, in dem nur noch gespeichert werden muss.
+        const gewaehlt = ergebnisse
+            .filter(e => e.art === 'aenderung' && haken[e.pid] && haken[e.pid].checked);
+        if (!gewaehlt.length) { stand.textContent = 'Nichts ausgewählt.'; return; }
+
+        schreiben.style.display = 'none';
+        abbrechen.style.display = '';
+        abbrechen.textContent = 'Abbrechen';
+        liste.replaceChildren();
+        hinweis.textContent = 'Es wird jetzt geschrieben. Die geprüften Formulare stehen '
+            + 'noch offen – dort ist nur noch ein Klick nötig.';
+        abbruch.abgebrochen = false;
+
+        const geschrieben = await journalStapelSchreiben(gewaehlt, instPfad, (f, g, pid, erg) => {
+            balken.style.width = Math.round(f / g * 100) + '%';
+            stand.textContent = erg ? f + ' von ' + g + ' gespeichert' : (f + 1) + ' von ' + g + ': ' + pid + ' …';
+            if (erg) zeileZeichen(erg, false);
+        }, abbruch);
+
+        abbrechen.style.display = 'none';
+        starten.style.display = '';
+        starten.textContent = 'Nochmal prüfen';
+        zusammen.textContent = zaehlen(geschrieben);
+        stand.textContent = abbruch.abgebrochen ? 'Abgebrochen.' : 'Fertig.';
+    });
+}
+
 // --- HANDBUCH (WIKI) ------------------------------------------------------
 // Die Hausregeln stehen im DORA-Handbuch (Confluence). Sie liegen hier als
 // statischer, nach Formularfeldern geordneter Auszug (handbuch.json, erzeugt
@@ -1248,6 +2268,14 @@ if (document.readyState === 'loading') {
 }
 
 function startObserver() {
+    // In einem stillen Rahmen des Stapellaufs bleibt alles aus: dort wird das
+    // Formular von aussen gesteuert. Ohne das baut jede Kopie hier eine
+    // Ergebnisbox, holt die DOI und zieht womoeglich ein Fenster auf.
+    if (istStillerRahmen()) {
+        console.log('DORA Helper: stiller Rahmen des Stapellaufs - keine Oberflaeche.');
+        return;
+    }
+
     // Initialize PSI Data (async)
     if (typeof initPsiData === 'function') {
         initPsiData().then(() => {
@@ -1338,12 +2366,10 @@ function scanAndInject() {
     injectTagButtons();
     injectBulkDataTool();
     injectDoraAutocompletes();
+    injectJournalReloadButton();
     injectFundingFormPanel();
 
     validateForm();
-    if (typeof initAiMetadataCheck === 'function') {
-        initAiMetadataCheck();
-    }
     initPdfLicenseChecker();
 }
 
@@ -1493,9 +2519,314 @@ function stelleBoxWiederHer(box) {
 // --- FETCHING ---
 function performFetch(doi) {
     chrome.runtime.sendMessage({ action: "fetchData", doi: doi }, (response) => {
-        if (response && response.success) renderResultBox(response.data);
+        if (response && response.success) {
+            kiDoiDaten.set(doi.toLowerCase(), response.data);
+            renderResultBox(response.data);
+        }
         else renderErrorBox(response ? response.error : "Verbindungsfehler");
     });
+}
+
+// ---------------------------------------------------------------------------
+// KI-Check (nur per Knopf). Das Formular wird als nummerierte Liste
+// Feld/Wert erfasst, dazu kommen die Handbuchregeln der befuellten Felder und
+// eine Belegquelle (Crossref, ggf. das schon ausgewertete PDF). Haiku meldet
+// Abweichungen mit Verweis auf die Nummer; die Seite markiert das Feld und
+// listet die Befunde in einem Panel. Es wird nichts ins Formular geschrieben.
+// ---------------------------------------------------------------------------
+const kiDoiDaten = new Map();        // doi (klein) -> Antwort von fetchData
+const kiPdfErgebnisse = new Map();   // doi (klein) -> von Haiku gelesene PDF-Angaben
+let kiElemente = {};                 // "f12" -> Formularelement des letzten Laufs
+
+// Handbuch-Seiten, die Bedienung statt Pruefregeln beschreiben
+const KI_THEMEN_AUSSCHLUSS = /neu erfassen|autorenobjekte/i;
+const KI_REGELN_MAX_ZEICHEN = 20000;   // je Feld, begrenzt Prompt und Kosten
+const KI_WERT_MAX_ZEICHEN = 3000;
+const KI_HILFSBEREICHE = '#dora-keyword-manager, #dora-funding-panel, #dora-bulk-data-tool, '
+    + '.dora-handbuch-kasten, .dora-action-container, #dora-haiku-popup, #dora-ki-panel';
+
+function kiSaubererText(text) {
+    return (text || '').replace(/📖/g, '').replace(/\s*\*\s*$/, '').replace(/\s+/g, ' ').trim();
+}
+
+function kiFeldBeschriftung(el, form) {
+    let label = el.id ? form.querySelector('label[for="' + el.id.replace(/"/g, '\\"') + '"]') : null;
+    let text = label ? kiSaubererText(label.innerText || label.textContent) : '';
+    if (!text) text = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name || el.id || 'Feld';
+    // Fieldset-Ueberschrift als Kontext (z.B. "Host" vor "Volume")
+    const set = el.closest('fieldset');
+    const legende = set ? set.querySelector(':scope > legend') : null;
+    const kontext = legende ? kiSaubererText(legende.innerText || legende.textContent).slice(0, 60) : '';
+    return { label: kontext && kontext !== text ? kontext + ' / ' + text : text, nurLabel: text };
+}
+
+function kiAutorenPanes(form) {
+    const gesehen = new Set();
+    return Array.from(form.querySelectorAll('.islandora-form-fieldpanel-pane, table tbody tr')).filter(pane => {
+        // Betreuer und Herausgeber haben teils denselben Lookup, sind aber keine Autoren
+        if (pane.closest('.form-item-supervisor, .form-item-host-editor')) return false;
+        const name = pane.querySelector('input[type="text"][name$="[valName]"]');
+        if (!name || gesehen.has(name)) return false;
+        gesehen.add(name);
+        return true;
+    });
+}
+
+// Formular -> {formular:[{ref,label,wert}], felder:Set(Handbuchfelder)}
+function kiFormularErfassen(form, daten) {
+    const formular = [];
+    const felder = new Set();
+    kiElemente = {};
+    let nr = 0;
+    const neu = (el, label, wert, feld) => {
+        const text = (wert || '').toString().replace(/\s+/g, ' ').trim();
+        if (!text) return;
+        const ref = 'f' + (++nr);
+        kiElemente[ref] = el;
+        formular.push({ ref: ref, label: label, wert: text.slice(0, KI_WERT_MAX_ZEICHEN) });
+        if (feld) felder.add(feld);
+    };
+
+    const autorenPanes = kiAutorenPanes(form);
+    const inAutorenPane = (el) => autorenPanes.some(p => p.contains(el));
+
+    form.querySelectorAll('input, select, textarea').forEach(el => {
+        const typ = (el.type || '').toLowerCase();
+        if (['hidden', 'submit', 'button', 'file', 'image', 'password'].indexOf(typ) !== -1) return;
+        if (el.closest(KI_HILFSBEREICHE) || inAutorenPane(el)) return;
+        if ((typ === 'checkbox' || typ === 'radio') && !el.checked) return;
+
+        const { label, nurLabel } = kiFeldBeschriftung(el, form);
+        let wert;
+        if (el.id === ABSTRACT_FELD_ID) wert = leseAbstractImFormular();
+        else if (el.tagName === 'SELECT') {
+            const opt = el.options[el.selectedIndex];
+            wert = (opt && el.value && el.value !== '_none') ? opt.textContent : '';
+        } else if (typ === 'checkbox' || typ === 'radio') wert = 'ja';
+        else wert = el.value;
+
+        neu(el.id === ABSTRACT_FELD_ID ? (document.getElementById('cke_' + el.id) || el) : el,
+            label, wert, handbuchFeldZuBeschriftung(nurLabel, daten));
+    });
+
+    autorenPanes.forEach((pane, i) => {
+        const wert = (sel) => { const e = pane.querySelector(sel); return e ? e.value.trim() : ''; };
+        const familie = wert('input[name$="[family]"]'), vorname = wert('input[name$="[given]"]');
+        const name = wert('input[type="text"][name$="[valName]"]') || [familie, vorname].filter(Boolean).join(', ');
+        const teile = [name];
+        [['Group', '[affiliation]'], ['Section', '[section_name]'], ['Laboratory', '[department_name]'], ['Division', '[division_name]']]
+            .forEach(([titel, suffix]) => {
+                const v = wert('input[type="text"][name$="' + suffix + '"]');
+                if (v) teile.push(titel + ': ' + v);
+            });
+        neu(pane.querySelector('input[type="text"][name$="[valName]"]'), 'Autor ' + (i + 1), teile.join(' | '), 'Authors');
+    });
+
+    return { formular: formular, felder: felder };
+}
+
+// Handbuchregeln der betroffenen Felder als Text; gleiche Wiki-Seiten nur einmal
+function kiRegelnSammeln(felder, daten) {
+    const gesehen = new Set();
+    const regeln = [];
+    felder.forEach(feld => {
+        const eintraege = (daten.felder && daten.felder[feld]) || [];
+        const teile = [];
+        eintraege.forEach(e => {
+            if (KI_THEMEN_AUSSCHLUSS.test(e.thema || '') || gesehen.has(e.seitenId)) return;
+            gesehen.add(e.seitenId);
+            teile.push('[Seite: ' + e.thema + ']\n- ' + (e.regeln || []).join('\n- '));
+        });
+        const text = teile.join('\n').slice(0, KI_REGELN_MAX_ZEICHEN);
+        if (text) regeln.push({ feld: feld, text: text });
+    });
+    return regeln;
+}
+
+// Crossref auf das reduzieren, was als Vorlage taugt
+function kiReferenzAusCrossref(cr) {
+    if (!cr) return null;
+    const erster = (v) => Array.isArray(v) ? v[0] : v;
+    const datum = cr.issued && cr.issued['date-parts'] && cr.issued['date-parts'][0];
+    return {
+        titel: erster(cr.title) || null,
+        zeitschrift_oder_buch: erster(cr['container-title']) || null,
+        band: cr.volume || null, heft: cr.issue || null, seiten: cr.page || null,
+        jahr_monat_tag: datum ? datum.filter(Boolean).join('-') : null,
+        verlag: cr.publisher || null, issn: cr.ISSN || null, typ: cr.type || null,
+        sprache: cr.language || null, doi: cr.DOI || null,
+        autoren: (cr.author || []).slice(0, 60).map(a => ({
+            nachname: a.family || a.name || '', vorname: a.given || '',
+            affiliation: (a.affiliation || []).map(x => x.name).filter(Boolean).join('; ') || undefined
+        }))
+    };
+}
+
+function kiMarkierungenEntfernen() {
+    document.querySelectorAll('.dora-ki-fehler, .dora-ki-hinweis').forEach(el => {
+        el.classList.remove('dora-ki-fehler', 'dora-ki-hinweis');
+    });
+}
+
+function kiPanelOeffnen() {
+    let panel = document.getElementById('dora-ki-panel');
+    if (panel) panel.remove();
+    panel = createEl('div');
+    panel.id = 'dora-ki-panel';
+    panel.style.cssText = 'position:fixed; top:70px; right:20px; z-index:9998; width:370px; max-height:72vh; '
+        + 'display:flex; flex-direction:column; background:#fff; border:1px solid #cbd5e0; '
+        + 'border-left:5px solid #6b46c1; border-radius:5px; box-shadow:0 4px 16px rgba(0,0,0,.2); '
+        + 'font:13px sans-serif; color:#333;';
+
+    const kopf = createEl('div');
+    kopf.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:8px 12px; border-bottom:1px solid #e2e8f0;';
+    const titel = createEl('b', '', '🤖 KI-Check');
+    kopf.appendChild(titel);
+    const zu = createEl('span', '', '✕');
+    zu.title = 'Schließen und Markierungen entfernen';
+    zu.style.cssText = 'cursor:pointer; padding:0 4px; color:#718096;';
+    zu.onclick = () => { panel.remove(); kiMarkierungenEntfernen(); };
+    kopf.appendChild(zu);
+    panel.appendChild(kopf);
+
+    const koerper = createEl('div');
+    koerper.style.cssText = 'padding:8px 12px; overflow:auto;';
+    panel.appendChild(koerper);
+    document.body.appendChild(panel);
+    return { panel: panel, koerper: koerper, titel: titel };
+}
+
+function kiZeigeBefunde(ergebnis, quellen) {
+    const { koerper, titel } = kiPanelOeffnen();
+    kiMarkierungenEntfernen();
+    const befunde = ergebnis.findings || [];
+    titel.textContent = befunde.length ? `🤖 KI-Check: ${befunde.length} Befund${befunde.length > 1 ? 'e' : ''}` : '🤖 KI-Check';
+
+    if (!befunde.length) {
+        const ok = createEl('div', '', '✅ Keine Abweichungen von Handbuch und Belegquelle gefunden.');
+        ok.style.cssText = 'padding:6px 0;';
+        koerper.appendChild(ok);
+    }
+
+    befunde.forEach(b => {
+        const el = b.ref ? kiElemente[b.ref] : null;
+        const istFehler = b.severity === 'fehler';
+        if (el) el.classList.add(istFehler ? 'dora-ki-fehler' : 'dora-ki-hinweis');
+
+        const zeile = createEl('div');
+        zeile.style.cssText = 'padding:7px 0; border-bottom:1px solid #edf2f7;' + (el ? ' cursor:pointer;' : '');
+
+        const feldName = b.ref ? (kiFeldNamen[b.ref] || '') : '';
+        const kopfzeile = createEl('div');
+        kopfzeile.style.cssText = 'font-weight:600;';
+        kopfzeile.appendChild(document.createTextNode((istFehler ? '❌ ' : '⚠️ ') + (feldName || 'Datensatz')));
+        zeile.appendChild(kopfzeile);
+
+        zeile.appendChild(createEl('div', '', b.problem || ''));
+
+        if (b.suggestion) {
+            const v = createEl('div', '', 'Vorschlag: ' + b.suggestion);
+            v.style.cssText = 'margin-top:3px; padding:3px 6px; background:#f0fff4; border-radius:3px; white-space:pre-wrap;';
+            zeile.appendChild(v);
+        }
+        if (b.rule) {
+            const r = createEl('div', '', '📖 ' + b.rule);
+            r.style.cssText = 'margin-top:3px; font-size:11px; color:#718096;';
+            zeile.appendChild(r);
+        }
+        if (el) {
+            zeile.title = 'Klicken, um zum Feld zu springen';
+            zeile.onclick = () => {
+                macheFeldSichtbar(el.closest('.form-item') || el);
+                try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { el.scrollIntoView(true); }
+            };
+        }
+        koerper.appendChild(zeile);
+    });
+
+    const fuss = createEl('div', '', 'Modell ' + (ergebnis.model || 'Haiku') + ' · Beleg: ' + quellen
+        + ' · Vorschläge der KI bitte prüfen.');
+    fuss.style.cssText = 'margin-top:8px; font-size:11px; color:#a0aec0;';
+    koerper.appendChild(fuss);
+}
+
+function kiZeigeFehler(text) {
+    const { koerper } = kiPanelOeffnen();
+    const f = createEl('div', '', '❌ ' + text);
+    f.style.cssText = 'color:#c53030; white-space:pre-wrap;';
+    koerper.appendChild(f);
+}
+
+let kiFeldNamen = {};   // "f12" -> Beschriftung, fuer die Anzeige der Befunde
+
+function erzeugeKiCheckKnopf(doiInput) {
+    const knopf = createEl('button', 'dora-helper-button', '🤖 KI-Check');
+    knopf.type = 'button';
+    knopf.title = 'Prüft den Datensatz mit Claude Haiku gegen die Handbuchregeln und die Vorlage (kostet API-Guthaben)';
+
+    knopf.addEventListener('click', () => {
+        const doi = doiInput.value.trim();
+        const form = doiInput.closest('form') || document.querySelector('form');
+        if (!form) { kiZeigeFehler('Kein Formular gefunden.'); return; }
+
+        const alterText = knopf.textContent;
+        knopf.disabled = true;
+        knopf.textContent = '⏳ prüft …';
+        const fertig = () => { knopf.disabled = false; knopf.textContent = alterText; };
+
+        ladeHandbuch((daten) => {
+            const erfasst = kiFormularErfassen(form, daten);
+            kiFeldNamen = {};
+            erfasst.formular.forEach(f => { kiFeldNamen[f.ref] = f.label; });
+
+            const senden = (crossref) => {
+                const referenz = {};
+                const quellen = [];
+                const kr = kiReferenzAusCrossref(crossref);
+                if (kr) { referenz.crossref = kr; quellen.push('Crossref'); }
+                const pdf = doi && kiPdfErgebnisse.get(doi.toLowerCase());
+                if (pdf) {
+                    referenz.pdf = {
+                        titel: pdf.title, abstract: pdf.abstract, keywords: pdf.keywords, seitenzahl: pdf.page_count,
+                        autoren: (pdf.authors || []).map(a => ({ nachname: a.family, vorname: a.given, institut: a.institute, affiliationen: a.affiliations, corresponding: a.corresponding || undefined }))
+                    };
+                    quellen.push('PDF');
+                }
+                const regeln = kiRegelnSammeln(erfasst.felder, daten);
+                if (!regeln.length) {
+                    fertig();
+                    kiZeigeFehler('Das Handbuch (handbuch.json) ließ sich nicht laden oder enthält keine Regeln zu den befüllten Feldern.');
+                    return;
+                }
+                if (!quellen.length) referenz.hinweis = 'Keine Belegquelle verfügbar - nur interne Konsistenz und Regelform prüfen.';
+
+                chrome.runtime.sendMessage({
+                    action: 'kiCheckDatensatz',
+                    formular: erfasst.formular,
+                    institut: aktuellesInstitut(doi),
+                    regeln: regeln,
+                    referenz: referenz
+                }, (antwort) => {
+                    fertig();
+                    if (chrome.runtime.lastError || !antwort || !antwort.success) {
+                        kiZeigeFehler('KI-Check fehlgeschlagen: '
+                            + ((antwort && antwort.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'keine Antwort'));
+                        return;
+                    }
+                    kiZeigeBefunde(antwort.data, quellen.length ? quellen.join(' + ') : 'keiner');
+                });
+            };
+
+            const bekannt = doi ? kiDoiDaten.get(doi.toLowerCase()) : null;
+            if (bekannt || !doi) { senden(bekannt && bekannt.crossref); return; }
+            chrome.runtime.sendMessage({ action: 'fetchData', doi: doi }, (r) => {
+                if (r && r.success) kiDoiDaten.set(doi.toLowerCase(), r.data);
+                senden(r && r.success ? r.data.crossref : null);
+            });
+        });
+    });
+
+    return knopf;
 }
 
 function injectDOIButton(doiInput) {
@@ -1516,13 +2847,36 @@ function injectDOIButton(doiInput) {
     });
 
     container.appendChild(btn);
+    container.appendChild(erzeugeKiCheckKnopf(doiInput));
 
     doiInput.parentNode.appendChild(container);
 }
 
+// Fehler der PDF-Auswertung: eigene Meldung unten rechts. renderErrorBox
+// wuerde die Ergebnisbox leeren und die DOI-Ergebnisse darin verdraengen.
+function zeigePdfFehler(text) {
+    const el = zeigeHaikuHinweis('');
+    el.replaceChildren();
+    el.style.background = '#fff5f5';
+    el.style.borderColor = '#e53e3e';
+    el.style.whiteSpace = 'pre-wrap';
+    el.style.paddingRight = '28px';
+    el.style.maxHeight = '50vh';
+    el.style.overflow = 'auto';
+    el.appendChild(document.createTextNode('❌ ' + text));
+    const zu = createEl('span', '', '✕');
+    zu.title = 'Schließen';
+    zu.style.cssText = 'position:absolute; top:4px; right:8px; cursor:pointer; color:#718096;';
+    zu.onclick = () => el.remove();
+    el.appendChild(zu);
+    clearTimeout(el._doraTimer);
+    el._doraTimer = setTimeout(() => el.remove(), 15000);
+    return el;
+}
+
 async function handlePdfFile(file) {
     if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-        renderErrorBox("Bitte eine PDF-Datei auswählen.");
+        zeigePdfFehler("Bitte eine PDF-Datei auswählen.");
         return;
     }
 
@@ -1533,39 +2887,31 @@ async function handlePdfFile(file) {
         dropZone.style.backgroundColor = '#fff3cd';
     }
 
-    // Hugging Face Space
-    const API_URL = "https://andrehoffmann80-pdf-analyzer.hf.space/analyze";
-    const formData = new FormData();
-    formData.append("file", file);
-
     try {
-        const response = await fetch(API_URL, {
-            method: "POST",
-            body: formData
+        const dataUrl = await new Promise((resolve, reject) => {
+            const leser = new FileReader();
+            leser.onload = () => resolve(leser.result);
+            leser.onerror = () => reject(new Error('Datei konnte nicht gelesen werden.'));
+            leser.readAsDataURL(file);
         });
 
-        if (!response.ok) {
-            throw new Error(`Server Fehler: ${response.status}`);
+        const antwort = await new Promise(resolve =>
+            chrome.runtime.sendMessage({ action: 'analyzePdf', fileData: dataUrl, institut: aktuellesInstitut('') }, resolve));
+        if (!antwort || !antwort.success) {
+            throw new Error((antwort && antwort.error) || 'Keine Antwort vom Hintergrundskript');
         }
 
-        const data = await response.json();
-
-        if (data.status === "success") {
-            if (dropZone) {
-                dropZone.textContent = '📄 PDF hier ablegen'; // Reset
-                dropZone.style.backgroundColor = '#f9f9f9';
-            }
-            confirmAndFillPdfData(data, 'file');
-        } else {
-            throw new Error(data.message || "Unbekannter Fehler");
+        if (dropZone) {
+            dropZone.textContent = '📄 PDF hier ablegen'; // Reset
+            dropZone.style.backgroundColor = '#f9f9f9';
         }
-
+        confirmAndFillPdfData(antwort.data, 'file');
     } catch (error) {
         if (dropZone) {
             dropZone.textContent = '📄 PDF hier ablegen';
             dropZone.style.backgroundColor = '#f9f9f9';
         }
-        renderErrorBox("PDF Analyse fehlgeschlagen: " + error.message + "\n\n(Hugging Face Space erreichbar?)");
+        zeigePdfFehler("PDF Analyse fehlgeschlagen: " + error.message);
         console.error("PDF Analyse fehlgeschlagen:", error);
     }
 }
@@ -1596,7 +2942,8 @@ async function handlePdfUrl(url, triggerBtn = null, localPath = null) {
 
             chrome.runtime.sendMessage({
                 action: "analyzePdfViaTab",
-                pdfUrl: url
+                pdfUrl: url,
+                institut: aktuellesInstitut('')
             }, (response) => {
                 if (triggerBtn) triggerBtn.disabled = false;
                 if (response && response.success) {
@@ -1611,14 +2958,14 @@ async function handlePdfUrl(url, triggerBtn = null, localPath = null) {
                             triggerBtn.title = '';
                         }, 3000);
                     }
-                    renderErrorBox("PDF Analyse fehlgeschlagen: " + (response ? response.error : "Unbekannter Fehler"));
+                    zeigePdfFehler("PDF Analyse fehlgeschlagen: " + (response ? response.error : "Unbekannter Fehler"));
                 }
             });
             return;
         }
 
         // FALLBACK: Use old method only for localPath (downloaded files)
-        chrome.runtime.sendMessage({ action: "analyzePdfUrl", pdfUrl: url, localPath: localPath }, (response) => {
+        chrome.runtime.sendMessage({ action: "analyzePdfUrl", pdfUrl: url, localPath: localPath, institut: aktuellesInstitut('') }, (response) => {
             if (triggerBtn) triggerBtn.disabled = false;
             if (response && response.success) {
                 if (triggerBtn) triggerBtn.textContent = originalText;
@@ -1632,7 +2979,7 @@ async function handlePdfUrl(url, triggerBtn = null, localPath = null) {
                         triggerBtn.title = '';
                     }, 3000);
                 }
-                renderErrorBox("PDF URL Analyse fehlgeschlagen: " + (response ? response.error : "Unbekannter Fehler"));
+                zeigePdfFehler("PDF URL Analyse fehlgeschlagen: " + (response ? response.error : "Unbekannter Fehler"));
             }
         });
     } catch (error) {
@@ -1643,27 +2990,12 @@ async function handlePdfUrl(url, triggerBtn = null, localPath = null) {
                 triggerBtn.textContent = originalText;
             }, 3000);
         }
-        renderErrorBox("PDF Analyse fehlgeschlagen: " + error.message);
+        zeigePdfFehler("PDF Analyse fehlgeschlagen: " + error.message);
     }
 }
 
 function confirmAndFillPdfData(data, sourceType = 'url') {
-    let message = "PDF Analyse erfolgreich.\n\nMöchten Sie folgende Daten übernehmen?\n\n";
-
-    let hasChanges = false;
-
-    // Check Page Count
-    if (data.page_count) {
-        message += `- Seitenanzahl: ${data.page_count}\n`;
-        hasChanges = true;
-    }
-
-    // Check Keywords
-    if (data.keywords && data.keywords.length > 0) {
-        message += `- ${data.keywords.length} Keywords gefunden: ${data.keywords.slice(0, 5).join(', ')}${data.keywords.length > 5 ? '...' : ''}\n`;
-        hasChanges = true;
-    }
-
+    const hasChanges = !!(data.page_count || data.abstract || (data.keywords && data.keywords.length));
     if (!hasChanges) {
         let errorMsg = "Analyse lieferte keine Daten.\n\n";
 
@@ -1678,13 +3010,1136 @@ function confirmAndFillPdfData(data, sourceType = 'url') {
             errorMsg += "Ursache: Wahrscheinlich konnte das PDF nicht direkt abgerufen werden (Login/Redirect).";
         }
         errorMsg += "\n\nLösung: Bitte PDF manuell herunterladen und per Drag & Drop analysieren.";
-        renderErrorBox(errorMsg);
+        zeigePdfFehler(errorMsg);
         return;
     }
 
-    if (confirm(message)) {
-        fillFormFromPdfData(data);
+    zeigeHaikuVorschlag(data, sourceType);
+}
+
+// ---------------------------------------------------------------------------
+// Haiku-Vorschlag: Popup mit den aus dem PDF gelesenen Angaben. Jede Angabe
+// laesst sich einzeln abwaehlen; uebernommen wird nur, was angehakt ist.
+// Funding und Strahllinien stehen nur zur Ansicht da - Foerderung hat ihre
+// eigene Pruefung (Panel "Funding"), und fuer Strahllinien gibt es kein Feld.
+// ---------------------------------------------------------------------------
+function zeigeHaikuVorschlag(data, sourceType) {
+    const alt = document.getElementById('dora-haiku-popup');
+    if (alt) alt.remove();
+
+    const overlay = createEl('div');
+    overlay.id = 'dora-haiku-popup';
+    overlay.style.cssText = 'position:fixed; inset:0; z-index:2147483000; background:rgba(0,0,0,.35); '
+        + 'display:flex; align-items:center; justify-content:center; font-family:sans-serif;';
+
+    const dialog = createEl('div');
+    dialog.style.cssText = 'background:#fff; border-radius:6px; box-shadow:0 8px 30px rgba(0,0,0,.3); '
+        + 'width:min(680px, 94vw); max-height:88vh; display:flex; flex-direction:column; color:#222;';
+
+    const kopf = createEl('div');
+    kopf.style.cssText = 'padding:12px 16px; border-bottom:1px solid #e2e8f0; display:flex; align-items:baseline; gap:10px;';
+    kopf.appendChild(createEl('b', '', '📄 Metadaten aus dem PDF'));
+    const modell = createEl('span', '', 'Vorschlag von ' + (data.model || 'Haiku') + ' – bitte prüfen');
+    modell.style.cssText = 'font-size:12px; color:#718096;';
+    kopf.appendChild(modell);
+    dialog.appendChild(kopf);
+
+    const koerper = createEl('div');
+    koerper.style.cssText = 'padding:10px 16px; overflow:auto; flex:1;';
+    dialog.appendChild(koerper);
+
+    const auswahl = {};   // feld -> Checkbox
+
+    const abschnitt = (feld, titel, inhaltEl, vorgewaehlt, hinweis) => {
+        const zeile = createEl('div');
+        zeile.style.cssText = 'padding:8px 0; border-bottom:1px solid #edf2f7;';
+        const label = createEl('label');
+        label.style.cssText = 'display:flex; gap:8px; align-items:baseline; font-weight:600; cursor:pointer;';
+        if (feld) {
+            const cb = createEl('input');
+            cb.type = 'checkbox';
+            cb.checked = vorgewaehlt;
+            auswahl[feld] = cb;
+            label.appendChild(cb);
+        }
+        label.appendChild(document.createTextNode(titel));
+        if (hinweis) {
+            const h = createEl('span', '', hinweis);
+            h.style.cssText = 'font-weight:400; font-size:11px; color:#b7791f;';
+            label.appendChild(h);
+        }
+        zeile.appendChild(label);
+        inhaltEl.style.margin = '4px 0 0 ' + (feld ? '24px' : '0');
+        zeile.appendChild(inhaltEl);
+        koerper.appendChild(zeile);
+    };
+
+    const textBlock = (text, hoehe) => {
+        const el = createEl('div', '', text);
+        el.style.cssText = 'font-size:13px; line-height:1.4; white-space:pre-wrap;'
+            + (hoehe ? ` max-height:${hoehe}px; overflow:auto;` : '');
+        return el;
+    };
+
+    if (data.title) {
+        abschnitt(null, 'Titel im PDF', textBlock(data.title));
     }
+    if (data.title_dora) {
+        const vorhanden = leseTitelImFormular();
+        const feldDa = vorhanden !== null;
+        const leer = feldDa && !vorhanden;
+        abschnitt(leer ? 'title_dora' : null,
+            'Titel in Sentence case (DORA)' + (feldDa && !leer ? ' – Formular hat schon einen Titel, wird nicht überschrieben' : ''),
+            textBlock(data.title_dora), true);
+    } else if (data.title && data.title_language && data.title_language !== 'eng') {
+        abschnitt(null, 'Titel nicht übernommen', textBlock('Der Artikel ist nicht englisch (' + data.title_language + ') – ein Titel in Sentence case wird nur für englische Artikel vorgeschlagen.'));
+    }
+    // Einfache Felder: leer -> vorangehakt; weicht ab -> nicht vorangehakt mit Hinweis; gleich -> nur Anzeige
+    const feldAbschnitt = (schluessel, titel, vorschlag, aktuell, hinweisExtra) => {
+        if (aktuell && pdfVergleichText(aktuell) === pdfVergleichText(vorschlag)) {
+            abschnitt(null, titel + ' ✅', textBlock(vorschlag + '   (steht schon so im Formular)'));
+            return;
+        }
+        const leer = !aktuell;
+        abschnitt(schluessel, titel, textBlock(vorschlag + (hinweisExtra ? '\n' + hinweisExtra : '')), leer,
+            leer ? '' : 'Formular: ' + aktuell);
+    };
+
+    const startEl = pdfSeitenElement('start');
+    const endEl = pdfSeitenElement('end');
+    const seiten = startEl ? seitenVorschlag(data) : null;
+    if (seiten) {
+        data.pages = { start: seiten.start, end: seiten.end };
+        const aktuell = [pdfFeldAnzeige(startEl), pdfFeldAnzeige(endEl)].filter(Boolean).join(' – ');
+        const gleich = pdfVergleichText(pdfFeldAnzeige(startEl)) === pdfVergleichText(seiten.start)
+            && pdfVergleichText(pdfFeldAnzeige(endEl)) === pdfVergleichText(seiten.end);
+        if (gleich) abschnitt(null, 'Seiten ✅', textBlock(seiten.anzeige + '   (steht schon so im Formular)'));
+        else {
+            const leer = !pdfFeldAnzeige(startEl) && !pdfFeldAnzeige(endEl);
+            abschnitt('pages', 'Seiten (Start Page' + (seiten.end ? ' / End Page' : '') + ')',
+                textBlock(seiten.anzeige + (seiten.nurAnzahl
+                    ? '\nnur die Seitenzahl des PDFs – stimmt nur, wenn das PDF die publizierte Version ist' : '')),
+                leer, leer ? '' : 'Formular: ' + aktuell);
+        }
+    }
+    // Personenlisten (Herausgeber, Betreuer): nur Formulare mit dem jeweiligen Panel
+    Object.keys(PDF_PERSONEN_PANELS).forEach(art => {
+        const cfg = PDF_PERSONEN_PANELS[art];
+        if (!findePersonenPanel(art) || !data[art] || !data[art].length) return;
+        const vorschlag = data[art].map(x => [x.family, x.given].filter(Boolean).join(', '));
+        const aktuell = lesePersonenImFormular(art);
+        const gleich = aktuell.length === vorschlag.length && aktuell.every((a, i) => pdfVergleichText(a) === pdfVergleichText(vorschlag[i]));
+        if (gleich) abschnitt(null, cfg.titel + ' ✅', textBlock(vorschlag.join('\n') + '\n(stehen schon so im Formular)'));
+        else abschnitt(art, `${cfg.titel} (${vorschlag.length})`, textBlock(vorschlag.join('\n')), aktuell.length === 0,
+            aktuell.length ? 'Formular: ' + aktuell.length + ' Eintrag/Einträge, werden überschrieben' : '');
+    });
+    // Berichte und Abschlussarbeiten haben nur ein Pages-Feld (Gesamtzahl der Seiten)
+    const seitenGesamt = pdfGesamtSeitenElement();
+    if (!startEl && seitenGesamt && data.page_count) {
+        data.pages_total = String(data.page_count);   // Report/Thesis: nur die Zahl (Gesamtseitenzahl)
+        feldAbschnitt('pages_total', 'Pages', data.pages_total, pdfFeldAnzeige(seitenGesamt),
+            'Seitenzahl des PDFs – stimmt nur, wenn das PDF die publizierte Version ist');
+    }
+    if (data.language && pdfFeldElement('language')) {
+        const sel = pdfFeldElement('language');
+        const opt = Array.from(sel.options).find(o => o.value === data.language);
+        if (opt) feldAbschnitt('language', 'Language', opt.textContent.trim(), pdfFeldAnzeige(sel));
+    }
+    PDF_FELD_REIHENFOLGE.filter(k => k !== 'language').forEach(k => {
+        const el = pdfFeldElement(k);
+        if (data[k] && el) feldAbschnitt(k, PDF_FELDER[k].titel, data[k], pdfFeldAnzeige(el));
+    });
+    if (data.abstract) {
+        const vorhanden = leseAbstractImFormular();
+        abschnitt('abstract', 'Abstract', textBlock(data.abstract, 220), !vorhanden,
+            vorhanden ? 'ersetzt den vorhandenen Abstract' : '');
+    }
+    if (data.keywords && data.keywords.length) {
+        const liste = textBlock(data.keywords.join(' · '));
+        abschnitt('keywords', `Keywords (${data.keywords.length})`, liste, true);
+    }
+    if (data.authors && data.authors.length) {
+        const ziel = data.institut || '';
+        const eigene = data.authors.filter(a => ziel && a.institute === ziel).length;
+        const liste = createEl('div');
+        liste.style.cssText = 'max-height:220px; overflow:auto; font-size:13px; line-height:1.35;';
+        data.authors.forEach(a => {
+            const zeile = createEl('div');
+            zeile.style.cssText = 'padding:2px 4px; border-radius:3px;'
+                + (ziel && a.institute === ziel ? ' background:#e6fffa; border-left:3px solid #38b2ac;' : '');
+            const name = [a.family, a.given].filter(Boolean).join(', ');
+            const kopfTeile = [name];
+            if (a.institute) kopfTeile.push('[' + a.institute.toUpperCase() + ']');
+            if (a.corresponding) kopfTeile.push('✉');
+            zeile.appendChild(createEl('b', '', kopfTeile.join(' ')));
+            if (a.affiliations && a.affiliations.length) {
+                const aff = createEl('div', '', a.affiliations.join(' · ') + (a.department ? '  ➜ Abteilung: ' + a.department : ''));
+                aff.style.cssText = 'font-size:11px; color:#4a5568;';
+                zeile.appendChild(aff);
+            }
+            liste.appendChild(zeile);
+        });
+        const titel = `Autoren und Affiliationen (${data.authors.length}${ziel ? ', davon ' + eigene + ' ' + ziel.toUpperCase() : ''}; nur Ansicht)`;
+        abschnitt(null, titel, liste);
+
+        // Uebernahme ins Formular: nur Autoren des bearbeiteten Instituts werden
+        // ueber den Lookup verknuepft; das Corresponding-Tag gilt fuer alle vier
+        if (ziel && eigene) {
+            abschnitt('authors', `${eigene} ${ziel.toUpperCase()}-Autor${eigene > 1 ? 'en' : ''} verknüpfen (Lookup „Standardized Form of Name“)`,
+                textBlock('Der Lookup liefert die Autorenobjekte zum Namen; du wählst je Autor aus. Die Einheit (Group/Department) setzt DORA bei der Auswahl.'), true);
+        }
+        // Nicht jedes Formular hat das Tag (z.B. das PSI-Buchkapitel): dann kein Angebot
+        if (data.authors.some(a => a.corresponding) && findeCorrespondingFeld()) {
+            const korrAutoren = data.authors.filter(a => a.corresponding);
+            const wert = ziel && korrAutoren.some(a => a.institute === ziel) ? 'Yes' : 'No';
+            const korr = korrAutoren.map(a => a.family + (a.institute ? ' [' + a.institute.toUpperCase() + ']' : ' [extern]')).join(', ');
+            abschnitt('corresponding', ziel ? `Feld „${ziel.toUpperCase()} Corresponding Author“ auf ${wert} setzen` : 'Corresponding-Author-Tag setzen',
+                textBlock('Corresponding Author laut PDF: ' + korr), !!ziel);
+        }
+    }
+    const fp = data.funding_projects || { items: [], unsupported: [] };
+    if (fp.items.length || fp.unsupported.length) {
+        const vorhandene = new Set(readExistingFunding().filter(r => !r.isEmpty).map(r => fundingKey(r.funderName, r.awardNumber)));
+        const feldDa = !!findFundingContainer();
+        const neue = fp.items.filter(i => !vorhandene.has(fundingKey(i.funderName, i.awardNumber)));
+        const liste = createEl('div');
+        liste.style.cssText = 'font-size:13px; line-height:1.4;';
+        fp.items.forEach(i => {
+            const da = vorhandene.has(fundingKey(i.funderName, i.awardNumber));
+            const z = createEl('div', '', (da ? '✅ ' : '➕ ') + (i.fundingStream || i.funderKey) + ' ' + i.awardNumber
+                + (i.awardTitle ? ' – ' + i.awardTitle : '') + (da ? '  (steht schon im Formular)' : ''));
+            liste.appendChild(z);
+        });
+        fp.unsupported.forEach(u => {
+            const z = createEl('div', '', '🚫 ' + u.name + ' ' + u.awards.join(', ') + '  (nur SNSF und EC sind in DORA eintragbar)');
+            z.style.color = '#718096';
+            liste.appendChild(z);
+        });
+        abschnitt(feldDa && neue.length ? 'funding_projects' : null,
+            `Funding-Projekte (${fp.items.length})` + (feldDa && neue.length ? ' eintragen' : ''),
+            liste, true);
+        if (feldDa && neue.length) {
+            const h = createEl('div', '', 'Eingetragen wird nur, was DORAs Funding-Auswahlliste (Lookup) kennt; Titel und Stream kommen von dort.');
+            h.style.cssText = 'font-size:11px; color:#718096; margin:2px 0 0 24px;';
+            koerper.lastChild.appendChild(h);
+        }
+    }
+    if (data.funding) {
+        abschnitt(null, 'Funding / Acknowledgements (nur Ansicht)', textBlock(data.funding, 140));
+    }
+    if (data.research_facilities && data.research_facilities.length) {
+        const feldDa = !!document.querySelector('select[name$="[facility]"]');
+        const zeilen = data.research_facilities.map(r => r.facility + (r.beamline ? ' – ' + r.beamline : ''));
+        abschnitt(feldDa ? 'facilities' : null,
+            'Facilities & Beamlines' + (feldDa ? ` (${zeilen.length})` : ' (nur Ansicht – das Formular hat kein Panel dafür)'),
+            textBlock(zeilen.join('\n')), true);
+    }
+    if (!Object.keys(auswahl).length) {
+        koerper.appendChild(textBlock('Aus dem PDF ließ sich nichts zum Übernehmen lesen.'));
+    }
+
+    const fuss = createEl('div');
+    fuss.style.cssText = 'padding:10px 16px; border-top:1px solid #e2e8f0; display:flex; gap:8px; justify-content:flex-end;';
+
+    const schliessen = createEl('button', 'dora-box-btn btn-secondary', 'Schließen');
+    schliessen.type = 'button';
+    schliessen.style.width = 'auto';
+    schliessen.onclick = () => overlay.remove();
+
+    const uebernehmen = createEl('button', 'dora-box-btn', 'Ausgewählte übernehmen');
+    uebernehmen.type = 'button';
+    uebernehmen.style.width = 'auto';
+    uebernehmen.disabled = !Object.keys(auswahl).length;
+    uebernehmen.onclick = async () => {
+        const gewaehlt = {};
+        Object.keys(auswahl).forEach(feld => {
+            if (auswahl[feld].checked && ['authors', 'corresponding', 'facilities', 'funding_projects', 'editors', 'supervisors'].indexOf(feld) === -1) gewaehlt[feld] = data[feld];
+        });
+        fillFormFromPdfData(gewaehlt);
+
+        const autorenWahl = {
+            autoren: !!(auswahl.authors && auswahl.authors.checked),
+            corresponding: !!(auswahl.corresponding && auswahl.corresponding.checked),
+            facilities: !!(auswahl.facilities && auswahl.facilities.checked),
+            funding: !!(auswahl.funding_projects && auswahl.funding_projects.checked),
+            editors: !!(auswahl.editors && auswahl.editors.checked),
+            supervisors: !!(auswahl.supervisors && auswahl.supervisors.checked)
+        };
+        if (!autorenWahl.autoren && !autorenWahl.corresponding && !autorenWahl.facilities && !autorenWahl.funding && !autorenWahl.editors && !autorenWahl.supervisors) { overlay.remove(); return; }
+
+        // Der Lookup braucht einige Sekunden: Popup bleibt offen und zeigt Fortschritt, dann den Bericht
+        uebernehmen.disabled = true;
+        schliessen.disabled = true;
+        const status = createEl('div', '', '⏳ Übernahme läuft …');
+        status.style.cssText = 'padding:8px 0;';
+        koerper.replaceChildren(status);
+        try {
+            const bericht = await uebernehmeAutorenAusPdf(data, autorenWahl, (t) => { status.textContent = '⏳ ' + t; },
+                (plan) => zeigeAutorAuswahl(koerper, plan, uebernehmen, schliessen, status));
+            zeigeUebernahmeBericht(koerper, bericht);
+        } catch (e) {
+            koerper.replaceChildren(createEl('div', '', '❌ Übernahme abgebrochen: ' + e.message));
+        }
+        uebernehmen.style.display = 'none';
+        schliessen.disabled = false;
+        schliessen.textContent = 'Fertig';
+    };
+
+    fuss.appendChild(schliessen);
+    fuss.appendChild(uebernehmen);
+    dialog.appendChild(fuss);
+
+    overlay.appendChild(dialog);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.addEventListener('keydown', function esc(e) {
+        if (e.key !== 'Escape') return;
+        overlay.remove();
+        document.removeEventListener('keydown', esc);
+    });
+    document.body.appendChild(overlay);
+}
+
+// ---------------------------------------------------------------------------
+// Autoren aus dem PDF ins Formular uebernehmen.
+//
+// Handbuch: jeder Autor des bearbeiteten Instituts muss ueber "Standardized
+// Form of Name" mit seinem DORA-Autorenobjekt verknuepft sein; "Department"
+// verlinkt auf die Abteilung. Darum wird nichts frei eingetippt, sondern der
+// Lookup des Feldes benutzt (wie ein Klick auf einen Vorschlag der
+// Autovervollstaendigung). Findet er den Autor nicht, bleibt das Feld leer und
+// der Autor steht im Bericht - angelegt oder geraten wird nichts. Die
+// Verknuepfung setzt DORA selbst: die Auswahl fuellt den pid-Wert und meist
+// auch das Department.
+// ---------------------------------------------------------------------------
+function autorNormalisieren(text) {
+    return String(text || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .toLowerCase().replace(/[^a-z\s-]/g, ' ').replace(/[-\s]+/g, ' ').trim();
+}
+
+// Zahlenfolgen (z.B. Kennungen) gehoeren nicht in Berichte
+function ohneNummern(text) {
+    return String(text || '').replace(/\d{5,}/g, '********');
+}
+
+function autorPaneFelder(pane) {
+    const q = (suffix) => pane.querySelector('input[type="text"][name$="' + suffix + '"]');
+    const name = q('[valName]');
+    const abteilung = q('[affiliation]');
+    const pidVon = (el, suffix) => el ? pane.querySelector('input[name="' + el.name.replace(suffix, '[pid]') + '"]') : null;
+    return {
+        pane: pane,
+        family: pane.querySelector('input[name$="[family]"]'),
+        given: pane.querySelector('input[name$="[given]"]'),
+        name: name, namePid: pidVon(name, '[valName]'),
+        abteilung: abteilung, abteilungPid: pidVon(abteilung, '[affiliation]')
+    };
+}
+
+// Zum PDF-Autor die Zeile im Formular suchen: Nachname (ohne Akzente, "von"
+// u.ae. egal) und - falls beide da sind - der Anfangsbuchstabe des Vornamens
+function findeAutorPane(autor, felder) {
+    const fam = autorNormalisieren(autor.family);
+    const vor = autorNormalisieren(autor.given).charAt(0);
+    const passend = felder.filter(f => {
+        const ff = autorNormalisieren(f.family && f.family.value);
+        if (!ff || !fam) return false;
+        const famGleich = ff === fam || ff.endsWith(' ' + fam) || fam.endsWith(' ' + ff);
+        if (!famGleich) return false;
+        const fv = autorNormalisieren(f.given && f.given.value).charAt(0);
+        return !vor || !fv || vor === fv;
+    });
+    return passend.length === 1 ? passend[0] : (passend.length ? passend[0] : null);
+}
+
+function warteBis(bedingung, ms) {
+    return new Promise(fertig => {
+        const bis = Date.now() + ms;
+        const pruefen = () => {
+            let ok = false;
+            try { ok = !!bedingung(); } catch (e) { /* weiter warten */ }
+            if (ok) { fertig(true); return; }
+            if (Date.now() > bis) { fertig(false); return; }
+            setTimeout(pruefen, 100);
+        };
+        pruefen();
+    });
+}
+
+// Suche im Autovervollstaendigungs-Feld; liefert die Vorschlagsliste
+// ({li, text}) oder null, wenn das Feld nicht antwortet. Das Popup ist das
+// gemeinsame Drupal-Element #autocomplete (wie bei der Journal-Abfrage).
+async function autoLookup(input, suchtext) {
+    const alt = document.getElementById('autocomplete');
+    if (alt) alt.remove();
+    input.value = suchtext;
+    const posten = await journalVorschlaegeHolen(input, window, 7000);
+    if (posten === null) return null;
+    return posten.map(li => ({ li: li, text: journalPostenText(li) }));
+}
+
+// Passt ein Vorschlag zum Autor? Alle Nachnamen-Woerter und der Vornamen-
+// Anfangsbuchstabe muessen im Text vorkommen.
+function vorschlagPasstZuAutor(text, autor) {
+    const t = ' ' + autorNormalisieren(text) + ' ';
+    const famWoerter = autorNormalisieren(autor.family).split(' ').filter(w => w.length > 1 || autorNormalisieren(autor.family).length === 1);
+    if (!famWoerter.every(w => t.indexOf(' ' + w) !== -1)) return false;
+    const vor = autorNormalisieren(autor.given).split(' ').filter(Boolean);
+    if (!vor.length) return true;
+    return vor.some(w => t.indexOf(' ' + w.charAt(0)) !== -1);
+}
+
+// Phase 1: den Lookup des Feldes "Standardized Form of Name" befragen. Der
+// Lookup liefert die Autorenobjekte zu einem Namen; welches das richtige ist,
+// entscheidet der Benutzer. Vorbelegt wird nur, wenn genau ein Vorschlag zum
+// Namen passt. Das Feld wird danach wieder auf seinen Ausgangswert gesetzt.
+async function sucheAutorKandidaten(autor, f) {
+    const eintrag = { autor: autor, felder: f, kandidaten: [], vorauswahl: -1, suchtext: '', status: 'kandidaten', hinweis: '' };
+    if (!f.name) { eintrag.status = 'fehler'; eintrag.hinweis = 'Feld „Standardized Form of Name“ nicht gefunden'; return eintrag; }
+
+    // Gespeichert ist die Form "Vorname Nachname"; je nach Suchindex trifft
+    // aber auch "Nachname, Vorname" oder der Nachname allein
+    const versuche = autor.given
+        ? [autor.given + ' ' + autor.family, autor.family + ', ' + autor.given, autor.family]
+        : [autor.family];
+
+    const ausgang = f.name.value;
+    let angetwortet = false;
+    let roh = [];
+    for (const suche of versuche) {
+        const liste = await autoLookup(f.name, suche);
+        if (liste === null) continue;
+        angetwortet = true;
+        const passend = liste.filter(p => vorschlagPasstZuAutor(p.text, autor));
+        if (passend.length) {
+            eintrag.kandidaten = passend.map(p => p.text);
+            eintrag.suchtext = suche;
+            eintrag.vorauswahl = passend.length === 1 ? 0 : -1;
+            break;
+        }
+        if (!roh.length && liste.length) { roh = liste.map(p => p.text); eintrag.suchtext = suche; }
+    }
+    f.name.value = ausgang;
+    const popup = document.getElementById('autocomplete');
+    if (popup) popup.remove();
+
+    if (!angetwortet) { eintrag.status = 'fehler'; eintrag.hinweis = 'Lookup hat nicht geantwortet'; return eintrag; }
+    if (!eintrag.kandidaten.length) {
+        // Nichts passt zum Namen: die Rohliste nur zur Ansicht, nicht zur Auswahl
+        eintrag.status = 'keintreffer';
+        eintrag.hinweis = roh.length
+            ? 'kein Vorschlag passt zum Namen (Lookup lieferte: ' + roh.slice(0, 4).map(ohneNummern).join(' | ') + ') – Autor in DORA nicht angelegt?'
+            : 'kein Treffer im Lookup – Autor in DORA nicht angelegt?';
+    }
+    return eintrag;
+}
+
+// Phase 2: den gewaehlten Vorschlag auswaehlen wie einen Klick in der Liste.
+// Die Liste verschwindet beim Verlassen des Feldes, darum wird die Suche
+// wiederholt und der Eintrag mit demselben Text gewaehlt.
+async function uebernehmeAutorWahl(eintrag, gewaehlterText) {
+    const { autor, felder: f } = eintrag;
+    const bericht = { autor: [autor.family, autor.given].filter(Boolean).join(', '), schritte: [], status: 'ok' };
+    const ausgang = f.name.value;
+
+    const liste = await autoLookup(f.name, eintrag.suchtext);
+    const treffer = (liste || []).find(p => p.text === gewaehlterText);
+    if (!treffer) {
+        f.name.value = ausgang;
+        bericht.status = 'fehler';
+        bericht.schritte.push('Der gewählte Vorschlag war bei der Wiederholung der Suche nicht mehr in der Liste');
+        return bericht;
+    }
+
+    journalVorschlagWaehlen(treffer.li, f.name, window);
+    const verknuepft = await warteBis(() => f.namePid && f.namePid.value.trim(), 3000);
+    const popup = document.getElementById('autocomplete');
+    if (popup) popup.remove();
+    if (!verknuepft) {
+        bericht.status = 'offen';
+        bericht.schritte.push('ausgewählt, aber keine Verknüpfung entstanden: ' + ohneNummern(gewaehlterText));
+        return bericht;
+    }
+    bericht.schritte.push('verknüpft: ' + ohneNummern(gewaehlterText));
+
+    // Group/Department: DORA fuellt es bei der Auswahl meist selbst
+    if (f.abteilung) {
+        await warteBis(() => f.abteilung.value.trim() && f.abteilungPid && f.abteilungPid.value.trim(), 2500);
+        const hat = f.abteilung.value.trim() && f.abteilungPid && f.abteilungPid.value.trim();
+        if (hat) {
+            bericht.schritte.push('Einheit: ' + ohneNummern(f.abteilung.value.trim()));
+            if (autor.department) bericht.schritte.push('im PDF genannt: „' + autor.department + '“ (Handbuch: Angabe der Vorlage gilt – bitte vergleichen)');
+        } else {
+            bericht.status = 'offen';
+            bericht.schritte.push('Einheit (Group/Department) nicht automatisch gefüllt'
+                + (autor.department ? '; im PDF genannt: „' + autor.department + '“' : '') + ' – bitte im Feld selbst auswählen');
+        }
+    }
+    return bericht;
+}
+
+// Das Corresponding-Author-Feld des Formulars: Beschriftung mit "corresponding",
+// aber nicht die E-Mail-Adresse. Die Form des Feldes (Auswahl, Haken, Text)
+// ist nicht fest - alle drei werden bedient.
+function findeCorrespondingFeld() {
+    // Bekanntes Feld: Select correspAuthor4RI ("<Institut> Corresponding Author", Yes/No)
+    const bekannt = document.querySelector('select[name="correspAuthor4RI"]');
+    if (bekannt) return { huelle: bekannt.closest('.form-item') || bekannt.parentElement, feld: bekannt, alle: [] };
+
+    const labels = Array.from(document.querySelectorAll('label, legend'));
+    for (const label of labels) {
+        const text = (label.textContent || '').toLowerCase();
+        if (!/corresponding/.test(text) || /mail/.test(text)) continue;
+        const huelle = label.closest('.form-item') || label.closest('fieldset') || label.parentElement;
+        const feld = huelle && huelle.querySelector('select, input[type="checkbox"], input[type="radio"], input[type="text"]');
+        if (feld) return { huelle: huelle, feld: feld, alle: huelle.querySelectorAll('input[type="radio"]') };
+    }
+    return null;
+}
+
+function setzeCorrespondingFeld(ziel, ja) {
+    const f = ziel.feld;
+    const gewuenscht = ja ? /^(yes|ja|true|1)$/i : /^(no|nein|false|0)$/i;
+    if (f.tagName === 'SELECT') {
+        const opt = Array.from(f.options).find(o => gewuenscht.test((o.textContent || '').trim()) || gewuenscht.test(o.value));
+        if (!opt) return false;
+        f.value = opt.value;
+    } else if (f.type === 'checkbox') {
+        f.checked = ja;
+    } else if (f.type === 'radio') {
+        const r = Array.from(ziel.alle).find(x => {
+            const l = ziel.huelle.querySelector('label[for="' + x.id + '"]');
+            return gewuenscht.test(x.value) || (l && gewuenscht.test((l.textContent || '').trim()));
+        });
+        if (!r) return false;
+        r.checked = true;
+        r.dispatchEvent(new Event('input', { bubbles: true }));
+        r.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+    } else {
+        f.value = ja ? 'Yes' : 'No';
+    }
+    f.dispatchEvent(new Event('input', { bubbles: true }));
+    f.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+}
+
+// Ziel und Ablauf: optionen = {autoren: bool, corresponding: bool}
+// Facilities & Beamlines (PSI): je Eintrag eine Zeile im Fieldpanel. Haiku
+// waehlt aus denselben Listen wie das Formular; geschrieben wird trotzdem nur,
+// was das Select kennt, und danach wird nachgelesen (writeFundingField).
+async function uebernehmeFacilities(items, bericht) {
+    const behaelter = () => {
+        const huelle = document.querySelector('.form-item-extension-research-facilities');
+        return huelle ? (huelle.closest('.islandora-form-fieldpanel-container') || huelle.parentElement) : null;
+    };
+    if (!behaelter()) {
+        bericht.push({ autor: 'Facilities & Beamlines', status: 'fehler', schritte: ['Panel im Formular nicht gefunden'] });
+        return;
+    }
+    const zeilen = () => Array.from(behaelter().querySelectorAll('.islandora-form-fieldpanel-pane')).map(pane => ({
+        pane: pane,
+        facility: pane.querySelector('select[name$="[facility]"]'),
+        beamline: pane.querySelector('select[name$="[beamline]"]')
+    }));
+
+    for (const item of items) {
+        const name = item.facility + (item.beamline ? ' – ' + item.beamline : '');
+        let rows = zeilen();
+        if (rows.some(r => r.facility && r.facility.value === item.facility && (r.beamline ? r.beamline.value : '') === (item.beamline || ''))) {
+            bericht.push({ autor: name, status: 'ok', schritte: ['steht bereits im Formular'] });
+            continue;
+        }
+
+        let ziel = rows.find(r => r.facility && !r.facility.value && r.beamline && !r.beamline.value);
+        if (!ziel) {
+            await addMissingRows(behaelter, rows.length + 1);
+            rows = zeilen();
+            ziel = rows.find(r => r.facility && !r.facility.value && r.beamline && !r.beamline.value);
+        }
+        if (!ziel) {
+            bericht.push({ autor: name, status: 'fehler', schritte: ['keine freie Zeile gefunden und keine neue angelegt'] });
+            continue;
+        }
+
+        const fs = await writeFundingField(ziel.facility, item.facility);
+        if (!/^(ok|repaired)/.test(fs)) {
+            bericht.push({ autor: name, status: 'fehler', schritte: ['Facility „' + item.facility + '“ nicht setzbar (' + fs + ')'] });
+            continue;
+        }
+        const schritte = ['Facility gesetzt'];
+        let status = 'ok';
+        if (item.beamline) {
+            // Die Facility kann die Beamline-Liste neu laden
+            await new Promise(r => setTimeout(r, 400));
+            const bs = await writeFundingField(ziel.beamline, item.beamline);
+            if (/^(ok|repaired)/.test(bs)) schritte.push('Beamline gesetzt');
+            else { status = 'offen'; schritte.push('Beamline „' + item.beamline + '“ nicht setzbar (' + bs + ') – bitte selbst wählen'); }
+        }
+        bericht.push({ autor: name, status: status, schritte: schritte });
+        await new Promise(r => setTimeout(r, 250));
+    }
+}
+
+// Funding aus dem PDF: je Projekt derselbe Weg wie im Funding-Panel
+// (applyFundingItem). Der Lookup in DORAs Auswahlliste entscheidet; ohne Beleg
+// wird nichts geschrieben.
+async function uebernehmeFundingAusPdf(items, bericht, meldung) {
+    if (!findFundingContainer()) {
+        bericht.push({ autor: 'Funding', status: 'fehler', schritte: ['Funding-Bereich im Formular nicht gefunden'] });
+        return;
+    }
+    let nr = 0;
+    for (const item of items) {
+        const name = (item.fundingStream || item.funderKey) + ' ' + item.awardNumber;
+        const vorhandene = new Set(readExistingFunding().filter(r => !r.isEmpty).map(r => fundingKey(r.funderName, r.awardNumber)));
+        if (vorhandene.has(fundingKey(item.funderName, item.awardNumber))) {
+            bericht.push({ autor: name, status: 'ok', schritte: ['steht bereits im Formular'] });
+            continue;
+        }
+        meldung(`Funding ${++nr}: ${name} …`);
+        try {
+            item.doraEntry = await lookupDoraFundingEntry(item);
+            const res = await applyFundingItem(item);
+            if (res.blocked) {
+                const e = item.doraEntry;
+                bericht.push({
+                    autor: name, status: 'offen',
+                    schritte: [res.blocked === 'not-in-vocabulary'
+                        ? (e && e.wrongFunder ? 'in DORAs Liste gehört die Nummer zu einem Projekt von ' + e.otherStream : 'nicht in DORAs Funding-Auswahlliste – nicht eintragbar')
+                        : 'Abgleich mit DORAs Auswahlliste fehlgeschlagen – nichts geschrieben']
+                });
+                continue;
+            }
+            const sc = res.skipped && res.skipped.length ? 'nicht gesetzt: ' + res.skipped.join(', ') : '';
+            bericht.push({
+                autor: name, status: sc ? 'offen' : 'ok',
+                schritte: ['eingetragen' + (item.awardTitle ? ': ' + item.awardTitle : '')].concat(sc ? [sc] : [])
+            });
+        } catch (e) {
+            bericht.push({ autor: name, status: 'fehler', schritte: [e.message] });
+        }
+        await new Promise(r => setTimeout(r, 250));
+    }
+}
+
+// Personenlisten ohne Lookup (Herausgeber, Betreuer): Fieldpanel mit je einer
+// Zeile aus Nachname und Vorname. Die Formulare nennen die Felder verschieden.
+const PDF_PERSONEN_PANELS = {
+    editors: { selector: '.form-item-host-editor', family: ['[familyEditor]', '[family]'], given: ['[givenEditor]', '[given]'], titel: 'Editors', label: /^editor/i },
+    supervisors: { selector: '.form-item-supervisor', family: ['[family]'], given: ['[given]'], titel: 'Supervisors', label: /^supervisor/i }
+};
+
+// Panel einer Personenliste: erst die bekannte Klasse, sonst ueber die Beschriftung
+// ("Editor(s)", "Supervisor(s)") bei abweichenden Formularen
+function findePersonenPanel(art) {
+    const cfg = PDF_PERSONEN_PANELS[art];
+    const direkt = document.querySelector(cfg.selector);
+    if (direkt) return direkt;
+    for (const label of document.querySelectorAll('label')) {
+        if (cfg.label.test(pdfLabelText(label)) && label.closest('.form-item-fieldpanel, .form-type-fieldpanel')) {
+            return label.closest('.form-item');
+        }
+    }
+    return null;
+}
+
+function personenFeld(pane, namen) {
+    for (const n of namen) {
+        const el = pane.querySelector('input[name$="' + n + '"]');
+        if (el) return el;
+    }
+    return null;
+}
+
+function lesePersonenImFormular(art) {
+    const cfg = PDF_PERSONEN_PANELS[art];
+    const huelle = cfg && findePersonenPanel(art);
+    if (!huelle) return [];
+    return Array.from(huelle.querySelectorAll('.islandora-form-fieldpanel-pane')).map(pane => {
+        const f = personenFeld(pane, cfg.family);
+        const g = personenFeld(pane, cfg.given);
+        return [f ? f.value.trim() : '', g ? g.value.trim() : ''].filter(Boolean).join(', ');
+    }).filter(Boolean);
+}
+
+async function uebernehmePersonen(art, personen, bericht) {
+    const cfg = PDF_PERSONEN_PANELS[art];
+    if (!findePersonenPanel(art)) {
+        bericht.push({ autor: cfg.titel, status: 'fehler', schritte: ['Panel im Formular nicht gefunden'] });
+        return;
+    }
+    await addMissingRows(() => findePersonenPanel(art), personen.length);
+    const panes = Array.from(findePersonenPanel(art).querySelectorAll('.islandora-form-fieldpanel-pane'));
+    let gesetzt = 0;
+    personen.forEach((p, i) => {
+        const pane = panes[i];
+        if (!pane) return;
+        const f = personenFeld(pane, cfg.family);
+        const g = personenFeld(pane, cfg.given);
+        if (!f) return;
+        setzePdfFeld(f, p.family);
+        if (g) { g.value = p.given || ''; g.dispatchEvent(new Event('input', { bubbles: true })); g.dispatchEvent(new Event('change', { bubbles: true })); }
+        gesetzt++;
+    });
+    bericht.push({
+        autor: cfg.titel, status: gesetzt === personen.length ? 'ok' : 'offen',
+        schritte: [gesetzt + ' von ' + personen.length + ' eingetragen' + (gesetzt < personen.length ? ' – Zeilen fehlen, bitte „Add" prüfen' : '')]
+    });
+}
+
+async function uebernehmeAutorenAusPdf(data, optionen, meldung, waehlen) {
+    const bericht = [];
+    const ziel = data.institut || '';
+    const autoren = data.authors || [];
+
+    if (optionen.autoren) {
+        if (!ziel) {
+            bericht.push({ autor: 'Autoren', status: 'fehler', schritte: ['Institut der Seite unbekannt (Pfad /eawag/, /empa/, /wsl/ oder /psi/ fehlt)'] });
+        } else {
+            const felder = kiAutorenPanes(document).map(autorPaneFelder);
+            const eigene = autoren.filter(a => a.institute === ziel);
+            const plan = [];
+            let nr = 0;
+            for (const autor of eigene) {
+                meldung(`Lookup ${++nr} von ${eigene.length}: ${autor.family} …`);
+                const name = [autor.family, autor.given].filter(Boolean).join(', ');
+                const pane = findeAutorPane(autor, felder);
+                if (!pane) {
+                    bericht.push({ autor: name, status: 'offen', schritte: ['steht nicht im Formular (Autorenzeile fehlt)'] });
+                    continue;
+                }
+                if (pane.namePid && pane.namePid.value.trim() && pane.name && pane.name.value.trim()) {
+                    bericht.push({ autor: name, status: 'ok', schritte: ['bereits verknüpft: ' + ohneNummern(pane.name.value.trim())] });
+                    continue;
+                }
+                const eintrag = await sucheAutorKandidaten(autor, pane);
+                if (eintrag.status === 'kandidaten') plan.push(eintrag);
+                else bericht.push({ autor: name, status: eintrag.status === 'fehler' ? 'fehler' : 'offen', schritte: [eintrag.hinweis] });
+                await new Promise(r => setTimeout(r, 250));   // Server schonen
+            }
+
+            // Der Benutzer waehlt je Autor aus der Liste des Lookups
+            if (plan.length) {
+                const wahl = await waehlen(plan);
+                if (plan.abgebrochen) return bericht;   // Abbruch: auch das Corresponding-Tag bleibt unberuehrt
+                let n = 0;
+                for (let i = 0; i < plan.length; i++) {
+                    const name = [plan[i].autor.family, plan[i].autor.given].filter(Boolean).join(', ');
+                    if (wahl[i] === null || wahl[i] === undefined) {
+                        bericht.push({ autor: name, status: 'info', schritte: ['nicht verknüpft (keine Auswahl getroffen)'] });
+                        continue;
+                    }
+                    meldung(`Verknüpfe ${++n}: ${plan[i].autor.family} …`);
+                    bericht.push(await uebernehmeAutorWahl(plan[i], plan[i].kandidaten[wahl[i]]));
+                    await new Promise(r => setTimeout(r, 250));
+                }
+            }
+
+            autoren.filter(a => a.institute && a.institute !== ziel).forEach(a => {
+                bericht.push({ autor: [a.family, a.given].filter(Boolean).join(', '), status: 'info', schritte: ['gehört laut PDF zur ' + a.institute.toUpperCase() + ' – nicht verknüpft'] });
+            });
+        }
+    }
+
+    if (optionen.corresponding) {
+        const korr = autoren.filter(a => a.corresponding);
+        const feld = findeCorrespondingFeld();
+        if (!ziel) {
+            bericht.push({ autor: 'Corresponding Author', status: 'fehler', schritte: ['Institut der Seite unbekannt – Tag nicht gesetzt'] });
+        } else if (!korr.length) {
+            bericht.push({ autor: 'Corresponding Author', status: 'info', schritte: ['im PDF nicht gekennzeichnet – Tag nicht gesetzt'] });
+        } else if (!feld) {
+            bericht.push({ autor: 'Corresponding Author', status: 'fehler', schritte: ['Feld im Formular nicht gefunden (Select correspAuthor4RI bzw. Beschriftung mit „corresponding“)'] });
+        } else {
+            // Das Feld sagt: "Der Corresponding Author ist ein Autor des Instituts" - nicht irgendeines der vier
+            const ja = korr.some(a => a.institute === ziel);
+            const vorher = feld.feld.tagName === 'SELECT' && feld.feld.selectedIndex >= 0
+                ? (feld.feld.options[feld.feld.selectedIndex].textContent || '').trim() : '';
+            const gewollt = ja ? 'Yes' : 'No';
+            const namen = korr.map(a => a.family + (a.institute ? ' [' + a.institute.toUpperCase() + ']' : ' [extern]')).join(', ');
+            if (vorher === gewollt) {
+                bericht.push({ autor: 'Corresponding Author', status: 'ok', schritte: ['steht bereits auf ' + gewollt + ' (' + namen + ')'] });
+            } else {
+                const ok = setzeCorrespondingFeld(feld, ja);
+                bericht.push({
+                    autor: 'Corresponding Author', status: ok ? 'ok' : 'fehler',
+                    schritte: [ok ? 'auf ' + gewollt + ' gesetzt' + (vorher && vorher !== '---' ? ' (vorher: ' + vorher + ')' : '') + ' – ' + namen
+                        : 'Feld gefunden, aber Wert Yes/No nicht setzbar']
+                });
+            }
+        }
+    }
+
+    if (optionen.facilities) {
+        meldung('Facilities & Beamlines …');
+        await uebernehmeFacilities(data.research_facilities || [], bericht);
+    }
+
+    for (const art of Object.keys(PDF_PERSONEN_PANELS)) {
+        if (!optionen[art]) continue;
+        meldung(PDF_PERSONEN_PANELS[art].titel + ' …');
+        await uebernehmePersonen(art, data[art] || [], bericht);
+    }
+
+    if (optionen.funding) {
+        const fp = data.funding_projects || { items: [] };
+        await uebernehmeFundingAusPdf(fp.items, bericht, meldung);
+    }
+
+    try { validateForm(); } catch (e) { /* nur Auffrischen der Pruefung */ }
+    return bericht;
+}
+
+// Auswahl der Autorenobjekte: je Autor die Vorschlaege des Lookups. Liefert ein
+// Array mit dem gewaehlten Index je Plan-Eintrag (null = nicht verknuepfen).
+function zeigeAutorAuswahl(koerper, plan, uebernehmen, schliessen, status) {
+    return new Promise(fertig => {
+        koerper.replaceChildren();
+        const kopf = createEl('div', '', 'Der Lookup hat zu diesen Autoren Autorenobjekte gefunden – bitte auswählen:');
+        kopf.style.cssText = 'padding:4px 0 8px; font-weight:600;';
+        koerper.appendChild(kopf);
+
+        const selects = plan.map(eintrag => {
+            const zeile = createEl('div');
+            zeile.style.cssText = 'padding:6px 0; border-bottom:1px solid #edf2f7;';
+            const a = eintrag.autor;
+            zeile.appendChild(createEl('div', '', [a.family, a.given].filter(Boolean).join(', ')
+                + (a.affiliations && a.affiliations.length ? '  –  ' + a.affiliations.join(' · ') : '')));
+            zeile.firstChild.style.cssText = 'font-weight:600; font-size:13px;';
+
+            const sel = createEl('select');
+            sel.style.cssText = 'margin-top:3px; max-width:100%; font-size:13px;';
+            const leer = createEl('option', '', eintrag.vorauswahl < 0 ? '— bitte wählen / nicht verknüpfen —' : '— nicht verknüpfen —');
+            leer.value = '';
+            sel.appendChild(leer);
+            eintrag.kandidaten.forEach((text, i) => {
+                const o = createEl('option', '', ohneNummern(text));
+                o.value = String(i);
+                sel.appendChild(o);
+            });
+            if (eintrag.vorauswahl >= 0) sel.value = String(eintrag.vorauswahl);
+            zeile.appendChild(sel);
+            koerper.appendChild(zeile);
+            return sel;
+        });
+
+        const los = createEl('button', 'dora-box-btn', 'Auswahl verknüpfen');
+        los.type = 'button';
+        los.style.cssText = 'width:auto; margin-top:10px;';
+        koerper.appendChild(los);
+
+        schliessen.disabled = false;
+        schliessen.textContent = 'Abbrechen';
+        const abbrechen = () => { plan.abgebrochen = true; fertig(plan.map(() => null)); };
+        schliessen.addEventListener('click', abbrechen, { once: true });
+
+        los.onclick = () => {
+            schliessen.removeEventListener('click', abbrechen);
+            schliessen.disabled = true;
+            const wahl = selects.map(sel => sel.value === '' ? null : parseInt(sel.value, 10));
+            koerper.replaceChildren(status);
+            status.textContent = '⏳ Autoren werden verknüpft …';
+            fertig(wahl);
+        };
+    });
+}
+
+function zeigeUebernahmeBericht(koerper, bericht) {
+    koerper.replaceChildren();
+    const farbe = { ok: '#2f855a', offen: '#b7791f', fehler: '#c53030', info: '#718096' };
+    const symbol = { ok: '✅', offen: '⚠️', fehler: '❌', info: 'ℹ️' };
+    if (!bericht.length) koerper.appendChild(createEl('div', '', 'Nichts zu übernehmen.'));
+    bericht.forEach(b => {
+        const zeile = createEl('div');
+        zeile.style.cssText = 'padding:5px 0; border-bottom:1px solid #edf2f7; font-size:13px;';
+        const kopf = createEl('b', '', (symbol[b.status] || '') + ' ' + b.autor);
+        kopf.style.color = farbe[b.status] || '#333';
+        zeile.appendChild(kopf);
+        b.schritte.forEach(t => {
+            const d = createEl('div', '', t);
+            d.style.cssText = 'font-size:12px; color:#4a5568; margin-left:22px;';
+            zeile.appendChild(d);
+        });
+        koerper.appendChild(zeile);
+    });
+}
+
+// Nach der PDF-Suche: der beste geprueft erreichbare Volltext geht ohne
+// weiteres Zutun an Haiku. Je DOI nur einmal pro Seitenaufruf (jede
+// Auswertung kostet), nur mit hinterlegtem Schluessel und abschaltbar.
+const haikuAutoGestartet = new Set();
+
+// Kleine Statusmeldung unten rechts; die Dropzone ist standardmaessig verborgen
+function zeigeHaikuHinweis(text) {
+    let el = document.getElementById('dora-haiku-hinweis');
+    if (!el) {
+        el = createEl('div');
+        el.id = 'dora-haiku-hinweis';
+        el.style.cssText = 'position:fixed; left:16px; bottom:16px; z-index:2147482000; max-width:360px; '
+            + 'padding:8px 12px; background:#fffbea; border:1px solid #d69e2e; border-radius:4px; '
+            + 'font:13px sans-serif; color:#333; box-shadow:0 2px 8px rgba(0,0,0,.2);';
+        document.body.appendChild(el);
+    }
+    el.textContent = text;
+    el.style.background = '#fffbea';
+    el.style.borderColor = '#d69e2e';
+    el.style.paddingRight = '12px';
+    clearTimeout(el._doraTimer);
+    return el;
+}
+
+function starteHaikuAuswertung(doi, kandidat) {
+    if (!doi || !kandidat || haikuAutoGestartet.has(doi)) return;
+    // Einseitige Vorschau-PDFs enthalten keinen Abstract
+    if (kandidat.nurVorschau) return;
+    chrome.storage.local.get({ anthropicApiKey: '', haikuAutoAnalyse: true }, (e) => {
+        if (chrome.runtime.lastError || !e.anthropicApiKey || !e.haikuAutoAnalyse) return;
+        if (haikuAutoGestartet.has(doi)) return;
+        haikuAutoGestartet.add(doi);
+
+        const hinweis = zeigeHaikuHinweis('⏳ Haiku liest das PDF …');
+
+        const auftrag = { action: 'analyzePdfHaiku', institut: aktuellesInstitut(doi) };
+        if (kandidat.elsevierApi) auftrag.elsevierDoi = doi; else auftrag.url = kandidat.url;
+        chrome.runtime.sendMessage(auftrag, (antwort) => {
+            if (chrome.runtime.lastError || !antwort || !antwort.success) {
+                // Fehlschlag darf wiederholt werden (z.B. nach neuer Suche)
+                haikuAutoGestartet.delete(doi);
+                const grund = (antwort && antwort.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'keine Antwort';
+                console.warn('Haiku-Auswertung fehlgeschlagen:', grund);
+                hinweis.remove();
+                zeigePdfFehler('PDF-Auswertung fehlgeschlagen: ' + grund);
+                return;
+            }
+            hinweis.remove();
+            kiPdfErgebnisse.set(doi.toLowerCase(), antwort.data);
+            confirmAndFillPdfData(antwort.data, 'url');
+        });
+    });
+}
+
+// Einfache Bibliografiefelder, die Haiku aus dem PDF liest. Ein Abschnitt im
+// Popup erscheint nur, wenn das aktuelle Formular das Feld hat - so zeigt jede
+// Publikationsart nur ihre eigenen Felder (Buchtitel, Konferenz, Serie ...).
+const PDF_FELDER = {
+    language: { ids: ['edit-language-languageterm'], titel: 'Language', labels: ['Language'] },
+    volume: { ids: ['edit-host-part-volume'], titel: 'Volume', labels: ['Volume'], nichtIn: /series/i },
+    issue: { ids: ['edit-host-part-issue'], titel: 'Issue', labels: ['Issue'] },
+    container_title: { ids: ['edit-host-booktitle', 'edit-host-titleinfo-title'], titel: 'Buch-/Proceedings-Titel', labels: ['Book Title', 'Title of the Conference Proceedings', 'Proceedings Title'] },
+    conference_name: { ids: ['edit-confinfo-confname', 'edit-conference-name'], titel: 'Conference Name', labels: ['Conference Name'] },
+    conference_place: { ids: ['edit-confinfo-confplace'], titel: 'Conference Place', labels: ['Conference Place'] },
+    conference_date: { ids: ['edit-confinfo-start'], titel: 'Conference Date', labels: ['Conference Date'] },
+    series_title: { ids: ['edit-host-series-titleinfo-title', 'edit-series-titleinfo-title'], titel: 'Series Title', labels: ['Title'], nurIn: /series/i },
+    series_volume: { ids: ['edit-host-series-titleinfo-volume'], titel: 'Series Volume', labels: ['Volume'], nurIn: /series/i },
+    series_issn: { ids: ['edit-host-series-issn', 'edit-host-series-titleinfo-issn', 'edit-series-issn'], titel: 'Series ISSN', labels: ['ISSN'], nurIn: /series/i },
+    publisher: { ids: ['edit-host-origininfo1-0-publisher', 'edit-host-origininfo-0-publisher', 'edit-origininfo-publisher'], titel: 'Publisher', labels: ['Publisher'] },
+    publication_place: { ids: ['edit-host-origininfo1-0-place', 'edit-host-origininfo-0-place', 'edit-origininfo-place'], titel: 'Publication Place', labels: ['Publication Place'] },
+    edition: { ids: ['edit-host-origininfo1-0-edition'], titel: 'Edition', labels: ['Edition'] },
+    isbn: { ids: ['edit-identifiers-isbn'], titel: 'ISBN', labels: ['ISBN'] },
+    report_number: { ids: ['edit-identifiers-reportnbr'], titel: 'Report Number', labels: ['Report Number'] },
+    sponsor: { ids: ['edit-sponsor'], titel: 'Sponsoring Organization', labels: ['Sponsoring Organization'] },
+    academic_title: { ids: ['edit-acatitle'], titel: 'Academic Title', labels: ['Academic title'] },
+    degree_granting_institution: { ids: ['edit-deggraninst'], titel: 'Degree Granting Institution', labels: ['Degree Granting Institution'] },
+    year: { ids: ['edit-origininfodate-0-dateissued', 'edit-origininfo-dateissued', 'edit-dateissued'], titel: 'Publication Year', labels: ['Publication Year'] }
+};
+// Reihenfolge im Popup und beim Eintragen (Language wird dabei gesondert angezeigt)
+const PDF_FELD_REIHENFOLGE = ['language', 'volume', 'issue', 'container_title', 'conference_name', 'conference_place', 'conference_date', 'series_title',
+    'series_volume', 'series_issn', 'publisher', 'publication_place', 'edition', 'isbn', 'report_number', 'sponsor', 'academic_title', 'degree_granting_institution', 'year'];
+const PDF_SEITEN_IDS = { start: 'edit-host-part-pages-start', end: 'edit-host-part-pages-end' };
+
+// Beschriftungstext eines Labels ohne Pflichtstern, Tooltips und Unterelemente
+function pdfLabelText(label) {
+    const eigener = Array.from(label.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent).join(' ');
+    return eigener.replace(/\*/g, '').replace(/\s+/g, ' ').trim();
+}
+
+// Rueckfall, wenn die bekannten IDs im Formular fehlen (z.B. PSI nutzt teils
+// andere Namen): ein Feld ueber die Beschriftung finden. Der Treffer muss
+// eindeutig sein; mit nurIn/nichtIn laesst sich nach der Fieldset-Ueberschrift
+// unterscheiden ("Volume" der Zeitschrift gegen "Volume" der Serie).
+function pdfFeldPerBeschriftung(spec) {
+    const treffer = [];
+    document.querySelectorAll('label').forEach(label => {
+        if (label.closest('#dora-haiku-popup, #dora-ki-panel, .dora-handbuch-kasten')) return;
+        const text = pdfLabelText(label);
+        if (!spec.labels.some(l => l.toLowerCase() === text.toLowerCase())) return;
+
+        let el = label.htmlFor ? document.getElementById(label.htmlFor) : null;
+        if (!el) {
+            const huelle = label.closest('.form-item');
+            el = huelle && huelle.querySelector('input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), textarea, select');
+        }
+        if (!el || el.disabled || el.type === 'hidden') return;
+
+        const set = el.closest('fieldset');
+        const legende = set && set.querySelector(':scope > legend');
+        const kontext = legende ? legende.textContent : '';
+        if (spec.nurIn && !spec.nurIn.test(kontext)) return;
+        if (spec.nichtIn && spec.nichtIn.test(kontext)) return;
+        if (treffer.indexOf(el) === -1) treffer.push(el);
+    });
+    return treffer.length === 1 ? treffer[0] : null;
+}
+
+function pdfFeldElement(schluessel) {
+    const spec = PDF_FELDER[schluessel];
+    if (!spec) return null;
+    for (const id of spec.ids) {
+        const el = document.getElementById(id);
+        if (el) return el;
+    }
+    return spec.labels ? pdfFeldPerBeschriftung(spec) : null;
+}
+
+// Start-/End-Page und das einzelne Pages-Feld (Berichte, Abschlussarbeiten)
+function pdfSeitenElement(art) {
+    const el = document.getElementById(PDF_SEITEN_IDS[art]);
+    if (el) return el;
+    return pdfFeldPerBeschriftung({ labels: [art === 'start' ? 'Start Page' : 'End Page'] });
+}
+
+function pdfGesamtSeitenElement() {
+    const el = document.getElementById('edit-pages');
+    if (el) return el;
+    const kandidat = pdfFeldPerBeschriftung({ labels: ['Pages'] });
+    return kandidat && kandidat.tagName !== 'SELECT' ? kandidat : null;
+}
+
+function pdfVergleichText(t) {
+    return String(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+// Aktueller Wert eines Feldes als Anzeigetext (bei Auswahlfeldern der Optionstext)
+function pdfFeldAnzeige(el) {
+    if (!el) return '';
+    if (el.tagName === 'SELECT') {
+        const opt = el.options[el.selectedIndex];
+        return el.value ? (opt ? opt.textContent.trim() : el.value) : '';
+    }
+    return (el.value || '').trim();
+}
+
+function setzePdfFeld(el, wert) {
+    if (!el || wert === null || wert === undefined || wert === '') return false;
+    if (el.tagName === 'SELECT') {
+        const opt = Array.from(el.options).find(o => o.value === wert || o.textContent.trim() === wert);
+        if (!opt) return false;
+        el.value = opt.value;
+    } else {
+        el.value = wert;
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+}
+
+// Seitenangabe nach den DORA-Regeln: Start und End Page laut gedruckter Zaehlung,
+// sonst "Artikelnummer (N pp.)", sonst nur die Seitenzahl "(N pp.)".
+function seitenVorschlag(data) {
+    const n = data.page_count;
+    const von = data.first_page, bis = data.last_page, an = data.article_number;
+    if (von && bis && von !== bis) return { start: von, end: bis, anzeige: `${von}–${bis}` };
+    if (an) {
+        const start = n ? `${an} (${n} pp.)` : an;
+        return { start: start, end: '', anzeige: start };
+    }
+    if (von && von === bis) return { start: von, end: '', anzeige: von + ' (eine Seite)' };
+    if (n) return { start: `(${n} pp.)`, end: '', anzeige: `(${n} pp.)`, nurAnzahl: true };
+    return null;
+}
+
+const TITEL_FELD_ID = 'edit-titleinfo-title-text-format-value';
+const TITEL_ERLAUBTE_TAGS = ['SUB', 'SUP', 'EM', 'U', 'BR'];
+
+// Aktueller Titel im Formular als reiner Text (leer, wenn keiner eingetragen ist)
+function leseTitelImFormular() {
+    const feld = document.getElementById(TITEL_FELD_ID);
+    if (!feld) return null;
+    const cke = document.getElementById('cke_' + TITEL_FELD_ID);
+    const iframe = cke && cke.querySelector('iframe');
+    if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
+        return (iframe.contentDocument.body.textContent || '').trim();
+    }
+    const doc = new DOMParser().parseFromString(feld.value || '', 'text/html');
+    return (doc.body.textContent || '').trim();
+}
+
+// Titel mit den im DORA-Titelfeld erlaubten Auszeichnungen (Tief-/Hochstellung,
+// Kursiv, Unterstrichen) ins Formular schreiben. Alles andere wird auf den Text
+// reduziert; der Titel kommt vom Modell und wird nicht ungeprueft als HTML gesetzt.
+function setzeTitelImFormular(html) {
+    const feld = document.getElementById(TITEL_FELD_ID);
+    if (!feld || !html) return false;
+
+    const quelle = new DOMParser().parseFromString('<body>' + html + '</body>', 'text/html').body;
+    const bauen = (von, ziel, ziel_doc) => {
+        von.childNodes.forEach(k => {
+            if (k.nodeType === 3) ziel.appendChild(ziel_doc.createTextNode(k.textContent));
+            else if (k.nodeType === 1) {
+                if (k.tagName === 'SCRIPT' || k.tagName === 'STYLE') return;
+                if (TITEL_ERLAUBTE_TAGS.indexOf(k.tagName) !== -1) {
+                    const el = ziel_doc.createElement(k.tagName.toLowerCase());
+                    bauen(k, el, ziel_doc);
+                    ziel.appendChild(el);
+                } else bauen(k, ziel, ziel_doc);
+            }
+        });
+    };
+
+    const cke = document.getElementById('cke_' + TITEL_FELD_ID);
+    const iframe = cke && cke.querySelector('iframe');
+    if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
+        const body = iframe.contentDocument.body;
+        body.replaceChildren();
+        bauen(quelle, body, iframe.contentDocument);
+        return true;
+    }
+    const huelle = document.createElement('div');
+    bauen(quelle, huelle, document);
+    feld.value = huelle.innerHTML;
+    feld.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+}
+
+const ABSTRACT_FELD_ID = 'edit-abstract0-abstract-text-format-value';
+
+// Abstract ins Formular schreiben - mit CKEditor oder als einfaches Textfeld
+function setzeAbstractImFormular(text) {
+    const abstractEl = document.getElementById(ABSTRACT_FELD_ID);
+    if (!abstractEl || !text) return false;
+    const sauber = text.trim();
+
+    // Check if CKEditor is active
+    const cke = document.getElementById('cke_' + ABSTRACT_FELD_ID);
+    if (cke) {
+        const iframe = cke.querySelector('iframe');
+        if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
+            // Use DOM manipulation for safe paragraph insertion
+            const body = iframe.contentDocument.body;
+            body.replaceChildren();
+            sauber.split(/\n\n+/).forEach((para, idx) => {
+                if (idx > 0) body.appendChild(iframe.contentDocument.createElement('br'));
+                body.appendChild(iframe.contentDocument.createTextNode(para));
+            });
+            return true;
+        }
+        return false;
+    }
+    abstractEl.value = sauber;
+    abstractEl.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+}
+
+// Aktueller Abstract-Text im Formular (leer, wenn keiner eingetragen ist)
+function leseAbstractImFormular() {
+    const abstractEl = document.getElementById(ABSTRACT_FELD_ID);
+    if (!abstractEl) return null;
+    const cke = document.getElementById('cke_' + ABSTRACT_FELD_ID);
+    const iframe = cke && cke.querySelector('iframe');
+    if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
+        return (iframe.contentDocument.body.textContent || '').trim();
+    }
+    return (abstractEl.value || '').trim();
 }
 
 function fillFormFromPdfData(data) {
@@ -1710,6 +4165,31 @@ function fillFormFromPdfData(data) {
                 }
             }
         }
+    }
+
+    // 0. Einfache Felder aus dem Popup (nur die angehakten kommen hier an)
+    if (data.pages) {
+        const st = pdfSeitenElement('start');
+        const en = pdfSeitenElement('end');
+        if (st && setzePdfFeld(st, data.pages.start)) msg += '- Start Page: ' + data.pages.start + '\n';
+        if (en) {
+            if (data.pages.end) setzePdfFeld(en, data.pages.end);
+            else if (en.value) { en.value = ''; en.dispatchEvent(new Event('input', { bubbles: true })); }
+        }
+    }
+    if (data.pages_total && setzePdfFeld(pdfGesamtSeitenElement(), data.pages_total)) msg += '- Pages: ' + data.pages_total + '\n';
+    PDF_FELD_REIHENFOLGE.forEach(k => {
+        if (data[k] && setzePdfFeld(pdfFeldElement(k), data[k])) msg += '- ' + PDF_FELDER[k].titel + ' übernommen.\n';
+    });
+
+    // 1a. Titel: nur wenn das Formular noch keinen hat
+    if (data.title_dora && !leseTitelImFormular() && setzeTitelImFormular(data.title_dora)) {
+        msg += '- Titel übernommen.\n';
+    }
+
+    // 1b. Abstract
+    if (data.abstract && setzeAbstractImFormular(data.abstract)) {
+        msg += '- Abstract übernommen.\n';
     }
 
     // 2. Keywords
@@ -2131,12 +4611,13 @@ function renderResultBox(data) {
     if (pdfUrl) {
         pdfBtn.href = pdfUrl;
 
-        const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary');
+        // Kleiner Knopf rechts neben dem PDF-Knopf, kein eigener Platz in der Zeile
+        const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary dora-blitz');
+        analyzeBtn.type = 'button';
         analyzeBtn.textContent = '⚡';
-        analyzeBtn.title = "Dieses PDF analysieren";
-        analyzeBtn.style.width = 'auto';
-        analyzeBtn.style.padding = '6px 10px';
+        analyzeBtn.title = "Dieses PDF mit Haiku auswerten";
         analyzeBtn.onclick = () => handlePdfUrl(pdfUrl, analyzeBtn);
+        pdfActionRow.classList.add('dora-mit-blitz');
         pdfActionRow.appendChild(markierePdfAnalyse(analyzeBtn));
     } else {
         pdfBtn.style.opacity = '.7';
@@ -2466,29 +4947,12 @@ async function fillBookChapterMetadata(meta) {
     }
 
     // 10. Abstract
-    const abstractEl = document.getElementById('edit-abstract0-abstract-text-format-value');
-    if (abstractEl && meta.abstract) {
+    if (meta.abstract) {
         // Crossref abstract is often XML/HTML (e.g. <jats:p>...</jats:p>)
         // We should strip tags or clean it up if necessary, but CKEditor might handle it.
         // Let's try to strip basic JATS tags if present.
-        let cleanAbstract = meta.abstract.replace(/<jats:p>/g, '').replace(/<\/jats:p>/g, '\n\n').replace(/<[^>]+>/g, '');
-
-        // Check if CKEditor is active
-        const cke = document.getElementById('cke_edit-abstract0-abstract-text-format-value');
-        if (cke) {
-            const iframe = cke.querySelector('iframe');
-            if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
-                // Use DOM manipulation for safe paragraph insertion
-                const body = iframe.contentDocument.body;
-                body.replaceChildren();
-                cleanAbstract.trim().split(/\n\n+/).forEach((para, idx) => {
-                    if (idx > 0) body.appendChild(iframe.contentDocument.createElement('br'));
-                    body.appendChild(iframe.contentDocument.createTextNode(para));
-                });
-            }
-        } else {
-            abstractEl.value = cleanAbstract.trim();
-        }
+        const bereinigt = meta.abstract.replace(/<jats:p>/g, '').replace(/<\/jats:p>/g, '\n\n').replace(/<[^>]+>/g, '');
+        setzeAbstractImFormular(bereinigt);
     }
 
     // Success is handled by the caller (button UI update)
@@ -3539,6 +6003,7 @@ function createPdfSourceButton(doi, hauptBtn) {
             }
             hauptBtn.style.opacity = '';
             knopfBeschriftung(hauptBtn, `PDF (${bester.quellen[0]}) ✓`);
+            starteHaikuAuswertung(doi, bester);
             hauptBtn.title = `Geprüfter Volltext über ${bester.quellen.join(', ')}`
                 + (bester.version ? ` — ${bester.version}` : '')
                 + (bester.nurVorschau
@@ -3695,7 +6160,7 @@ function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
                 mainBtn.style.color = "#2b6cb0";
 
                 // Update the analyze action next to it
-                const analyzeBtn = rowContainer.querySelector('button');
+                const analyzeBtn = rowContainer.querySelector('button.dora-blitz');
                 if (analyzeBtn) {
                     analyzeBtn.onclick = () => handlePdfUrl(foundPdfUrl, analyzeBtn, null);
                 }
@@ -3710,12 +6175,12 @@ function findPublisherPdf(doi, rowContainer, existingPdfUrl) {
                 verknuepfePdfVorschau(pubPdfBtn, 'Verlags-PDF', doi);
                 pruefeVerlagsLink(pubPdfBtn, foundPdfUrl);
 
-                const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary');
+                const analyzeBtn = createEl('button', 'dora-box-btn btn-secondary dora-blitz');
+                analyzeBtn.type = 'button';
                 analyzeBtn.textContent = '⚡';
-                analyzeBtn.title = "Dieses Verlags-PDF analysieren";
-                analyzeBtn.style.width = 'auto';
-                analyzeBtn.style.padding = '6px 10px';
+                analyzeBtn.title = "Dieses Verlags-PDF mit Haiku auswerten";
                 analyzeBtn.onclick = () => handlePdfUrl(foundPdfUrl, analyzeBtn, null);
+                rowContainer.classList.add('dora-mit-blitz');
 
                 rowContainer.appendChild(pubPdfBtn);
                 rowContainer.appendChild(markierePdfAnalyse(analyzeBtn));
@@ -5466,8 +7931,12 @@ function injectBatchQcButton() {
 
         btn = document.createElement('button');
         btn.id = 'dora-batch-qc-btn';
-        btn.className = 'form-submit';
-        btn.style.cssText = 'background-color: #22c55e; color: #fff; border: 1px solid #16a34a; padding: 8px 18px; font-size: 13px; font-weight: bold; border-radius: 6px; cursor: pointer; box-shadow: 0 2px 4px rgba(34, 197, 94, 0.2); transition: all 0.15s ease-in-out;';
+        // Bewusst NICHT die Theme-Klasse 'form-submit': der Knopf hat sich
+        // damit die Regeln des Admin-Themas geborgt.
+        btn.className = 'dora-batch-qc-button';
+        btn.type = 'button';
+        btn.style.cssText = 'background-color: #22c55e; color: #fff; border: 1px solid #16a34a; font-size: 13px; font-weight: bold; border-radius: 6px; box-shadow: 0 2px 4px rgba(34, 197, 94, 0.2); transition: background 0.15s ease-in-out, box-shadow 0.15s ease-in-out;';
+        setzeKnopfMasse(btn);
 
         const updateCount = () => {
             const currentPids = getPagePids();
@@ -5501,13 +7970,9 @@ function injectBatchQcButton() {
             }
         };
 
-        // Hover animations
-        btn.onmouseenter = () => {
-            if (!btn.disabled) btn.style.background = '#16a34a';
-        };
-        btn.onmouseleave = () => {
-            if (!btn.disabled) btn.style.background = '#22c55e';
-        };
+        // Hover steckt in styles.css (.dora-batch-qc-button:hover). Per JS
+        // gesetzt hinge er an onmouseenter - das feuert nur ueber der
+        // Elementflaeche und faerbte per Inline-Stil, der jede Regel schlaegt.
 
         // Attach listener if bookmark table is present
         if (bookmarkTable) {
@@ -5536,6 +8001,7 @@ function injectBatchQcButton() {
 
         updateCount();
         container.appendChild(btn);
+        setTimeout(() => pruefeKnopfFlaeche(btn), 400);
         if (targetElement && targetElement.parentNode) {
             targetElement.parentNode.insertBefore(container, targetElement);
         } else if (fallbackElement) {
@@ -5612,7 +8078,13 @@ function initBatchQcDashboard(pids) {
     closeBtn.style.cssText = 'background: #ef4444; color: white; border: none; padding: 6px 16px; border-radius: 6px; font-weight: bold; cursor: pointer; transition: background 0.15s; font-size: 13px;';
     closeBtn.onmouseenter = () => closeBtn.style.background = '#dc2626';
     closeBtn.onmouseleave = () => closeBtn.style.background = '#ef4444';
-    closeBtn.onclick = () => overlay.remove();
+    closeBtn.onclick = () => {
+        // Ein laufender Stapellauf haengt nicht am Ueberlagerungsfenster:
+        // ohne das hier blieben seine verborgenen Rahmen im Hintergrund
+        // stehen und rendern weiter.
+        journalStapelAufraeumen();
+        overlay.remove();
+    };
     header.appendChild(closeBtn);
 
     overlay.appendChild(header);
@@ -5655,6 +8127,20 @@ function initBatchQcDashboard(pids) {
     reloadBtn.onmouseenter = () => reloadBtn.style.background = '#475569';
     reloadBtn.onmouseleave = () => reloadBtn.style.background = '#64748b';
     reloadBtn.onclick = () => { if (currentPid) loadRecord(currentPid); };
+
+    // Journal fuer alle ausgewaehlten Datensaetze nachschlagen. Oeffnet jeden
+    // Datensatz kurz in einem verborgenen iframe - erst pruefend, nach
+    // ausdruecklicher Freigabe schreibend.
+    const journalBtn = document.createElement('button');
+    journalBtn.textContent = `⟳ Journal für alle ${pids.length} prüfen`;
+    journalBtn.title = 'Schlägt für jeden ausgewählten Datensatz das Journal neu nach. '
+        + 'Zeigt erst, was sich ändern würde; gespeichert wird nur nach Freigabe.';
+    journalBtn.style.cssText = 'background: #3182ce; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; margin-right: 8px; transition: background 0.15s;';
+    journalBtn.onmouseenter = () => journalBtn.style.background = '#2c5282';
+    journalBtn.onmouseleave = () => journalBtn.style.background = '#3182ce';
+    journalBtn.onclick = () => journalStapelFenster(pids, getInstitutionPath());
+
+    middleToolbar.appendChild(journalBtn);
     middleToolbar.appendChild(reloadBtn);
 
     const middleIframe = document.createElement('iframe');
@@ -5998,6 +8484,13 @@ function initBatchQcDashboard(pids) {
                 if (navigation) navigation.style.display = 'none';
                 if (breadcrumb) breadcrumb.style.display = 'none';
 
+                // Autorenzeilen markieren, bevor das Kompakt-CSS greift -
+                // ohne die Marke ziehen die generischen Abstaende sie
+                // auseinander. Nach kurzer Pause nochmal, falls Drupal Zeilen
+                // per AJAX nachlaedt.
+                markiereAutorenzeilen(doc);
+                setTimeout(() => { try { markiereAutorenzeilen(doc); } catch (e) { /* egal */ } }, 1200);
+
                 // Inject Compact & Modernized CSS
                 const style = doc.createElement('style');
                 style.textContent = `
@@ -6080,7 +8573,84 @@ function initBatchQcDashboard(pids) {
                     fieldset { overflow-x: auto !important; }
                     table td input[type="text"], table td select { max-width: 250px !important; }
                     
-                    /* Ultra-Kompression für die Autorenliste */
+                    /* Autorenzeilen: innerhalb der Marke wird jede vertikale
+                       Luft weggenommen. Die Regeln nennen keine Klassennamen
+                       von DORA - nur Elementarten - und ueberstehen darum
+                       einen Umbau des Formulars. */
+                    .dora-autorenzeile div,
+                    .dora-autorenzeile p,
+                    .dora-autorenzeile span,
+                    .dora-autorenzeile td,
+                    .dora-autorenzeile th,
+                    .dora-autorenzeile fieldset {
+                        margin-top: 0 !important;
+                        margin-bottom: 0 !important;
+                    }
+                    .dora-autorenzeile .form-item {
+                        margin: 0 0 3px 0 !important;
+                        padding: 0 !important;
+                    }
+                    .dora-autorenzeile label {
+                        margin: 0 0 1px 0 !important;
+                        padding: 0 !important;
+                        font-size: 10px !important;
+                        line-height: 1.1 !important;
+                        letter-spacing: 0 !important;
+                    }
+                    .dora-autorenzeile input[type="text"],
+                    .dora-autorenzeile select {
+                        height: 24px !important;
+                        padding: 2px 6px !important;
+                        margin: 0 !important;
+                        font-size: 11px !important;
+                    }
+                    .dora-autorenzeile td,
+                    .dora-autorenzeile th {
+                        padding: 1px 6px !important;
+                        vertical-align: top !important;
+                    }
+                    .dora-autorenzeile tr { height: auto !important; }
+                    /* Drupal setzt gern <br> als Abstandshalter zwischen die
+                       Felder - in einer Autorenzeile ist das reine Luft. */
+                    .dora-autorenzeile br { display: none !important; }
+                    /* Abstaende eines Raster-/Flexlayouts einfangen */
+                    .dora-autorenzeile,
+                    .dora-autorenzeile > div {
+                        gap: 2px 10px !important;
+                        row-gap: 2px !important;
+                        margin: 0 !important;
+                        padding: 2px 0 !important;
+                    }
+                    /* Leere Zellen und Huellen sollen keine Hoehe halten */
+                    .dora-autorenzeile td:empty,
+                    .dora-autorenzeile div:empty { display: none !important; }
+
+                    /* Ultra-Kompression für die Autorenliste.
+                       Bewusst nicht an <table> gebunden: die Zeilen liegen je
+                       nach DORA-Stand in einer Tabelle, in Flexbox oder in
+                       einem Raster. Was hier zaehlt, sind die Felder. */
+                    .dora-authors-fieldset .form-item,
+                    .islandora-form-fieldpanel-pane .form-item {
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+                    .dora-authors-fieldset .form-item label,
+                    .islandora-form-fieldpanel-pane .form-item label {
+                        margin: 0 0 1px 0 !important;
+                        font-size: 10px !important;
+                        letter-spacing: 0 !important;
+                    }
+                    /* Abstaende eines Flex-/Rasterlayouts einfangen */
+                    .dora-authors-fieldset .islandora-form-fieldpanel-pane,
+                    .dora-authors-fieldset .islandora-form-fieldpanel,
+                    .dora-authors-fieldset .form-wrapper,
+                    .islandora-form-fieldpanel-pane {
+                        gap: 4px !important;
+                        row-gap: 4px !important;
+                        column-gap: 6px !important;
+                        margin: 0 !important;
+                        padding: 2px 4px !important;
+                    }
                     .dora-authors-fieldset table {
                         margin: 2px 0 !important;
                     }
@@ -6578,11 +9148,30 @@ function initBatchQcDashboard(pids) {
                         titleFieldset.style.paddingLeft = '12px';
                         titleFieldset.setAttribute('data-dora-moved', 'true');
                     }
+                    // Rueckfall: die Autorenzeilen sind an ihren Eingabefeldern
+                    // zu erkennen (name endet auf [valName]). Das haelt auch,
+                    // wenn die Legende anders heisst oder das Panel kein
+                    // Fieldset mehr ist.
+                    if (!authorFieldset) {
+                        const namensfeld = doc.querySelector('input[name$="[valName]"]');
+                        if (namensfeld) {
+                            authorFieldset = namensfeld.closest('fieldset')
+                                || namensfeld.closest('.form-wrapper')
+                                || namensfeld.closest('.islandora-form-fieldpanel');
+                        }
+                    }
+
+                    if (authorFieldset) {
+                        // Die Kennzeichnung haengt NICHT am Verschieben: sonst
+                        // bleibt das Panel unkompakt, sobald das Umsortieren
+                        // einmal ausfaellt.
+                        authorFieldset.classList.add('dora-authors-fieldset');
+                    }
+
                     if (authorFieldset && authorFieldset.getAttribute('data-dora-moved') !== 'true') {
                         form.insertBefore(authorFieldset, titleFieldset ? titleFieldset.nextSibling : next);
                         authorFieldset.style.borderLeft = '4px solid #3b82f6';
                         authorFieldset.style.paddingLeft = '12px';
-                        authorFieldset.classList.add('dora-authors-fieldset');
                         authorFieldset.setAttribute('data-dora-moved', 'true');
                     }
 

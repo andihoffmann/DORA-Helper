@@ -590,6 +590,9 @@ function restoreOptions() {
     exceptionList: defaultExceptions,
     scopusApiKey: '',
     elsevierInsttoken: '',
+    anthropicApiKey: '',
+    haikuModel: '',
+    haikuAutoAnalyse: true,
     psiDataLastUpdated: '',
     enableBatchQc: true,
     qcInitials: '',
@@ -603,6 +606,9 @@ function restoreOptions() {
     if (document.getElementById('exceptions')) document.getElementById('exceptions').value = items.exceptionList;
     if (document.getElementById('scopusKey')) document.getElementById('scopusKey').value = items.scopusApiKey;
     if (document.getElementById('elsevierInsttoken')) document.getElementById('elsevierInsttoken').value = items.elsevierInsttoken;
+    if (document.getElementById('anthropicKey')) document.getElementById('anthropicKey').value = items.anthropicApiKey;
+    if (document.getElementById('haikuModel')) document.getElementById('haikuModel').value = items.haikuModel;
+    if (document.getElementById('haikuAutoAnalyse')) document.getElementById('haikuAutoAnalyse').checked = items.haikuAutoAnalyse;
     if (document.getElementById('enableBatchQc')) document.getElementById('enableBatchQc').checked = items.enableBatchQc;
     if (document.getElementById('qcInitials')) document.getElementById('qcInitials').value = items.qcInitials;
     if (document.getElementById('lastUpdated') && items.psiDataLastUpdated) {
@@ -618,6 +624,17 @@ function saveScopus() {
     ? document.getElementById('elsevierInsttoken').value.trim() : '';
   chrome.storage.local.set({ scopusApiKey: scopusKey, elsevierInsttoken: insttoken }, function () {
     showStatus('statusScopus');
+  });
+}
+
+// 2b. Speichern Haiku
+function saveHaiku() {
+  chrome.storage.local.set({
+    anthropicApiKey: document.getElementById('anthropicKey').value.trim(),
+    haikuModel: document.getElementById('haikuModel').value.trim(),
+    haikuAutoAnalyse: document.getElementById('haikuAutoAnalyse').checked
+  }, function () {
+    showStatus('statusHaiku');
   });
 }
 
@@ -746,6 +763,7 @@ function handlePsiDataUpload() {
 document.addEventListener('DOMContentLoaded', () => {
   restoreOptions();
   if (document.getElementById('saveScopus')) document.getElementById('saveScopus').addEventListener('click', saveScopus);
+  if (document.getElementById('saveHaiku')) document.getElementById('saveHaiku').addEventListener('click', saveHaiku);
   if (document.getElementById('saveKeywords')) document.getElementById('saveKeywords').addEventListener('click', saveKeywords);
   if (document.getElementById('saveBatchQc')) document.getElementById('saveBatchQc').addEventListener('click', saveBatchQc);
   if (document.getElementById('savePdfMode')) document.getElementById('savePdfMode').addEventListener('click', savePdfMode);

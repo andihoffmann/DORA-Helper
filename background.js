@@ -4,8 +4,12 @@ let activeDoraTabId = null;
 let pdfReferrerMap = new Map(); // Speichert Referrer zu PDF-URLs
 let pdfTabMap = new Map(); // Speichert Tab-IDs zu PDF-URLs (wichtig für Blobs)
 
-// Zentrale Konfiguration für den PDF-Analyzer
-const ANALYZER_API_URL = "https://andrehoffmann80-pdf-analyzer.hf.space/analyze";
+// PDF-Auswertung: Claude Haiku direkt ueber die Anthropic-API. Schluessel und
+// Modell stehen in den Einstellungen (chrome.storage.local).
+const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+const HAIKU_MODEL_STANDARD = "claude-haiku-5-5";
+// Die API nimmt hoechstens 32 MB je Anfrage; base64 blaeht um ein Drittel auf.
+const HAIKU_PDF_BYTES_MAX = 22 * 1024 * 1024;
 
 // Ein einziges Vorschaufenster fuer die Batch-QC: beim Blaettern durch die
 // Trefferliste soll das bestehende Fenster dem Datensatz folgen statt sich zu
@@ -739,21 +743,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.action === "analyzePdf") {
-        analyzePdf(request.fileData)
+        analyzePdf(request.fileData, request.institut)
             .then(data => sendResponse({ success: true, data: data }))
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
     }
 
     if (request.action === "analyzePdfUrl") {
-        analyzePdfUrl(request.pdfUrl)
+        analyzePdfUrl(request.pdfUrl, request.institut)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
+    if (request.action === "analyzePdfHaiku") {
+        analysiereMitHaikuAusAuftrag(request)
             .then(data => sendResponse({ success: true, data: data }))
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
     }
 
     if (request.action === "analyzePdfViaTab") {
-        analyzePdfViaTab(request.pdfUrl)
+        analyzePdfViaTab(request.pdfUrl, request.institut)
             .then(data => sendResponse({ success: true, data: data }))
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
@@ -867,8 +878,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
-    if (request.action === "performAiMetadataCheck") {
-        performAiMetadataCheck(request.modsXml, request.formData)
+    if (request.action === "kiCheckDatensatz") {
+        kiCheckDatensatz(request)
             .then(data => sendResponse({ success: true, data: data }))
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
@@ -1027,31 +1038,356 @@ async function fetchPsiAffiliations(url) {
     }
 }
 
-async function analyzePdf(dataUrl) {
+// ---------------------------------------------------------------------------
+// PDF-Auswertung mit Haiku. Das PDF geht als Dokument-Block an die API (Text
+// und Layout), die Antwort kommt ueber einen erzwungenen Tool-Aufruf als
+// strukturiertes JSON. Die Seitenzahl zaehlt der Helper selbst - ein Modell
+// zaehlt Seiten nicht verlaesslich.
+// ---------------------------------------------------------------------------
+function nurText(wert) {
+    const t = typeof wert === 'string' ? wert.replace(/\s+/g, ' ').trim() : '';
+    return t || null;
+}
+
+// Facilities und ihre Beamlines, wie DORA sie fuehrt (Dialog "Add Info about a PSI
+// Facility", Stand 2026-10). Aendert DORA die Listen, muss das hier nachgezogen
+// werden; das Formular lehnt Werte ausserhalb der Liste ohnehin ab.
+const PSI_FACILITY_BEAMLINES = {"SLS": ["Accelerator Physics", "ADDAMS", "ADRESS-RIXS", "ADRESS-SX-ARPES", "CF", "cSAXS", "DEBYE", "Diagnostics", "DISCO", "I-TOMCAT", "In Situ Spectroscopy", "IR", "ISS", "LUCIA", "Micro-XAS", "Micro-XAS-FEMTO", "MS-Powder", "MS-Surf-Diffr", "MS-Tomo", "NanoXAS", "NEMO", "Optics", "PEARL", "Phoenix", "PolLux", "PX", "PXII", "PXIII", "QUEST", "S-TOMCAT", "SIM", "SIS-Cophee", "SIS-HRPES", "SIS-ULTRA", "SIS-User", "SLS 2.0", "Super-XAS", "TOMCAT", "VUV", "XIL-II", "XTreme"], "SINQ": ["AMOR", "BOA", "CAMEA", "DMC", "EIGER", "FALCON", "FOCUS", "HRPT", "ICON", "MARS", "Morpheus", "MUPAD", "NARZISS", "NEUTRA", "Neutron-Microscope", "ORION", "PNA-NAA", "POLDI", "RITA-II", "SANS-I", "SANS-II", "SANS-LLB", "STIP", "TASP", "TriCS", "ZEBRA"], "SmuS": ["ALC", "Dolly", "FLAME", "GIANT/MIXE", "GPD", "GPS", "HAL-9500", "LEM", "LTF", "VMS"], "CHRISP": ["ALCAP", "CMS", "DetectorTests", "EDM", "FAST", "HIPA", "HyperMu", "LambShift", "MEG", "MEG-II", "Mu3e", "MuCool", "muEDM", "MuFuse", "MUH2", "MUH3", "muonCF", "Muonium", "MUSE", "MUSUN", "MuX", "PEN", "PIF", "PiHE", "PIONEER", "UCN"], "PROSCAN": ["Gantry1", "Gantry2", "Gantry3", "OPTIS"], "SwissFEL": ["Accel. Beamline Laser Sci. Technol.", "Accelerator Physics", "ARAMIS-Alvra", "ARAMIS-Bernina", "ARAMIS-Cristallina", "ATHOS-Furka", "ATHOS-Maloja"], "other PSI infrastructure": ["EMF", "PICO"], "non-PSI large scale facility (e.g. ESRF, ILL, etc.)": []};
+const PSI_FACILITIES = Object.keys(PSI_FACILITY_BEAMLINES);
+
+// Haiku liefert Paare Facility/Beamline. Hier wird gegen die Hierarchie
+// geprueft: ein Paar, das nicht zusammenpasst, wird korrigiert, wenn die
+// Beamline eindeutig zu einer anderen Facility gehoert, sonst bleibt nur die
+// Facility stehen. Doppelte Paare fallen weg.
+function normalisiereFacilities(liste) {
+    const gesehen = new Set();
+    const ergebnis = [];
+    (Array.isArray(liste) ? liste : []).forEach(r => {
+        if (!r) return;
+        let facility = PSI_FACILITIES.indexOf(r.facility) !== -1 ? r.facility : null;
+        let beamline = typeof r.beamline === 'string' ? r.beamline : null;
+
+        if (beamline) {
+            const eigene = facility ? PSI_FACILITY_BEAMLINES[facility] : [];
+            if (eigene.indexOf(beamline) === -1) {
+                const heimat = PSI_FACILITIES.filter(f => PSI_FACILITY_BEAMLINES[f].indexOf(beamline) !== -1);
+                if (heimat.length === 1) facility = heimat[0];   // eindeutig: Facility berichtigen
+                else beamline = null;                            // unbekannt oder mehrdeutig
+            }
+        }
+        if (!facility) return;
+        const schluessel = facility + '|' + (beamline || '');
+        if (gesehen.has(schluessel)) return;
+        gesehen.add(schluessel);
+        ergebnis.push({ facility: facility, beamline: beamline });
+    });
+    return ergebnis;
+}
+
+const HAIKU_TOOL = {
+    name: 'record_metadata',
+    description: 'Gibt die aus dem Artikel gelesenen bibliografischen Angaben zurueck.',
+    input_schema: {
+        type: 'object',
+        properties: {
+            title: { type: ['string', 'null'], description: 'Titel des Artikels, wie im PDF gedruckt' },
+            title_dora: { type: ['string', 'null'], description: 'Titel nach den DORA-Hausregeln (siehe Prompt), nur wenn der Artikel englisch ist; sonst null' },
+            language: { type: 'string', enum: ['zho', 'bul', 'hrv', 'ces', 'dan', 'nld', 'eng', 'fin', 'fra', 'kat', 'deu', 'hun', 'ind', 'ita', 'jpn', 'lav', 'lit', 'fas', 'pol', 'por', 'ron', 'roh', 'swe', 'tur', 'ukr', 'rus', 'slv', 'spa', 'vie', 'other'], description: 'Sprache des Artikels als ISO-639-3-Code; bei zweisprachigen Artikeln die Sprache, mit der das Dokument beginnt; "other", wenn die Sprache nicht in der Liste steht' },
+            volume: { type: ['string', 'null'], description: 'Volume/Band nur als Zahl ("Vol. 7" -> "7"); null, wenn keiner angegeben ist' },
+            issue: { type: ['string', 'null'], description: 'Heftnummer nur als Zahl ("No. 35" -> "35"); Supplement als "Suppl. x", Special Issue als "Spec. Iss."; Bereiche mit Bindestrich ("05/06" -> "5-6"); null, wenn keine angegeben ist' },
+            first_page: { type: ['string', 'null'], description: 'Erste Seite laut gedruckter Seitenzaehlung der publizierten Version (Kopf-/Fusszeile), nicht der Index im PDF; null, wenn das PDF keine solche Zaehlung traegt' },
+            last_page: { type: ['string', 'null'], description: 'Letzte Seite laut gedruckter Seitenzaehlung; null, wenn nicht ermittelbar' },
+            article_number: { type: ['string', 'null'], description: 'Artikelnummer (z.B. "A08103", "033375", "e12345"), wenn die Zeitschrift statt Seitenzahlen eine Artikelnummer nutzt; sonst null' },
+            container_title: { type: ['string', 'null'], description: 'Titel des Buches bzw. Konferenzbandes (nicht der Zeitschrift), in dem der Beitrag erschien; sonst null' },
+            conference_name: { type: ['string', 'null'], description: 'Name der Konferenz, falls genannt; sonst null' },
+            conference_place: { type: ['string', 'null'], description: 'Ort der Konferenz, falls genannt; sonst null' },
+            conference_date: { type: ['string', 'null'], description: 'Datum bzw. Zeitraum der Konferenz wie gedruckt (z.B. "12-16 June 2023"), falls genannt; sonst null' },
+            series_title: { type: ['string', 'null'], description: 'Titel der Buch- oder Berichtsreihe, falls genannt; bei unklaren Serientiteln wie "Berichte" oder "Richtlinien" die Institution davor mit Doppelpunkt ("Nagra: Report"); sonst null' },
+            academic_title: { type: ['string', 'null'], description: 'Akademischer Grad der Abschlussarbeit wie gedruckt (z.B. "Doctor of Sciences of ETH Zurich", "Master of Science"), nur bei Dissertationen/Master-/Bachelorarbeiten; sonst null' },
+            degree_granting_institution: { type: ['string', 'null'], description: 'Hochschule, die den Grad verleiht (z.B. "ETH Zurich"), nur bei Abschlussarbeiten; sonst null' },
+            supervisors: {
+                type: 'array',
+                description: 'Betreuer/Referenten/Korreferenten einer Abschlussarbeit in gedruckter Reihenfolge; sonst leeres Array',
+                items: {
+                    type: 'object',
+                    properties: { family: { type: 'string' }, given: { type: ['string', 'null'] } },
+                    required: ['family', 'given']
+                }
+            },
+            report_number: { type: ['string', 'null'], description: 'Nummer des Berichts (Report Number, z.B. "PSI Bericht 21-03", "NTB 19-04"), nur bei Berichten; sonst null' },
+            sponsor: { type: ['string', 'null'], description: 'Auftraggeber bzw. foerdernde Organisation eines Berichts ("Sponsoring Organization"), nur bei Berichten; sonst null' },
+            series_volume: { type: ['string', 'null'], description: 'Band/Nummer innerhalb der Reihe, nur die Zahl; sonst null' },
+            series_issn: { type: ['string', 'null'], description: 'ISSN der Reihe, falls genannt (Format 1234-5678); sonst null' },
+            publisher: { type: ['string', 'null'], description: 'Verlag (nur bei Buchkapiteln, Buechern, Berichten, Konferenzbaenden); bei Zeitschriftenartikeln null' },
+            publication_place: { type: ['string', 'null'], description: 'Verlagsort, falls genannt; sonst null' },
+            edition: { type: ['string', 'null'], description: 'Auflage (z.B. "2nd ed."), falls genannt; sonst null' },
+            isbn: { type: ['string', 'null'], description: 'ISBN des Buches/Bandes wie gedruckt (mit Bindestrichen, wenn so gedruckt); sonst null' },
+            year: { type: ['string', 'null'], description: 'Publikationsjahr der publizierten Version (vierstellig); sonst null' },
+            editors: {
+                type: 'array',
+                description: 'Herausgeber des Buches/Bandes in gedruckter Reihenfolge; leeres Array, wenn keine genannt sind',
+                items: {
+                    type: 'object',
+                    properties: { family: { type: 'string' }, given: { type: ['string', 'null'] } },
+                    required: ['family', 'given']
+                }
+            },
+            title_language: { type: 'string', enum: ['eng', 'deu', 'fra', 'ita', 'other'], description: 'Sprache des Artikeltitels' },
+            funding_items: {
+                type: 'array',
+                description: 'Einzelne Projekte/Grants aus Funding bzw. Acknowledgements; leeres Array, wenn keine Nummern genannt sind',
+                items: {
+                    type: 'object',
+                    properties: {
+                        funder: { type: 'string', description: 'Foerderer im Wortlaut des PDF (z.B. "Swiss National Science Foundation", "SNSF", "European Union\'s Horizon 2020")' },
+                        award_number: { type: 'string', description: 'Projekt-/Grant-Nummer im Wortlaut des PDF (z.B. "200021_203578", "grant agreement No 654360")' },
+                        programme: { type: ['string', 'null'], description: 'Rahmenprogramm, falls genannt (z.B. "Horizon 2020", "FP7", "Horizon Europe"), sonst null' }
+                    },
+                    required: ['funder', 'award_number', 'programme']
+                }
+            },
+            abstract: { type: ['string', 'null'], description: 'Vollstaendiger Abstract-Text ohne die Ueberschrift "Abstract"; null, wenn keiner vorhanden ist' },
+            keywords: { type: 'array', items: { type: 'string' }, description: 'Vom Autor angegebene Schlagwoerter; leeres Array, wenn keine genannt sind. Nichts erfinden.' },
+            funding: { type: ['string', 'null'], description: 'Foerderangaben (Foerderer, Grant-Nummern) aus Funding/Acknowledgements als ein Text; null, wenn keine vorhanden sind' },
+            authors: {
+                type: 'array',
+                description: 'Alle Autoren in der gedruckten Reihenfolge, mit ihren Affiliationen laut PDF',
+                items: {
+                    type: 'object',
+                    properties: {
+                        family: { type: 'string', description: 'Nachname' },
+                        given: { type: ['string', 'null'], description: 'Vorname(n) bzw. Initialen, wie gedruckt' },
+                        affiliations: { type: 'array', items: { type: 'string' }, description: 'Die Affiliationen dieses Autors woertlich aus dem PDF (Fussnoten-Zeichen aufgeloest); leeres Array, wenn keine angegeben ist' },
+                        department: { type: ['string', 'null'], description: 'Abteilung/Department/Group/Laboratory des Instituts im Wortlaut, falls die Affiliation eine solche Einheit nennt; sonst null' },
+                        institute: { type: ['string', 'null'], enum: ['eawag', 'empa', 'wsl', 'psi', null], description: 'Zu welchem der vier Institute der Autor laut seinen Affiliationen gehoert; null, wenn zu keinem' },
+                        corresponding: { type: 'boolean', description: 'true, wenn als Corresponding Author gekennzeichnet' }
+                    },
+                    required: ['family', 'given', 'affiliations', 'department', 'institute', 'corresponding']
+                }
+            },
+            research_facilities: {
+                type: 'array',
+                description: 'Im Artikel genutzte PSI-Grossforschungsanlagen und Strahllinien/Instrumente (nur bei PSI-Datensaetzen); sonst leeres Array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        facility: { type: 'string', enum: PSI_FACILITIES, description: 'Anlage, genau einer der erlaubten Werte' },
+                        beamline: { type: ['string', 'null'], description: 'Strahllinie/Instrument, genau einer der unter der gewaehlten Facility erlaubten Werte; null, wenn keine zuordenbar ist oder die Facility keine Beamlines fuehrt' }
+                    },
+                    required: ['facility', 'beamline']
+                }
+            }
+        },
+        required: ['title', 'title_dora', 'title_language', 'language', 'volume', 'issue', 'first_page', 'last_page', 'article_number', 'container_title', 'conference_name', 'conference_place', 'conference_date', 'series_title', 'academic_title', 'degree_granting_institution', 'supervisors', 'report_number', 'sponsor', 'series_volume', 'series_issn', 'publisher', 'publication_place', 'edition', 'isbn', 'year', 'editors', 'abstract', 'keywords', 'funding', 'funding_items', 'authors', 'research_facilities']
+    }
+};
+
+const HAIKU_PROMPT = 'Lies diesen wissenschaftlichen Artikel und liefere die bibliografischen Angaben '
+    + 'ueber das Tool record_metadata. Uebernimm Texte woertlich aus dem PDF, ohne sie zu kuerzen oder '
+    + 'umzuformulieren, und erfinde nichts: was im PDF nicht steht, bleibt null bzw. leer.';
+
+// Die vier Institute des ETH-Bereichs, die DORA fuehrt. Haiku soll jedem Autor
+// ansehen, zu welchem er gehoert - und der Datensatz wird immer fuer genau
+// eines davon bearbeitet.
+const HAIKU_INSTITUTE = {
+    eawag: 'Eawag (Swiss Federal Institute of Aquatic Science and Technology; Dübendorf, Kastanienbaum)',
+    empa: 'Empa (Swiss Federal Laboratories for Materials Science and Technology; Dübendorf, St. Gallen, Thun)',
+    wsl: 'WSL (Swiss Federal Institute for Forest, Snow and Landscape Research; Birmensdorf, Davos mit dem SLF, Lausanne, Bellinzona, Cadenazzo, Sion)',
+    psi: 'PSI (Paul Scherrer Institut / Paul Scherrer Institute; Villigen, Würenlingen)'
+};
+
+function haikuPromptFuer(institut) {
+    let text = HAIKU_PROMPT
+        + '\n\nZum Titel: title ist der Titel wie gedruckt. title_dora nur bei englischen Artikeln: derselbe Titel in Sentence case nach den DORA-Regeln - '
+        + 'Grossbuchstabe nur am Satzanfang und bei Eigennamen (Personen, Orte, Institutionen, Verfahrens- und Gesetzesnamen), Abkuerzungen, Elementsymbolen '
+        + 'und chemischen Formeln (z.B. "BiFeO3", "NaCl", "DNA", "X-ray" mit grossem X). Nach einem Doppelpunkt oder Bindestrich klein, ausser es folgt ein vollstaendiger Satz. '
+        + 'Gattungsnamen gross, Artnamen klein. Kein Punkt am Ende (ein Fragezeichen ist erlaubt). Bestehende Hoch-/Tiefstellung und Kursivdruck bleiben als HTML erhalten '
+        + '(nur <sub>, <sup>, <em>, <u>), z.B. "BiFeO<sub>3</sub>"; kein Fettdruck. Hat der Titel einen Untertitel ohne Trennzeichen auf einer eigenen Zeile, trenne beide mit einem Punkt. '
+        + 'Aendere sonst kein Wort und keine Satzzeichen. Ist der Artikel nicht englisch, ist title_dora null.'
+        + '\n\nZu Volume, Issue und Seiten (DORA-Regeln): volume nur als Zahl; issue nur als Zahl, bei Supplement "Suppl. x", bei Special Issue "Spec. Iss.", Erstreckungen mit Bindestrich. '
+        + 'Seiten nur aus der gedruckten Seitenzaehlung der publizierten Version (Kopf- oder Fusszeile, Zitierzeile), nie aus der Position im PDF. '
+        + 'Traegt das PDF keine solche Zaehlung (z.B. ein akzeptiertes Manuskript), sind first_page und last_page null. '
+        + 'Nutzt die Zeitschrift Artikelnummern statt Seitenzahlen, gib article_number an und lasse first_page/last_page null. '
+        + 'Nichts schaetzen: was nicht im PDF steht, bleibt null. container_title, conference_name, conference_place, conference_date, series_*, report_number, sponsor, academic_title, degree_granting_institution und supervisors (die drei letzten nur bei Dissertationen sowie Master- und Bachelorarbeiten), publisher, publication_place, edition, isbn und editors nur fuer Buchkapitel, Buecher, Konferenzbeitraege und Berichte; bei Zeitschriftenartikeln null bzw. leeres Array. year ist das Erscheinungsjahr der publizierten Version.'
+        + '\n\nZum Funding: funding_items nennt jedes Projekt einzeln mit Foerderer und Nummer, genau wie im PDF geschrieben. Nur Angaben mit einer Projekt- oder Grant-Nummer; '
+        + 'blosse Danksagungen ohne Nummer gehoeren nur in funding.'
+        + '\n\nZu den Autoren: Gib alle Autoren in der gedruckten Reihenfolge an, je mit den Affiliationen aus dem PDF '
+        + '(Fussnoten-Zeichen wie ¹, a, * aufloesen). Ordne jeden Autor, falls zutreffend, einem der vier Institute zu, '
+        + 'die DORA fuehrt:\n- ' + Object.keys(HAIKU_INSTITUTE).map(k => k + ': ' + HAIKU_INSTITUTE[k]).join('\n- ')
+        + '\nMassgeblich ist die Affiliation im PDF, nicht der Name. Eine andere Hochschule oder Firma ist kein Treffer '
+        + '(z.B. ETH Zürich, EPFL, Universität Zürich: institute = null); ebenso kein Treffer: ein Kooperationspartner, der nur das Institut erwähnt.';
+    if (institut === 'psi') {
+        text += '\n\nZu research_facilities: Nenne jede im Artikel tatsaechlich genutzte PSI-Anlage (Methoden-/Experimentteil, '
+            + 'Acknowledgements) mit ihrer Strahllinie bzw. ihrem Instrument. Erlaubt sind nur diese Facilities mit ihren Beamlines:\n'
+            + PSI_FACILITIES.map(f => '- ' + f + (PSI_FACILITY_BEAMLINES[f].length ? ': ' + PSI_FACILITY_BEAMLINES[f].join(' | ') : ' (keine Beamlines)')).join('\n') + '\n'
+            + 'Die Beamline muss zur gewaehlten Facility gehoeren (z.B. TOMCAT nur unter SLS).\n'
+            + 'Nutze die Schreibweise der Liste (z.B. "Super-XAS", "cSAXS", "ARAMIS-Bernina"). Eine blosse Erwaehnung in der Literaturliste '
+            + 'oder im Vergleich mit anderen Arbeiten zaehlt nicht. Anlagen anderer Einrichtungen (ESRF, ILL, Diamond, ...) sind '
+            + 'facility "non-PSI large scale facility (e.g. ESRF, ILL, etc.)" mit beamline null. Passt eine Strahllinie nicht zur Liste, '
+            + 'gib nur die Anlage an (beamline null). Wurde nichts davon genutzt: leeres Array.';
+    } else {
+        text += '\n\nresearch_facilities: leeres Array (nur bei PSI-Datensaetzen relevant).';
+    }
+    if (HAIKU_INSTITUTE[institut]) {
+        text += '\n\nDer Datensatz wird gerade fuer das Institut ' + institut.toUpperCase() + ' bearbeitet. '
+            + 'Achte bei den Affiliationen besonders genau auf Autoren dieses Instituts und gib deren Affiliation vollstaendig wieder.';
+    }
+    return text;
+}
+
+async function haikuEinstellungen() {
+    const gespeichert = await chrome.storage.local.get({ anthropicApiKey: '', haikuModel: '' });
+    return {
+        schluessel: (gespeichert.anthropicApiKey || '').trim(),
+        modell: (gespeichert.haikuModel || '').trim() || HAIKU_MODEL_STANDARD
+    };
+}
+
+// Eine Anfrage an Haiku mit erzwungenem Tool-Aufruf; liefert dessen Eingabe
+// (das strukturierte Ergebnis) zurueck.
+async function haikuAnfrage(einstellungen, inhalt, tool, maxTokens) {
+    let antwort;
+    try {
+        antwort = await fetch(ANTHROPIC_API_URL, {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+            'x-api-key': einstellungen.schluessel,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+            model: einstellungen.modell,
+            max_tokens: maxTokens,
+            tools: [tool],
+            tool_choice: { type: 'tool', name: tool.name },
+            messages: [{ role: 'user', content: inhalt }]
+        })
+        });
+    } catch (e) {
+        throw new Error('api.anthropic.com nicht erreichbar (' + e.message + '). '
+            + 'Netzwerk/Proxy/Firewall prüfen und in Firefox unter about:addons > Berechtigungen den Zugriff auf alle Websites erlauben.');
+    }
+
+    if (!antwort.ok) {
+        let detail = '';
+        try { detail = (await antwort.json()).error.message; } catch (e) { /* kein JSON */ }
+        if (antwort.status === 401) throw new Error('Anthropic lehnt den API-Schlüssel ab (401).');
+        throw new Error('Anthropic-API ' + antwort.status + (detail ? ': ' + detail : ''));
+    }
+
+    const nachricht = await antwort.json();
+    const aufruf = (nachricht.content || []).find(b => b.type === 'tool_use');
+    if (!aufruf || !aufruf.input) throw new Error('Haiku lieferte keine strukturierte Antwort.');
+    if (nachricht.stop_reason === 'max_tokens') throw new Error('Haiku-Antwort wurde abgeschnitten (zu lang).');
+    aufruf.input.__modell = nachricht.model || einstellungen.modell;
+    return aufruf.input;
+}
+
+// Ein PDF (Blob oder oeffentliche URL) von Haiku auswerten lassen.
+// Rueckgabe im Format, das die Seite schon kennt (status/page_count/keywords/...).
+async function analysiereMitHaiku(quelle, institut) {
+    const einstellungen = await haikuEinstellungen();
+    if (!einstellungen.schluessel) {
+        throw new Error('Kein Anthropic-API-Schlüssel hinterlegt (Einstellungen des Helpers).');
+    }
+
+    let dokument;
+    let seitenzahl = 0;
+    if (quelle.blob) {
+        const bytes = new Uint8Array(await quelle.blob.arrayBuffer());
+        if (bytes.length > HAIKU_PDF_BYTES_MAX) {
+            throw new Error('PDF zu groß für die Auswertung (' + Math.round(bytes.length / 1048576) + ' MB, erlaubt ca. 22 MB).');
+        }
+        if (String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]) !== '%PDF-') {
+            throw new Error('Die Datei ist kein PDF (vermutlich eine Sperr- oder Fehlerseite).');
+        }
+        let roh = '';
+        const block = 0x8000;
+        for (let i = 0; i < bytes.length; i += block) {
+            roh += String.fromCharCode.apply(null, bytes.subarray(i, i + block));
+        }
+        seitenzahl = zaehlePdfSeiten(roh);
+        dokument = { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: btoa(roh) } };
+    } else if (quelle.url) {
+        // Fallback ohne eigenen Download: die API holt die Datei selbst
+        dokument = { type: 'document', source: { type: 'url', url: quelle.url } };
+    } else {
+        throw new Error('Weder Datei noch URL zum Auswerten.');
+    }
+
+    const e = await haikuAnfrage(einstellungen, [dokument, { type: 'text', text: haikuPromptFuer(institut) }], HAIKU_TOOL, 8192);
+
+    return {
+        status: 'success',
+        page_count: seitenzahl || null,
+        title: e.title || null,
+        abstract: e.abstract || null,
+        keywords: Array.isArray(e.keywords) ? e.keywords.filter(k => typeof k === 'string' && k.trim()) : [],
+        funding: e.funding || null,
+        title_dora: (e.title_language === 'eng' && e.title_dora) ? String(e.title_dora).trim() : null,
+        title_language: e.title_language || null,
+        language: e.language && e.language !== 'other' ? e.language : null,
+        volume: nurText(e.volume), issue: nurText(e.issue),
+        first_page: nurText(e.first_page), last_page: nurText(e.last_page), article_number: nurText(e.article_number),
+        container_title: nurText(e.container_title), conference_name: nurText(e.conference_name), conference_place: nurText(e.conference_place), conference_date: nurText(e.conference_date), series_title: nurText(e.series_title), report_number: nurText(e.report_number), sponsor: nurText(e.sponsor),
+        academic_title: nurText(e.academic_title), degree_granting_institution: nurText(e.degree_granting_institution),
+        supervisors: (Array.isArray(e.supervisors) ? e.supervisors : []).filter(x => x && nurText(x.family)).map(x => ({ family: nurText(x.family), given: nurText(x.given) || '' })),
+        series_volume: nurText(e.series_volume), series_issn: nurText(e.series_issn), publisher: nurText(e.publisher),
+        publication_place: nurText(e.publication_place), edition: nurText(e.edition), isbn: nurText(e.isbn),
+        year: (nurText(e.year) || '').match(/^\d{4}$/) ? nurText(e.year) : null,
+        editors: (Array.isArray(e.editors) ? e.editors : []).filter(x => x && nurText(x.family)).map(x => ({ family: nurText(x.family), given: nurText(x.given) || '' })),
+        funding_projects: (await baueFundingItemsAusPdf(e.funding_items)),
+        authors: Array.isArray(e.authors) ? e.authors.filter(a => a && a.family) : [],
+        institut: HAIKU_INSTITUTE[institut] ? institut : '',
+        research_facilities: normalisiereFacilities(e.research_facilities),
+        model: e.__modell
+    };
+}
+
+// PDF-Bytes aus der Adresse holen und auswerten (fuer die automatische
+// Auswertung nach der PDF-Suche). Elsevier-Links laufen ueber den Schluessel
+// im Hintergrund, deshalb dieselbe Abruflogik wie bei der Vorschau.
+async function analysiereMitHaikuAusAuftrag(auftrag) {
+    const institut = auftrag.institut || '';
+    let url = auftrag.url;
+    if (auftrag.elsevierDoi) {
+        const schluessel = await elsevierSchluessel();
+        if (!schluessel) throw new Error('Kein Scopus/Elsevier-Schlüssel hinterlegt.');
+        url = elsevierPdfUrl(auftrag.elsevierDoi, schluessel, await elsevierInsttoken());
+    }
+    if (!url) throw new Error('Keine URL angegeben.');
+    const antwort = await fetch(url, { credentials: 'include', redirect: 'follow' });
+    if (!antwort.ok) throw new Error('HTTP ' + antwort.status);
+    return analysiereMitHaiku({ blob: await antwort.blob() }, institut);
+}
+
+// data:-URL ohne fetch() in ein Blob wandeln: die CSP der Erweiterung
+// (connect-src) erlaubt keine data:-Adressen, ein fetch() darauf scheitert
+// mit "NetworkError".
+function dataUrlZuBlob(dataUrl) {
+    const komma = dataUrl.indexOf(',');
+    if (komma < 0) throw new Error('Ungültige data-URL.');
+    const kopf = dataUrl.slice(0, komma);
+    const roh = atob(dataUrl.slice(komma + 1));
+    const bytes = new Uint8Array(roh.length);
+    for (let i = 0; i < roh.length; i++) bytes[i] = roh.charCodeAt(i);
+    const typ = /^data:([^;,]+)/.exec(kopf);
+    return new Blob([bytes], { type: typ ? typ[1] : 'application/pdf' });
+}
+
+async function analyzePdf(dataUrl, institut) {
     try {
         // Convert Data URL back to Blob
-        const res = await fetch(dataUrl);
-        const blob = await res.blob();
+        const blob = dataUrlZuBlob(dataUrl);
 
-        const formData = new FormData();
-        formData.append("file", blob, "upload.pdf");
-
-        const response = await fetch(ANALYZER_API_URL, {
-            method: "POST",
-            body: formData
-        });
-
-        if (!response.ok) {
-            throw new Error(`Server Error: ${response.status} ${response.statusText}`);
-        }
-
-        return await response.json();
+        return await analysiereMitHaiku({ blob: blob }, institut);
     } catch (e) {
-        throw new Error("Failed to connect to PDF service: " + e.message);
+        throw new Error("PDF-Auswertung fehlgeschlagen: " + e.message);
     }
 }
 
-async function analyzePdfViaTab(pdfUrl) {
+async function analyzePdfViaTab(pdfUrl, institut) {
     console.log('analyzePdfViaTab called with:', pdfUrl);
 
     try {
@@ -1240,48 +1576,27 @@ async function analyzePdfViaTab(pdfUrl) {
         console.log('PDF extracted, sending to analyzer');
 
         // Convert data URL back to blob and send to analyzer
-        const res = await fetch(dataUrl);
-        const blob = await res.blob();
+        const blob = dataUrlZuBlob(dataUrl);
 
-        const formData = new FormData();
-        formData.append("file", blob, "downloaded.pdf");
-
-        const response = await fetch(ANALYZER_API_URL, {
-            method: "POST",
-            body: formData
-        });
-
-        if (!response.ok) {
-            throw new Error(`Server Error: ${response.status} ${response.statusText}`);
-        }
-
-        return await response.json();
+        return await analysiereMitHaiku({ blob: blob }, institut);
     } catch (e) {
         console.error('analyzePdfViaTab error:', e);
 
-        // FALLBACK: Try to let the Python backend download it directly
-        console.log('Falling back to direct URL analysis via Python backend');
-        try {
-            const formData = new FormData();
-            formData.append("pdf_url", pdfUrl);
-
-            const response = await fetch(ANALYZER_API_URL, {
-                method: "POST",
-                body: formData
-            });
-
-            if (response.ok) {
-                return await response.json();
+        // FALLBACK: die Anthropic-API die oeffentliche URL selbst holen lassen
+        // (klappt nicht bei Blob-URLs und hinter Login)
+        if (!pdfUrl.startsWith('blob:') && !/^Kein Anthropic/.test(e.message)) {
+            try {
+                return await analysiereMitHaiku({ url: pdfUrl }, institut);
+            } catch (fallbackError) {
+                console.error('Fallback also failed:', fallbackError);
             }
-        } catch (fallbackError) {
-            console.error('Fallback also failed:', fallbackError);
         }
 
         throw new Error("Failed to analyze PDF via tab: " + e.message);
     }
 }
 
-async function analyzePdfUrl(pdfUrl) {
+async function analyzePdfUrl(pdfUrl, institut) {
     try {
         let blob = null;
         let usePythonDownload = false;
@@ -1426,7 +1741,7 @@ async function analyzePdfUrl(pdfUrl) {
                         // Fallback 1: Ohne Credentials & ohne Referrer
                         pdfRes = await fetch(pdfUrl, { credentials: 'omit', referrerPolicy: 'no-referrer' });
                     } catch (e2) {
-                        console.warn("Browser fetch failed (CORS), delegating to Python:", e2);
+                        console.warn("Browser fetch failed (CORS), Anthropic holt die URL selbst:", e2);
                         usePythonDownload = true;
                     }
                 }
@@ -1451,29 +1766,14 @@ async function analyzePdfUrl(pdfUrl) {
             }
         }
 
-        const formData = new FormData();
-
         if (blob) {
             // Wir haben das PDF (lokal oder via Netzwerk)
-            const file = new File([blob], "downloaded.pdf", { type: "application/pdf" });
-            formData.append("file", file);
-        } else {
-            if (pdfUrl && pdfUrl.startsWith('blob:')) {
-                throw new Error("Zugriff auf PDF-Tab fehlgeschlagen (Blob-URL) und lokaler Dateizugriff nicht möglich.");
-            }
-            formData.append("pdf_url", pdfUrl);
+            return await analysiereMitHaiku({ blob: blob }, institut);
         }
-
-        const response = await fetch(ANALYZER_API_URL, {
-            method: "POST",
-            body: formData
-        });
-
-        if (!response.ok) {
-            throw new Error(`Server Error: ${response.status} ${response.statusText}`);
+        if (pdfUrl && pdfUrl.startsWith('blob:')) {
+            throw new Error("Zugriff auf PDF-Tab fehlgeschlagen (Blob-URL) und lokaler Dateizugriff nicht möglich.");
         }
-
-        return await response.json();
+        return await analysiereMitHaiku({ url: pdfUrl }, institut);
     } catch (e) {
         throw new Error("Failed to analyze PDF URL: " + e.message);
     }
@@ -1587,41 +1887,84 @@ async function fetchScopusMetadata(doi, apiKey) {
     }
 }
 
-async function performAiMetadataCheck(modsXml, formData) {
-    try {
-        const formDataPayload = new FormData();
-        formDataPayload.append("mods_xml", modsXml);
-        formDataPayload.append("form_data", JSON.stringify(formData));
-
-        const AI_CHECK_API_URL = "https://andrehoffmann80-pdf-analyzer.hf.space/check_metadata";
-
-        try {
-            const response = await fetch(AI_CHECK_API_URL, {
-                method: "POST",
-                body: formDataPayload
-            });
-
-            if (!response.ok) {
-                // Return a mock response if endpoint doesn't exist yet
-                console.warn("AI Endpoint returned error. Returning mock response for demonstration.");
-                return {
-                    status: "success",
-                    feedback: "I am your AI Assistant.\nThe MODS XML and Form Data have been received.\n\n- Title looks consistent.\n- Check the author list, there might be a discrepancy.",
-                    problematic_fields: ["edit-title", "edit-authors"]
-                };
+// ---------------------------------------------------------------------------
+// KI-Check des Datensatzes (per Knopf). Der Prompt besteht aus drei Teilen:
+// den Hausregeln aus dem Handbuch (nur zu den befuellten Feldern), dem Stand
+// des Formulars und einer Belegquelle (Crossref bzw. das ausgewertete PDF).
+// Haiku meldet Abweichungen ueber einen erzwungenen Tool-Aufruf; "ref" zeigt
+// auf die Nummer des Formularwertes, damit die Seite das Feld markieren kann.
+// ---------------------------------------------------------------------------
+const KI_CHECK_TOOL = {
+    name: 'report_findings',
+    description: 'Meldet die Abweichungen des Datensatzes von den Handbuchregeln und der Belegquelle.',
+    input_schema: {
+        type: 'object',
+        properties: {
+            findings: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        ref: { type: ['string', 'null'], description: 'Nummer des betroffenen Formularwertes (z.B. "f12"); null, wenn sich der Befund auf keinen einzelnen Wert bezieht' },
+                        severity: { type: 'string', enum: ['fehler', 'hinweis'], description: 'fehler = verstoesst eindeutig gegen Regel oder Beleg; hinweis = unsicher oder Ermessenssache' },
+                        problem: { type: 'string', description: 'Was nicht stimmt, in einem Satz' },
+                        suggestion: { type: ['string', 'null'], description: 'Korrigierter Wert bzw. konkrete Handlung; null, wenn keiner angebbar ist' },
+                        rule: { type: ['string', 'null'], description: 'Die Handbuchregel in hoechstens 200 Zeichen, auf die sich der Befund stuetzt; null, wenn der Befund aus dem Vergleich mit der Belegquelle folgt' }
+                    },
+                    required: ['ref', 'severity', 'problem', 'suggestion', 'rule']
+                }
             }
-            return await response.json();
-        } catch (fetchErr) {
-            console.warn("AI Endpoint fetch failed. Returning mock response for demonstration.", fetchErr);
-            return {
-                status: "success",
-                feedback: "I am your AI Assistant.\nThe MODS XML and Form Data have been received.\n\n- Title looks consistent.\n- Check the author list, there might be a discrepancy.",
-                problematic_fields: ["edit-title", "edit-authors"]
-            };
-        }
-    } catch (e) {
-        throw new Error("Failed to perform AI check: " + e.message);
+        },
+        required: ['findings']
     }
+};
+
+const KI_CHECK_PROMPT = 'Du pruefst einen Publikationsdatensatz aus dem Repositorium DORA (Lib4ri) vor der Freigabe.\n'
+    + 'Unten stehen (1) die Hausregeln aus dem DORA-Handbuch, (2) der aktuelle Stand des Edit-Formulars, jeder Wert mit einer Nummer, '
+    + 'und (3) eine Belegquelle zum Vergleich.\n\n'
+    + 'Vorgehen:\n'
+    + '- Melde nur Abweichungen, die du an einer Regel oder an der Belegquelle festmachen kannst. Rate nicht, und melde keine Geschmacksfragen.\n'
+    + '- Leere Felder sind nicht dein Thema, ebenso Pflichtfelder, das Seitenformat und die Lizenzlogik - das prueft der Helper selbst. '
+    + 'Dir geht es um Schreibweise, Uebereinstimmung mit der Vorlage und Inhalt.\n'
+    + '- Das Handbuch enthaelt auch Bedienungsanleitungen (Klickwege, Suchfelder). Die sind keine Pruefregeln; ignoriere sie.\n'
+    + '- Weicht die Belegquelle vom Formular ab, ist das nur dann ein Befund, wenn die Regeln Uebereinstimmung mit der Vorlage verlangen. '
+    + 'Stimmt etwas laut Regel ausdruecklich NICHT mit der Quelle ueberein (z.B. Gross-/Kleinschreibung im Titel), gilt die Regel.\n'
+    + '- Ist alles in Ordnung, gib eine leere Liste zurueck.\n'
+    + '- Antworte auf Deutsch, Werte aus dem Datensatz unveraendert in Originalschreibweise zitieren.';
+
+function kiCheckPromptBauen(auftrag) {
+    const teile = [KI_CHECK_PROMPT];
+    if (HAIKU_INSTITUTE[auftrag.institut]) {
+        teile.push('\n\nDer Datensatz wird fuer das Institut ' + auftrag.institut.toUpperCase() + ' bearbeitet ('
+            + HAIKU_INSTITUTE[auftrag.institut] + '). Pruefe anhand der Affiliationen in der Belegquelle, ob Autoren dieses Instituts '
+            + 'im Formular als solche erfasst sind, und wende dazu die Handbuchregeln zu Authors/Affiliation an. '
+            + 'Autoren anderer Einrichtungen sind kein Befund.');
+    }
+    teile.push('\n\n=== 1. HANDBUCH-REGELN ===\n');
+    (auftrag.regeln || []).forEach(r => {
+        teile.push('--- Feld: ' + r.feld + ' ---\n' + r.text + '\n');
+    });
+    teile.push('\n=== 2. FORMULAR (Nummer | Feld | Wert) ===\n');
+    (auftrag.formular || []).forEach(f => {
+        teile.push(f.ref + ' | ' + f.label + ' | ' + f.wert + '\n');
+    });
+    teile.push('\n=== 3. BELEGQUELLE ===\n' + JSON.stringify(auftrag.referenz || {}, null, 1) + '\n');
+    return teile.join('');
+}
+
+async function kiCheckDatensatz(auftrag) {
+    const einstellungen = await haikuEinstellungen();
+    if (!einstellungen.schluessel) {
+        throw new Error('Kein Anthropic-API-Schlüssel hinterlegt (Einstellungen des Helpers).');
+    }
+    if (!auftrag.formular || !auftrag.formular.length) throw new Error('Im Formular steht noch nichts zum Prüfen.');
+
+    const ergebnis = await haikuAnfrage(einstellungen,
+        [{ type: 'text', text: kiCheckPromptBauen(auftrag) }], KI_CHECK_TOOL, 4096);
+    return {
+        findings: Array.isArray(ergebnis.findings) ? ergebnis.findings : [],
+        model: ergebnis.__modell
+    };
 }
 
 // =====================================================================
@@ -2023,6 +2366,90 @@ async function fetchFundingSuggestions(doi) {
 
 
 // --- Beide Quellen zusammenfuehren ---
+// Ergaenzt einen Foerderposten um Titel, Stream und Konfidenz (DORA-Bestand,
+// OpenAIRE-Projektregister). Gemeinsam fuer Crossref/OpenAIRE-Vorschlaege und
+// die Angaben aus dem PDF.
+async function reichereFundingItemAn(item) {
+        const dora = await lookupDoraFunding(item.awardNumber, item.funderName);
+        if (dora) {
+            item.doraOccurrences = dora.occurrences;
+            if (!item.sources.includes('DORA')) item.sources.push('DORA');
+            // Hauskonvention hat Vorrang
+            if (dora.awardTitle) item.awardTitle = dora.awardTitle;
+            if (dora.fundingStream) item.fundingStream = dora.fundingStream;
+            if (dora.funderIdentifier) item.funderIdentifier = dora.funderIdentifier;
+        }
+
+        if (!item.awardTitle || !item.fundingStream) {
+            const project = await lookupOpenAireProjectByCode(item.awardNumber, item.funderKey);
+            if (project) {
+                if (!item.awardTitle && project.awardTitle) item.awardTitle = project.awardTitle;
+                if (!item.fundingStream && project.fundingStream) item.fundingStream = project.fundingStream;
+                if (!item.acronym && project.acronym) item.acronym = project.acronym;
+                if (!item.projectTitle && project.projectTitle) item.projectTitle = project.projectTitle;
+                if (!item.openaireId && project.openaireId) item.openaireId = project.openaireId;
+                if (!item.sources.includes('OpenAIRE')) item.sources.push('OpenAIRE');
+            }
+        }
+
+        // Konfidenz: DORA bestaetigt nur die Schreibweise, nicht die Zugehoerigkeit
+        // des Papers zum Projekt - deshalb zaehlt dafuer nur Crossref/OpenAIRE.
+        const hasCrossref = item.sources.includes('Crossref');
+        const hasOpenAire = item.sources.includes('OpenAIRE');
+        // Rein aus dem Volltext gemined (OpenAIRE-Inferenz ohne Verlagsangabe)
+        item.textMined = !!item.openaireInferred && !hasCrossref;
+
+        if (!item.awardTitle) {
+            item.confidence = 'low';
+        } else if (hasCrossref || (hasOpenAire && !item.openaireInferred)) {
+            item.confidence = 'high';
+        } else {
+            item.confidence = 'medium';
+        }
+
+        item.complete = !!(item.funderName && item.awardNumber && item.awardTitle && item.fundingStream);
+        item.projectUrl = item.openaireId
+            ? `https://explore.openaire.eu/search/project?projectId=${encodeURIComponent(item.openaireId)}`
+            : null;
+}
+
+// Foerderangaben aus dem PDF (von Haiku gelesen) in dieselben Posten wie bei
+// Crossref/OpenAIRE ueberfuehren: Foerderer erkennen, Nummer auf den nackten
+// Code bringen, Stream ableiten. Eintragbar sind nur SNSF und EC; ob DORAs
+// Auswahlliste das Projekt kennt, klaert erst der Lookup beim Eintragen.
+async function baueFundingItemsAusPdf(liste) {
+    const items = new Map();
+    const nichtEintragbar = [];
+    (Array.isArray(liste) ? liste : []).forEach(r => {
+        if (!r || !r.award_number) return;
+        const profil = funderProfileFromName(r.funder);
+        if (!profil) { nichtEintragbar.push({ name: r.funder || '?', awards: [r.award_number] }); return; }
+        const nummer = normalizeAwardNumber(r.award_number, profil.key);
+        if (!nummer || !awardStringMatchesCode(r.award_number, nummer)) {
+            nichtEintragbar.push({ name: (r.funder || profil.funderName) + ' (Nummer unklar)', awards: [r.award_number] });
+            return;
+        }
+        const schluessel = profil.key + '::' + nummer;
+        if (items.has(schluessel)) return;
+        items.set(schluessel, {
+            funderKey: profil.key,
+            funderName: profil.funderName,
+            funderIdentifier: profil.funderIdentifier,
+            fundingStream: streamFromFunderName((r.funder || '') + ' ' + (r.programme || '')) || profil.defaultStream,
+            awardNumber: nummer,
+            awardTitle: '',
+            acronym: null,
+            projectTitle: '',
+            openaireId: null,
+            sources: ['PDF'],
+            rawAwardNumbers: [r.award_number]
+        });
+    });
+    const posten = Array.from(items.values());
+    await Promise.all(posten.map(reichereFundingItemAn));
+    return { items: posten, unsupported: nichtEintragbar };
+}
+
 async function computeFundingSuggestions(doi) {
     const [crossrefRes, openaireRes] = await Promise.allSettled([
         fetch(`https://api.crossref.org/works/${doi}`, { cache: 'no-cache' })
@@ -2100,49 +2527,7 @@ async function computeFundingSuggestions(doi) {
     const items = Array.from(merged.values());
 
     // Anreichern: fehlende Titel/Streams aus DORA-Bestand bzw. OpenAIRE-Projektregister
-    await Promise.all(items.map(async item => {
-        const dora = await lookupDoraFunding(item.awardNumber, item.funderName);
-        if (dora) {
-            item.doraOccurrences = dora.occurrences;
-            if (!item.sources.includes('DORA')) item.sources.push('DORA');
-            // Hauskonvention hat Vorrang
-            if (dora.awardTitle) item.awardTitle = dora.awardTitle;
-            if (dora.fundingStream) item.fundingStream = dora.fundingStream;
-            if (dora.funderIdentifier) item.funderIdentifier = dora.funderIdentifier;
-        }
-
-        if (!item.awardTitle || !item.fundingStream) {
-            const project = await lookupOpenAireProjectByCode(item.awardNumber, item.funderKey);
-            if (project) {
-                if (!item.awardTitle && project.awardTitle) item.awardTitle = project.awardTitle;
-                if (!item.fundingStream && project.fundingStream) item.fundingStream = project.fundingStream;
-                if (!item.acronym && project.acronym) item.acronym = project.acronym;
-                if (!item.projectTitle && project.projectTitle) item.projectTitle = project.projectTitle;
-                if (!item.openaireId && project.openaireId) item.openaireId = project.openaireId;
-                if (!item.sources.includes('OpenAIRE')) item.sources.push('OpenAIRE');
-            }
-        }
-
-        // Konfidenz: DORA bestaetigt nur die Schreibweise, nicht die Zugehoerigkeit
-        // des Papers zum Projekt - deshalb zaehlt dafuer nur Crossref/OpenAIRE.
-        const hasCrossref = item.sources.includes('Crossref');
-        const hasOpenAire = item.sources.includes('OpenAIRE');
-        // Rein aus dem Volltext gemined (OpenAIRE-Inferenz ohne Verlagsangabe)
-        item.textMined = !!item.openaireInferred && !hasCrossref;
-
-        if (!item.awardTitle) {
-            item.confidence = 'low';
-        } else if (hasCrossref || (hasOpenAire && !item.openaireInferred)) {
-            item.confidence = 'high';
-        } else {
-            item.confidence = 'medium';
-        }
-
-        item.complete = !!(item.funderName && item.awardNumber && item.awardTitle && item.fundingStream);
-        item.projectUrl = item.openaireId
-            ? `https://explore.openaire.eu/search/project?projectId=${encodeURIComponent(item.openaireId)}`
-            : null;
-    }));
+    await Promise.all(items.map(reichereFundingItemAn));
 
     const rank = { high: 0, medium: 1, low: 2 };
     items.sort((a, b) => (rank[a.confidence] - rank[b.confidence])

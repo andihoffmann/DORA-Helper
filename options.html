@@ -38,6 +38,27 @@
   </div>
 
   <div class="section">
+    <h2>PDF-Auswertung mit Haiku</h2>
+    <div class="hint">
+      Der Helper schickt PDFs direkt an die Anthropic-API (Claude Haiku) und
+      zeigt die gelesenen Metadaten als Vorschlag. Der Schlüssel bleibt nur in
+      diesem Browser gespeichert.
+    </div>
+    <input type="password" id="anthropicKey" placeholder="Anthropic API Key (sk-ant-…)">
+    <div class="hint" style="margin-top: 12px; margin-bottom: 5px;">
+      <strong>Modell (optional):</strong> leer lassen für <code>claude-haiku-5-5</code>.
+    </div>
+    <input type="text" id="haikuModel" placeholder="claude-haiku-5-5">
+    <label style="display: block; margin-top: 10px;">
+      <input type="checkbox" id="haikuAutoAnalyse"> Gefundenes PDF automatisch auswerten (jede Auswertung kostet API-Guthaben)
+    </label>
+    <div style="margin-top: 10px;">
+      <button id="saveHaiku">Speichern</button>
+      <span id="statusHaiku" style="opacity:0; color:green; margin-left:10px; font-weight:bold;">Gespeichert!</span>
+    </div>
+  </div>
+
+  <div class="section">
     <h2>Batch QC Dashboard</h2>
     <div class="hint">
       Aktiviert die Split-Screen Ansicht für schnelles Abarbeiten von PIDs auf der Suchseite.

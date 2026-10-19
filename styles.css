@@ -128,6 +128,47 @@
 }
 
 /* ==========================================================================
+   BATCH-QC-KNOPF AUF DER TREFFERLISTE
+   Die ganze Flaeche muss klicken, nicht nur der Text. Frueher trug der Knopf
+   die Theme-Klasse "form-submit" und damit die Regeln des Admin-Themas -
+   aendert sich dort die Polsterung, schrumpft die Klickflaeche auf den Text.
+   Darum stehen die Masse hier und setzen sich durch.
+   ========================================================================== */
+.dora-batch-qc-button {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-sizing: border-box !important;
+    width: auto !important;
+    min-height: 38px !important;
+    padding: 8px 18px !important;
+    margin: 0 !important;
+    line-height: 1.2 !important;
+    white-space: nowrap;
+    font-family: inherit;
+    cursor: pointer;
+    /* Kein Hintergrundbild des Themas ueber unserer Farbe */
+    background-image: none !important;
+}
+
+.dora-batch-qc-button:disabled,
+.dora-batch-qc-button[disabled] {
+    cursor: not-allowed;
+}
+
+/* Hover ueber der ganzen Flaeche, nicht nur ueber der Schrift. Das !important
+   ist noetig, weil die Zaehlung den Hintergrund per Inline-Stil setzt
+   (gesperrt grau, frei gruen) - und Inline schlaegt sonst jede Regel. */
+.dora-batch-qc-button:hover:not(:disabled) {
+    background-color: #16a34a !important;
+    box-shadow: 0 4px 8px rgba(34, 197, 94, 0.3) !important;
+}
+
+.dora-batch-qc-button:active:not(:disabled) {
+    transform: translateY(1px);
+}
+
+/* ==========================================================================
    HANDBUCH-SYMBOL AN DER FELDBESCHRIFTUNG
    Ruhend zurückhaltend; beanstandet das Feld, leuchtet es auf - dort steht
    dann meist genau die Regel, um die es geht.
@@ -201,10 +242,16 @@
    und Grösse; nur die Beschriftung wechselt. */
 .dora-pdf-aktionen {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr auto;
     gap: 5px;
     align-items: stretch;
     margin-bottom: 5px;
+}
+
+/* Alles ueber die volle Breite - nur der Blitz-Knopf teilt sich die erste
+   Zeile mit dem PDF-Knopf. */
+.dora-pdf-aktionen > * {
+    grid-column: 1 / -1;
 }
 
 /* Jede Aktion bekommt eine eigene, volle Zeile: die Beschriftungen ändern
@@ -222,6 +269,22 @@
     justify-content: flex-start;
     gap: 5px;
     min-width: 0;
+}
+
+/* PDF-Knopf und Blitz teilen sich die erste Zeile: Knopf links, Blitz als
+   kleines Quadrat rechts */
+.dora-pdf-aktionen.dora-mit-blitz > #dora-main-pdf-btn {
+    grid-column: 1;
+    grid-row: 1;
+}
+
+.dora-pdf-aktionen > .dora-blitz {
+    grid-column: 2;
+    grid-row: 1;
+    width: 30px;
+    padding: 0;
+    justify-content: center;
+    font-size: 14px;
 }
 
 /* Der Text wird abgeschnitten statt den Knopf zu dehnen */
@@ -489,4 +552,17 @@
 .dora-error, input.dora-error, select.dora-error, textarea.dora-error {
     border: 2px solid #e53e3e !important;
     background-color: #fff5f5 !important;
+}
+
+/* KI-Check: Felder, zu denen Haiku einen Befund meldet. Eigene Klassen statt
+   .dora-error, damit validateForm die Markierung nicht beim naechsten Lauf
+   wegraeumt. */
+.dora-ki-fehler {
+    outline: 2px solid #6b46c1 !important;
+    outline-offset: 1px;
+}
+
+.dora-ki-hinweis {
+    outline: 2px dotted #b7791f !important;
+    outline-offset: 1px;
 }

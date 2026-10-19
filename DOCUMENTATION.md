@@ -84,6 +84,125 @@ When an edit page is opened in DORA, the assistant automatically scans for a DOI
         noch nicht initialisiert (`ReferenceError: can't access lexical
         declaration`). Ein Startlauf-Test injiziert content.js in eine fertig
         geladene Seite und hält das fest.
+*   **⟳ Journal neu abfragen**: Unter dem Feld *Journal Title* sitzt ein Knopf,
+    der die Journalangaben frisch holt – **Titel, Abkürzung, Publisher, ISSN,
+    E-ISSN und die PID**. Sie stammen aus einem MADS-Objekt der Sammlung
+    `journals:` und ändern sich dort gelegentlich (Verlagswechsel, korrigierte
+    ISSN), ohne dass die Aufsätze nachgezogen würden.
+    *   **Wie abgefragt wird**: Nicht über einen eigenen Solr-Weg, sondern
+        indem die **Autovervollständigung des Formulars ferngesteuert** wird –
+        derselbe Authority-Endpunkt, dieselbe Sitzung, derselbe Code-Pfad wie
+        bei einer Eingabe von Hand. Der Helper stösst `keyup` an, wartet auf
+        Drupals `<div id="autocomplete">` und löst am passenden Vorschlag ein
+        `mousedown` aus. Was die Seite daraufhin in die Nachbarfelder schreibt,
+        schreibt sie also selbst; der Helper parst kein eigenes Format.
+    *   **Felder werden über `name` gefunden**, nicht über die ID: im
+        Ingest-Formular sind die IDs zufällig
+        (`form-fGroc…--00000000668c…`), im Edit-Formular sprechend
+        (`edit-host-titleinfo-title`). Die Namen (`host[titleInfo][title]` …)
+        sind in beiden gleich.
+    *   **Es wird nicht geraten**: Übernommen wird nur ein Vorschlag, dessen
+        Titel exakt passt (Gross-/Kleinschreibung, `&`/`and` und Satzzeichen
+        werden dabei ignoriert). Sonst erscheint eine Auswahlliste – sonst
+        würde „Water Research" auch „Water Research X" treffen. Von 6482
+        Journal-Objekten tragen nur zwei Titel doppelt („Metall", „Physics").
+    *   **Danach**: Geänderte Felder werden kurz gelb hinterlegt, und die
+        Meldung nennt jede Änderung einzeln („Publisher: Wiley → Springer
+        Nature") mit **↩ Rückgängig**. Ändert sich nichts, sagt sie das.
+    *   **Wo**: In Ingest- und Edit-Formular – und damit automatisch auch in
+        der **Batch-QC**, weil deren mittleres iframe dasselbe Formular lädt
+        und der Content-Script mit `all_frames: true` darin mitläuft.
+    *   **Nur bei Journals**: Trägt dasselbe Eingabefeld den Proceedings-Titel
+        (`feldIstJournalname` prüft die Beschriftung), erscheint kein Knopf –
+        dort gibt es kein MADS-Objekt.
+*   **⟳ Journal für alle N prüfen (Batch-QC)**: In der Werkzeugleiste über dem
+    Formular. Schlägt das Journal für **jeden ausgewählten Datensatz** neu nach,
+    indem er ihn nacheinander in einem verborgenen iframe öffnet.
+    *   **Zwei Stufen, mit Absicht**: Stufe 1 prüft nur – öffnen,
+        nachschlagen, verwerfen; **gespeichert wird nichts**. Erst danach
+        zeigt das Fenster die gefundenen Änderungen zum Ankreuzen (alle
+        vorausgewählt), und Stufe 2 schreibt nur die angehakten. Ein
+        Massenschreibzugriff auf echte Datensätze soll nicht an einem
+        einzigen Klick hängen.
+    *   **Seriell, nicht parallel**: der Server bekommt nicht fünfzig
+        Formulare auf einmal, und der Fortschritt bleibt lesbar. Rechnen Sie
+        mit ein paar Sekunden je Datensatz; der Lauf ist jederzeit
+        abbrechbar, offene Rahmen werden dabei weggeräumt.
+    *   **Ergebnisarten**: `Änderung` · `aktuell` · `mehrdeutig` ·
+        `kein Treffer` · `kein Journal` (z.B. Proceedings) · `Fehler`.
+        Mehrdeutige und titellose Datensätze werden **nicht** angefasst –
+        sie stehen in der Liste und bleiben Handarbeit.
+    *   **Neu geladene Datensätze werden erneut nachgeschlagen**: Musste ein
+        Formular für Stufe 2 neu geladen werden (kein Parkplatz mehr frei),
+        steht der geprüfte Stand nicht mehr darin – es wird also nochmal
+        abgefragt. Ist der Datensatz inzwischen aktuell, wird er als solcher
+        gemeldet statt blind gespeichert.
+    *   **Geprüfte Formulare bleiben offen stehen**: Ein Datensatz mit
+        Änderung wird nach Stufe 1 **nicht** geschlossen; beim Speichern ist
+        dann nur noch ein Klick nötig statt Neuladen plus zweiter Abfrage.
+        Das halbiert die Wartezeit des Laufs. Obergrenze
+        `JOURNAL_PARKPLAETZE` = **20**, weil die Trefferliste genau so viele
+        Publikationen zeigt: mehr kann in einem Lauf gar nicht ausgewählt
+        sein, also landet kein Datensatz auf dem langsamen Weg. Jedes offene
+        Formular ist eine gerenderte Seite – wird der Browser bei zwanzig
+        gleichzeitig geänderten Datensätzen zäh, ist diese Zahl die einzige
+        Stellschraube.
+    *   **Warten nur so lange wie nötig**: Nach dem Auswählen eines
+        Vorschlags wartet `journalAufAenderungWarten` darauf, dass sich ein
+        Feld rührt, statt einen festen Puffer abzusitzen. Bei einem Stapel
+        summiert sich ein fester Puffer schnell zu Minuten Leerlauf.
+    *   **Nicht auf die Zielseite warten**: Nach dem Klick auf Speichern
+        genügt es, dass ein *neues* Dokument da ist; der Rahmen wird sofort
+        auf `about:blank` gesetzt. Auf das `load` der Objektansicht zu warten
+        hiesse, noch jedes Bild und Skript darin abzuwarten – reine
+        Wartezeit, nachdem längst gespeichert wurde.
+    *   **`load` allein ist kein Beleg fürs Speichern**: Lehnt Drupal das
+        Formular ab (Pflichtfeld leer, Validierung), liefert es dasselbe
+        Formular mit Fehlermeldungen erneut aus – das feuert ebenfalls
+        `load`. `journalSpeichern` misst den Erfolg darum an **Drupals
+        Fehlermeldung** (`.messages.error`) und meldet sonst Erfolg.
+    *   **Woran es NICHT zu erkennen ist**: daran, dass wieder ein Formular
+        dasteht. DORA führt nach dem Speichern zur Bearbeitung zurück, das
+        Formular ist also auch im Erfolgsfall wieder da – ein erster Versuch,
+        das als Misserfolg zu werten, meldete bei jedem Speichern
+        fälschlich «Nicht gespeichert».
+    *   **Gespeichert wird über den Formular-Knopf** (`#edit-submit`), und
+        der Lauf wartet die Navigation des iframes ab – erst dann steht die
+        Änderung wirklich im Repositorium.
+    *   **Technisch**: Alle Journal-Funktionen nehmen Dokument und Fenster
+        entgegen (`journalAbfrageAusfuehren(fenster)`), damit derselbe
+        Ablauf im eigenen Formular und in einem fremden iframe läuft. Die
+        Ereignisse werden aus dem Fenster des jeweiligen Formulars erzeugt
+        (`new fenster.KeyboardEvent(…)`).
+    *   **Das leere Startdokument ist eine Falle**: Ein frisch eingehängtes
+        iframe meldet für sein `about:blank` bereits ein `load`. Wer darauf
+        hereinfällt, liest ein leeres Dokument und meldet jeden Datensatz als
+        „kein Journalfeld" – so geschehen bei `eawag:5136`. Darum wird die
+        **Adresse vor dem Einhängen** gesetzt, `about:blank`-Ladeereignisse
+        werden zusätzlich übersprungen, und statt eines festen Zeitpuffers
+        wartet `journalAufFormularWarten` bis zu 2,5 s auf das Feld.
+    *   **Die Lage wird benannt, nicht nur verneint**: statt „kein
+        Journalfeld" meldet der Lauf, was er stattdessen vorfand – die
+        Publikationsart (`Publication Type: Report`), eine fehlende
+        Berechtigung oder eine Seite ganz ohne Bearbeitungsformular.
+    *   **Die Rahmen müssen still sein**: Die Erweiterung läuft mit
+        `"all_frames": true`. Ohne Bremse startet in **jedem** verborgenen
+        Rahmen die volle Oberfläche – Ergebnisbox, DOI-Abfrage und über
+        `openPopupWindow` sogar ein echtes Browserfenster. Bei zwanzig
+        Datensätzen zwanzig Mal; das ergab übereinanderliegende, grau
+        bleibende Fenster. Der Rahmen bekommt darum **vor** der Adresse den
+        Namen `dora-journal-still`, und `startObserver()` bricht sofort ab,
+        wenn `window.name` so lautet. Gesteuert wird das Formular ohnehin
+        von aussen.
+    *   **Aufräumen an einer Stelle**: `journalStapelAufraeumen()` entfernt
+        Fenster und Rahmen; aufgerufen vom Stapelfenster, vom
+        Schliessen-Knopf der Batch-QC (sonst rendern die Rahmen im
+        Hintergrund weiter) und bei `pagehide`. Ein Rahmen wird erst auf
+        `about:blank` gesetzt und dann entfernt, sonst läuft sein Skript
+        unter Umständen weiter. `position: absolute` statt `fixed` – eine
+        eigene Zeichenebene wäre für ein unsichtbares Dokument verschenkt.
+
+
 *   **📖 Handbuch am Feld**: Neben jeder bekannten Feldbeschriftung sitzt ein
     kleines **📖**. Ein Klick zeigt unter dem Feld, was das **DORA-Handbuch**
     (Confluence-Wiki) zu diesem Feld sagt – die Regeln des Abschnitts mit

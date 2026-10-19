@@ -17,13 +17,13 @@
     "https://api.crossref.org/*",
     "https://api.openaire.eu/*",
     "https://intranet.psi.ch/*",
-    "https://andrehoffmann80-pdf-analyzer.hf.space/*",
+    "https://api.anthropic.com/*",
     "http://lib-dora-prod1.emp-eaw.ch:8080/*",
     "<all_urls>",
     "file:///*"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' http://lib-dora-prod1.emp-eaw.ch:8080 https://*;"
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' data: http://lib-dora-prod1.emp-eaw.ch:8080 https://*;"
   },
   "browser_specific_settings": {
     "gecko": {
