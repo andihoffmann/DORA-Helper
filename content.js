@@ -7192,31 +7192,42 @@ function fetchConferenceDetails(confName) {
         '*date*'                                   // Fuzzy fallback
     ].join(',');
 
-    const solrUrl = `http://lib-dora-prod1.emp-eaw.ch:8080/solr/collection1/select?q=mods_name_conference_ms:"${encodeURIComponent(safeName)}"&fl=${encodeURIComponent(fl)}&rows=1&wt=json&_=${Date.now()}`;
+    // Eine Konferenz kann in DORA mehrere Tagungsbaende haben (verschiedene
+    // Proceedings-Titel, Serien, Editoren). Darum mehrere Datensaetze holen und
+    // die unterschiedlichen Varianten zur Auswahl anbieten.
+    const solrUrl = `http://lib-dora-prod1.emp-eaw.ch:8080/solr/collection1/select?q=mods_name_conference_ms:"${encodeURIComponent(safeName)}"&fl=${encodeURIComponent(fl)}&rows=50&wt=json&_=${Date.now()}`;
 
     chrome.runtime.sendMessage({
         action: "searchAutocomplete",
         url: solrUrl
     }, (response) => {
-        if (response && response.success && response.data) {
-            const docs = response.data.response?.docs;
-            if (docs && docs.length > 0) {
-                const preparedData = prepareConferenceData(docs[0]);
-                // Check if any data was found
-                const hasData = Object.values(preparedData).some(v => v !== null && (Array.isArray(v) ? v.length > 0 : true));
-
-                if (hasData) {
-                    showConferenceConfirmation(preparedData, (selectedData) => {
-                        applyConferenceData(selectedData);
-                    });
-                } else {
-                    console.log("DORA Helper: No usable data found in conference doc.");
-                }
-            } else {
-                console.log("DORA Helper: No conference details found for", confName);
-            }
+        if (!(response && response.success && response.data)) return;
+        const docs = response.data.response?.docs || [];
+        const varianten = gruppiereKonferenzVarianten(docs.map(prepareConferenceData));
+        if (varianten.length === 0) {
+            console.log("DORA Helper: No conference details found for", confName);
+            return;
         }
+        showConferenceConfirmation(varianten, (selectedData) => {
+            applyConferenceData(selectedData);
+        });
     });
+}
+
+// Fasst gleiche Datensaetze zusammen und sortiert nach Haeufigkeit.
+// Rueckgabe: [{ data, anzahl }]
+function gruppiereKonferenzVarianten(liste) {
+    const gruppen = new Map();
+    liste.forEach(data => {
+        const hatDaten = Object.values(data).some(v => v !== null && (Array.isArray(v) ? v.length > 0 : true));
+        if (!hatDaten) return;
+        const schluessel = JSON.stringify([data.procTitle, data.seriesTitle, data.seriesIssn, data.place, data.date,
+            data.editors.map(e => `${e.family}|${e.given}`)]);
+        const g = gruppen.get(schluessel);
+        if (g) g.anzahl++;
+        else gruppen.set(schluessel, { data, anzahl: 1 });
+    });
+    return [...gruppen.values()].sort((a, b) => b.anzahl - a.anzahl);
 }
 
 function prepareConferenceData(doc) {
@@ -7228,6 +7239,7 @@ function prepareConferenceData(doc) {
         place: null,
         date: null
     };
+    const allKeys = Object.keys(doc);
 
     // 1. Proceedings Title
     if (doc.mods_relatedItem_host_titleInfo_title_ms && doc.mods_relatedItem_host_titleInfo_title_ms[0]) {
@@ -7266,7 +7278,6 @@ function prepareConferenceData(doc) {
 
     if (data.editors.length === 0) {
         // Fallback to previous logic
-        const allKeys = Object.keys(doc);
         let editorField = null;
         const candidates = [
             'mods_name_personal_editor_ms',
@@ -7355,40 +7366,19 @@ async function applyConferenceData(data) {
     }
 
     // 3. Editors
+    // Gleiche Routine wie beim PDF-Import: findet das Editor-Panel auch ueber die
+    // Beschriftung, kennt [familyEditor] und [family] und meldet fehlende Zeilen.
     if (data.editors && data.editors.length > 0) {
-        await addMissingRows('.form-item-host-editor', data.editors.length);
-
-        const editorContainer = document.querySelector('.form-item-host-editor .islandora-form-fieldpanel-panel');
-        if (editorContainer) {
-            const editorPanes = editorContainer.querySelectorAll('.islandora-form-fieldpanel-pane');
-            let filledCount = 0;
-
-            data.editors.forEach((ed, idx) => {
-                if (editorPanes[idx]) {
-                    const pane = editorPanes[idx];
-                    // Robust selector for Family Name (could be [family], [familyEditor], etc.)
-                    const familyEl = pane.querySelector('input[name*="family" i]');
-                    // Robust selector for Given Name
-                    const givenEl = pane.querySelector('input[name*="given" i]');
-
-                    let rowFilled = false;
-                    if (familyEl) {
-                        familyEl.value = ed.family;
-                        familyEl.dispatchEvent(new Event('input', { bubbles: true }));
-                        rowFilled = true;
-                    }
-                    if (givenEl && ed.given) {
-                        givenEl.value = ed.given;
-                        givenEl.dispatchEvent(new Event('input', { bubbles: true }));
-                        rowFilled = true;
-                    }
-                    if (rowFilled) filledCount++;
-                }
-            });
-            if (filledCount > 0) {
-                msg += `- ${filledCount} Editor(s)\n`;
-                hasChanges = true;
-            }
+        const bericht = [];
+        await uebernehmePersonen('editors', data.editors, bericht);
+        const b = bericht[0];
+        if (b && b.status === 'ok') {
+            msg += `- ${data.editors.length} Editor(s)\n`;
+            hasChanges = true;
+        } else {
+            console.warn('DORA Helper: Editoren nicht vollständig übernommen', bericht);
+            alert('Editoren: ' + (b ? b.schritte.join('; ') : 'nicht übernommen'));
+            if (b && b.status === 'offen') hasChanges = true;
         }
     }
 
@@ -7453,7 +7443,8 @@ function findField(labelPart) {
 }
 
 // --- CONFERENCE CONFIRMATION DIALOG ---
-function showConferenceConfirmation(data, onConfirm) {
+function showConferenceConfirmation(varianten, onConfirm) {
+    let data = varianten[0].data;
     // 0. Deduplication: Check if modal already exists
     if (document.querySelector('.dora-modal-overlay')) {
         console.log("DORA Helper: Modal already open, skipping.");
@@ -7518,6 +7509,8 @@ function showConferenceConfirmation(data, onConfirm) {
         return row;
     };
 
+    const renderFelder = () => {
+    form.replaceChildren();
     if (data.procTitle) {
         const item = createCheckbox('Proceedings Title', data.procTitle, 'procTitle');
         if (item) form.appendChild(item);
@@ -7548,6 +7541,40 @@ function showConferenceConfirmation(data, onConfirm) {
         const noData = createEl('div', '', 'Keine relevanten Daten gefunden.');
         noData.style.color = '#718096';
         form.appendChild(noData);
+    }
+    };
+    renderFelder();
+
+    // Mehrere Tagungsbaende zur selben Konferenz: Auswahl anbieten
+    if (varianten.length > 1) {
+        const auswahl = createEl('div');
+        auswahl.style.cssText = 'display:flex; flex-direction:column; gap:4px; max-height:30vh; overflow-y:auto; border:1px solid #e2e8f0; border-radius:6px; padding:6px;';
+        const titel = createEl('div', '', `${varianten.length} verschiedene Einträge in DORA – bitte wählen:`);
+        titel.style.cssText = 'font-size:0.9em; color:#4a5568; font-weight:600; margin-bottom:2px;';
+        auswahl.appendChild(titel);
+        const gruppe = `dora-konf-variante-${Date.now()}`;
+        varianten.forEach((v, idx) => {
+            const zeile = createEl('label');
+            zeile.style.cssText = 'display:flex; align-items:start; gap:8px; cursor:pointer; padding:4px; border-radius:4px; font-size:0.9em;';
+            const rb = createEl('input');
+            rb.type = 'radio';
+            rb.name = gruppe;
+            rb.checked = idx === 0;
+            rb.style.marginTop = '3px';
+            rb.addEventListener('change', () => { data = v.data; renderFelder(); });
+            const d = v.data;
+            const teile = [d.procTitle || d.seriesTitle || '(ohne Proceedings-Titel)'];
+            const zusatz = [d.place, d.date, d.editors.length ? `${d.editors.length} Editor(en)` : null].filter(Boolean).join(' · ');
+            const text = createEl('div', '', teile[0]);
+            text.style.cssText = 'flex:1; word-break:break-word; color:#2d3748;';
+            const info = createEl('div', '', `${zusatz ? zusatz + ' · ' : ''}${v.anzahl} Datensatz/-sätze`);
+            info.style.cssText = 'color:#718096; font-size:0.9em;';
+            text.appendChild(info);
+            zeile.appendChild(rb);
+            zeile.appendChild(text);
+            auswahl.appendChild(zeile);
+        });
+        box.appendChild(auswahl);
     }
 
     box.appendChild(form);
