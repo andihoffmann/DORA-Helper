@@ -749,6 +749,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    if (request.action === "pdfAbgleichText") {
+        pdfAbgleichText(request.fileData)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
+    if (request.action === "pdfAbgleichCrossref") {
+        pdfAbgleichCrossref(request.doi)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
     if (request.action === "analyzePdfUrl") {
         analyzePdfUrl(request.pdfUrl, request.institut)
             .then(data => sendResponse({ success: true, data: data }))
@@ -1374,6 +1388,70 @@ function dataUrlZuBlob(dataUrl) {
     for (let i = 0; i < roh.length; i++) bytes[i] = roh.charCodeAt(i);
     const typ = /^data:([^;,]+)/.exec(kopf);
     return new Blob([bytes], { type: typ ? typ[1] : 'application/pdf' });
+}
+
+// ---------------------------------------------------------------------------
+// PDF-Abgleich beim Upload (pdf_abgleich.js): Text der ersten Seiten lokal
+// mit pdf.js lesen. pdf.js wird erst bei Bedarf geladen.
+// ---------------------------------------------------------------------------
+let pdfJsLaden = null;
+
+function ladePdfJs() {
+    if (globalThis.pdfjsLib) return Promise.resolve(globalThis.pdfjsLib);
+    if (!pdfJsLaden) {
+        pdfJsLaden = new Promise((resolve, reject) => {
+            const skript = document.createElement('script');
+            skript.src = chrome.runtime.getURL('pdf.min.js');
+            skript.onload = () => {
+                globalThis.pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('pdf.worker.min.js');
+                resolve(globalThis.pdfjsLib);
+            };
+            skript.onerror = () => { pdfJsLaden = null; reject(new Error('pdf.js konnte nicht geladen werden.')); };
+            document.head.appendChild(skript);
+        });
+    }
+    return pdfJsLaden;
+}
+
+async function pdfAbgleichText(dataUrl) {
+    const pdfjs = await ladePdfJs();
+    const bytes = new Uint8Array(await dataUrlZuBlob(dataUrl).arrayBuffer());
+    const dokument = await pdfjs.getDocument({ data: bytes, isEvalSupported: false }).promise;
+    try {
+        const seiten = dokument.numPages;
+        const teile = [];
+        for (let nr = 1; nr <= Math.min(3, seiten); nr++) {
+            const seite = await dokument.getPage(nr);
+            const inhalt = await seite.getTextContent();
+            teile.push(inhalt.items.map(i => i.str + (i.hasEOL ? '\n' : ' ')).join(''));
+        }
+        let metaText = '';
+        try {
+            const meta = await dokument.getMetadata();
+            const info = meta && meta.info ? meta.info : {};
+            metaText = [info.Title, info.Subject, info.Author, info.Keywords].filter(Boolean).join('\n');
+            if (meta && meta.metadata) {
+                metaText += '\n' + (typeof meta.metadata.getRaw === 'function'
+                    ? meta.metadata.getRaw()
+                    : JSON.stringify(meta.metadata.getAll ? meta.metadata.getAll() : {}));
+            }
+        } catch (e) { /* Metadaten sind optional */ }
+        return { seiten, text: teile.join('\n').slice(0, 30000), metaText: metaText.slice(0, 20000) };
+    } finally {
+        dokument.destroy();
+    }
+}
+
+async function pdfAbgleichCrossref(doi) {
+    const daten = await holeJson(`https://api.crossref.org/works/${encodeURIComponent(doi)}?mailto=${PDF_KONTAKT}`);
+    const werk = daten && daten.message;
+    if (!werk) return null;
+    const titel = (werk.title || []).concat(werk['original-title'] || []);
+    if (werk.title && werk.title[0] && werk.subtitle && werk.subtitle[0]) titel.push(werk.title[0] + ': ' + werk.subtitle[0]);
+    return {
+        titel: titel.filter(Boolean).slice(0, 4),
+        autoren: (werk.author || []).map(a => a.family || a.name || '').filter(Boolean).slice(0, 10)
+    };
 }
 
 async function analyzePdf(dataUrl, institut) {

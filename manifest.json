@@ -61,6 +61,7 @@
       "js": [
         "psi_data.js",
         "psi_affiliations.js",
+        "pdf_abgleich.js",
         "content.js"
       ],
       "css": [

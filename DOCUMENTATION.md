@@ -412,6 +412,26 @@ Extract **Page Count** and **Keywords** directly from PDFs and discover missing 
 *   **Drag & Drop**: Analyze local files by dropping them into the result box.
 *   **Smart Filling**: Automatically appends page counts (e.g., `(12 pp.)`) and populates the keyword manager.
 
+#### PDF-Abgleich beim Upload
+
+Wird auf der Upload-Seite (Ingest oder PDF-Verwaltung) ein PDF ausgewählt oder
+in die Upload-Liste gezogen, prüft der Helper sofort, noch vor dem Hochladen, ob
+die Datei zum Datensatz passt. Über dem Upload-Bereich erscheint eine Ampel
+mit Begründung, in der Dateiliste zusätzlich ein Punkt neben dem Dateinamen
+(Mauszeiger darauf zeigt die Begründung):
+
+*   🟢 **Passt**: Die DOI des Datensatzes oder der Titel steht im PDF.
+*   🟡 **Unsicher**: Der Titel ist nur teilweise zu finden. Bitte kurz ansehen.
+*   🔴 **Passt wahrscheinlich nicht**: Der Titel fehlt (oft steht eine andere DOI im
+    PDF), oder es kommt kein einziger Autorenname vor.
+*   ⚪ **Nicht prüfbar**: Eingescanntes PDF ohne Text oder keine Vergleichsdaten.
+
+Verglichen wird mit dem DORA-Datensatz (MODS) oder beim Neuerfassen mit Titel
+und Autoren aus dem Formularschritt davor, ergänzt um Crossref (über die DOI).
+Gelesen werden die ersten drei Seiten und die eingebetteten PDF-Metadaten. Die
+Datei verlässt den Rechner dafür nicht. Die Ampel ist nur ein Hinweis, der
+Upload wird nie blockiert.
+
 ---
 
 ### 5. Autocomplete for Form Fields
