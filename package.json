@@ -7,7 +7,8 @@
     "start": "web-ext run --start-url \"https://www.dora.lib4ri.ch\"",
     "build": "web-ext build --overwrite-dest",
     "lint": "web-ext lint",
-    "release": "node scripts/release.js"
+    "release": "node scripts/release.js",
+    "patch-pdfjs": "node scripts/patch-pdfjs.js"
   },
   "repository": {
     "type": "git",

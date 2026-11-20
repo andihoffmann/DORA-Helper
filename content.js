@@ -7762,15 +7762,36 @@ function initPdfLicenseChecker() {
                         targetWrapper.parentNode.insertBefore(warningDiv, targetWrapper.nextSibling);
                     }
                     warningDiv.dataset.mapped = mappedCrossref;
-                    warningDiv.innerHTML = `
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0; color: #e02424;">
-                            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-                            <line x1="12" y1="9" x2="12" y2="13"></line>
-                            <line x1="12" y1="17" x2="12.01" y2="17"></line>
-                        </svg>
-                        <div>Crossref gibt für diese Publikation abweichend die folgende Lizenz an: 
-                            <a href="${fullUrl}" target="_blank" style="color: #9b1c1c; text-decoration: underline; font-weight: 700; margin-left: 4px;">${mappedCrossref}</a>
-                        </div>`;
+                    // Lizenz-URL und -Name kommen von Crossref (Verlagsangaben),
+                    // deshalb per DOM statt innerHTML.
+                    warningDiv.textContent = '';
+                    const svgNs = 'http://www.w3.org/2000/svg';
+                    const svg = document.createElementNS(svgNs, 'svg');
+                    [['width', '20'], ['height', '20'], ['viewBox', '0 0 24 24'], ['fill', 'none'], ['stroke', 'currentColor'],
+                     ['stroke-width', '2'], ['stroke-linecap', 'round'], ['stroke-linejoin', 'round'], ['style', 'flex-shrink: 0; color: #e02424;']]
+                        .forEach(([k, v]) => svg.setAttribute(k, v));
+                    const pfad = document.createElementNS(svgNs, 'path');
+                    pfad.setAttribute('d', 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z');
+                    svg.appendChild(pfad);
+                    [['12', '9', '12', '13'], ['12', '17', '12.01', '17']].forEach(([x1, y1, x2, y2]) => {
+                        const linie = document.createElementNS(svgNs, 'line');
+                        linie.setAttribute('x1', x1); linie.setAttribute('y1', y1);
+                        linie.setAttribute('x2', x2); linie.setAttribute('y2', y2);
+                        svg.appendChild(linie);
+                    });
+                    warningDiv.appendChild(svg);
+
+                    const textDiv = createEl('div', '', 'Crossref gibt für diese Publikation abweichend die folgende Lizenz an: ');
+                    const lizenzLink = createEl('a', '', mappedCrossref);
+                    // Nur http(s)-Links übernehmen, sonst bleibt es reiner Text
+                    if (/^https?:\/\//i.test(fullUrl || '')) {
+                        lizenzLink.href = fullUrl;
+                        lizenzLink.target = '_blank';
+                        lizenzLink.rel = 'noopener noreferrer';
+                    }
+                    lizenzLink.style.cssText = 'color: #9b1c1c; text-decoration: underline; font-weight: 700; margin-left: 4px;';
+                    textDiv.appendChild(lizenzLink);
+                    warningDiv.appendChild(textDiv);
                 }
                 if (warningDiv.style.display !== 'flex') {
                     warningDiv.style.display = 'flex';
@@ -8274,7 +8295,7 @@ function initBatchQcDashboard(pids) {
     pids.forEach((pid, idx) => {
         const item = document.createElement('div');
         item.style.cssText = 'padding: 10px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; cursor: pointer; user-select: none; transition: all 0.15s ease-in-out; word-break: break-all; font-weight: 500; color: #475569; box-shadow: 0 1px 2px rgba(0,0,0,0.02);';
-        item.innerHTML = `<strong>${pid}</strong>`;
+        item.appendChild(createEl('strong', '', pid));
         item.id = `batch-qc-item-${pid.replace(':', '-')}`;
 
         // Falls bereits freigegeben, optischen Akzent setzen
@@ -9291,8 +9312,9 @@ function initBatchQcDashboard(pids) {
                     form.addEventListener('submit', () => {
                         // Optimistically mark as done
                         const item = document.getElementById(`batch-qc-item-${currentPid.replace(':', '-')}`);
-                        if (item && !item.innerHTML.includes('✅')) {
-                            item.innerHTML = `✅ <strong>${currentPid}</strong>`;
+                        if (item && !item.textContent.includes('✅')) {
+                            item.textContent = '✅ ';
+                            item.appendChild(createEl('strong', '', currentPid));
                         }
                     });
                 }
