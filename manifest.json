@@ -38,6 +38,7 @@
   },
   "background": {
     "scripts": [
+      "iso4.js",
       "background.js"
     ]
   },
@@ -62,6 +63,7 @@
         "psi_data.js",
         "psi_affiliations.js",
         "pdf_abgleich.js",
+        "journal_neu.js",
         "content.js"
       ],
       "css": [

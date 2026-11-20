@@ -434,6 +434,70 @@ Upload wird nie blockiert.
 
 ---
 
+#### Journal neu erfassen
+
+Im Formular für ein neues Journal (`journals:collection` → Ingest) steht oben
+ein Kasten **„DORA-Helper: Journal neu erfassen“**:
+
+*   **Daten holen**: ISSN oder DOI eines Artikels aus dem Journal eingeben. Titel,
+    Publisher, ISSN und E-ISSN kommen von Crossref, frühere Titel von OpenAlex.
+    Leere Felder werden ausgefüllt, abweichende Werte erscheinen als Vorschlag mit
+    **übernehmen**.
+*   **Meldungen am Feld**: Fehler, Hinweise, Vorschläge, der Publisher-Hinweis, der
+    ISO-4-Vorschlag und gefundene Dubletten stehen direkt unter dem betroffenen Feld
+    (farbig hinterlegt). Der Kasten oben zeigt nur die Zusammenfassung
+    („2 Fehler, 1 Hinweis – siehe Meldungen direkt an den Feldern“) und die Liste
+    der Dubletten und ähnlichen Titel.
+*   **Abkürzung nach ISO 4**: Unter *Abbreviated Title* steht laufend ein Vorschlag,
+    berechnet aus der ISSN-Liste der Titelwort-Abkürzungen (LTWA). Die Berechnung
+    läuft lokal im Add-on (`iso4.js`, `ltwa.json`). Liefert Crossref eine Abkürzung
+    mit Punkten, hat diese Vorrang.
+*   **Dubletten-Check**: Eine einzelne Solr-Abfrage auf die Journal-Objekte
+    (`fq=PID:journals\:*`, höchstens 15 Treffer, feste Feldliste) nach ISSN, E-ISSN,
+    Titel und früheren Titeln. Gleiche ISSN oder gleicher Titel gilt als Dublette,
+    alles andere wird nur als ähnlicher Titel gezeigt. Jeder Treffer verlinkt auf das
+    Journal-Objekt. Die Abfrage läuft bei „Daten holen“ und wenn Titel oder ISSN
+    geändert werden. Sie braucht wie die übrigen Solr-Funktionen das interne Netz
+    bzw. VPN.
+*   **Prüfung**: ISSN-Form und -Prüfziffer, ISSN und E-ISSN identisch oder laut
+    Crossref vertauscht, Titel in Grossbuchstaben oder mit Satzzeichen am Ende.
+    Bei Fehlern fragt der Helper beim Speichern einmal nach.
+*   **Publisher in DORA-Schreibweise**: Der Name aus Crossref/OpenAlex wird nie
+    direkt übernommen. Gültig sind nur Namen, die DORA bei Journals schon verwendet
+    (Liste per Solr-Facette, 7 Tage zwischengespeichert). Regeln bilden Varianten
+    auf den Hausnamen ab (`PUBLISHER_REGELN` in `journal_neu.js`), z. B.
+    „Springer Science and Business Media LLC“, „Nature Publishing Group“,
+    „BioMed Central“ → **Springer Nature**; „Wiley-Blackwell“, „John Wiley & Sons“,
+    „Hindawi“, „American Geophysical Union“, „Ecological Society of America“ →
+    **Wiley**; „Pergamon“, „Cell Press“ → **Elsevier**. Danach folgt ein Vergleich
+    ohne Rechtsform („Walter de Gruyter GmbH“ → „de Gruyter“). Ohne Treffer bleibt
+    das Feld leer, mit Hinweis. Das Publisher-Feld bekommt eine Vorschlagsliste
+    aller DORA-Namen, und die Prüfung meldet Namen, die es in DORA noch nicht gibt.
+*   **Aus dem Artikel**: Neben *Journal Title* im Artikelformular zeigt der Helper
+    je nach Lage:
+    *   **✓ Journal in DORA: journals:…**, wenn das Journal schon verknüpft ist;
+    *   **↪ Vorhandenes Journal übernehmen**, wenn Solr es über ISSN oder Titel
+        findet (fehlt die ISSN im Formular, wird sie über die DOI bei Crossref
+        nachgeschlagen). Der Knopf setzt den Titel in DORA-Schreibweise und stösst
+        **⟳ Journal neu abfragen** an;
+    *   **＋ Journal neu anlegen** nur, wenn es das Journal nicht gibt. Öffnet das
+        Journal-Formular vorbefüllt in einem neuen Tab.
+
+    Geprüft wird beim Laden und wenn Titel oder ISSN geändert und das Feld
+    verlassen wird, nicht bei jedem Tastendruck.
+
+Achtung: Im Journal-Formular sind die internen Feldnamen vertauscht, die
+Beschriftungen stimmen. `identifiers[eissn]` heisst „ISSN“ und enthält die
+Print-ISSN, `identifiers[issn]` heisst „E-ISSN“. Der Helper trägt nach Beschriftung
+ein (Konstanten `FELD_PRINT`/`FELD_ONLINE` in `journal_neu.js`; geprüft an
+`journals:2964`).
+
+Die LTWA-Daten (Stand 2021-07, aus pyiso4) lassen sich mit
+`node scripts/build-ltwa.js <LTWA.csv>` durch eine neuere Fassung von issn.org
+ersetzen.
+
+---
+
 ### 5. Autocomplete for Form Fields
 The assistant provides intelligent autocomplete suggestions from the DORA Solr index.
 

@@ -763,6 +763,34 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    if (request.action === "journalDaten") {
+        journalDatenHolen(request)
+            .then(data => sendResponse({ success: !!data, data: data, error: data ? null : 'Weder Crossref noch OpenAlex kennen diese Angabe.' }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
+    if (request.action === "journalDubletten") {
+        journalDublettenSuchen(request)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
+    if (request.action === "doraPublisher") {
+        doraPublisherListe()
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
+    if (request.action === "iso4Abkuerzen") {
+        iso4Abkuerzen(request.titel)
+            .then(abk => sendResponse({ success: true, data: abk }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
     if (request.action === "analyzePdfUrl") {
         analyzePdfUrl(request.pdfUrl, request.institut)
             .then(data => sendResponse({ success: true, data: data }))
@@ -1452,6 +1480,170 @@ async function pdfAbgleichCrossref(doi) {
         titel: titel.filter(Boolean).slice(0, 4),
         autoren: (werk.author || []).map(a => a.family || a.name || '').filter(Boolean).slice(0, 10)
     };
+}
+
+// ---------------------------------------------------------------------------
+// Journal-Neuerfassung (journal_neu.js): Angaben ueber ISSN oder Artikel-DOI
+// holen und die Abkuerzung nach ISO 4 berechnen (iso4.js + ltwa.json).
+// ---------------------------------------------------------------------------
+let iso4Instanz = null;
+
+async function iso4Abkuerzen(titel) {
+    if (!titel || !String(titel).trim()) return '';
+    if (!iso4Instanz) {
+        const antwort = await fetch(chrome.runtime.getURL('ltwa.json'));
+        iso4Instanz = Iso4.erstellen(await antwort.json());
+    }
+    return iso4Instanz.abkuerzen(String(titel).trim());
+}
+
+// Dubletten-Check fuer neue Journals: eine einzige Solr-Abfrage auf die
+// Journal-Objekte (rund 6500), nach ISSN (Print und E-ISSN) und Titel-Phrase
+// (aktueller und fruehere Titel). Feste Feldliste, hoechstens 15 Treffer.
+const JOURNAL_SOLR_FL = ['PID', 'mods_titleInfo_title_s', 'mods_titleInfo_abbreviated_title_s', 'mods_originInfo_publisher_s',
+    'mods_identifier_issn_ms', 'mods_identifier_e-issn_ms'].join(',');
+
+function solrPhrase(text) {
+    return '"' + String(text).replace(/[\\"]/g, ' ').replace(/\s+/g, ' ').trim() + '"';
+}
+
+async function journalDublettenSuchen({ titel, fruehereTitel, issns }) {
+    const teile = [];
+    (issns || []).filter(i => /^\d{4}-\d{3}[\dX]$/.test(i)).slice(0, 4).forEach(i => {
+        teile.push(`mods_identifier_issn_ms:"${i}"`, `mods_identifier_e\\-issn_ms:"${i}"`);
+    });
+    [titel].concat(fruehereTitel || []).filter(t => t && String(t).trim().length > 2).slice(0, 6).forEach(t => {
+        teile.push(`mods_titleInfo_title_mt:${solrPhrase(t)}`);
+    });
+    if (!teile.length) return [];
+
+    const parameter = new URLSearchParams({
+        q: teile.join(' OR '),
+        fq: 'PID:journals\\:*',
+        fl: JOURNAL_SOLR_FL,
+        rows: '15',
+        wt: 'json'
+    });
+    const abbruch = new AbortController();
+    const uhr = setTimeout(() => abbruch.abort(), 8000);
+    try {
+        const antwort = await fetch(`${DORA_SOLR_SELECT}?${parameter}`, { signal: abbruch.signal });
+        if (!antwort.ok) throw new Error(`Solr antwortet mit HTTP ${antwort.status}`);
+        const json = await antwort.json();
+        return (json.response && json.response.docs || []).map(d => ({
+            pid: d.PID,
+            titel: d.mods_titleInfo_title_s || '',
+            abk: d.mods_titleInfo_abbreviated_title_s || '',
+            publisher: d.mods_originInfo_publisher_s || '',
+            issn: d.mods_identifier_issn_ms || [],
+            eissn: d['mods_identifier_e-issn_ms'] || []
+        }));
+    } catch (e) {
+        throw new Error(e.name === 'AbortError' ? 'Solr antwortet nicht (Zeitüberschreitung, VPN?)' : e.message);
+    } finally {
+        clearTimeout(uhr);
+    }
+}
+
+// Publisher-Namen, wie sie DORA bei Journals verwendet: eine Facetten-Abfrage
+// (rows=0), 7 Tage zwischengespeichert. Ergebnis: [[Name, Anzahl], ...]
+const PUBLISHER_CACHE_KEY = 'doraJournalPublisher';
+const PUBLISHER_CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
+
+async function doraPublisherListe() {
+    const gespeichert = (await chrome.storage.local.get(PUBLISHER_CACHE_KEY))[PUBLISHER_CACHE_KEY];
+    if (gespeichert && Date.now() - gespeichert.zeit < PUBLISHER_CACHE_TTL && gespeichert.liste.length) return gespeichert.liste;
+
+    const parameter = new URLSearchParams({
+        q: 'PID:journals\\:*', fl: 'PID', rows: '0', wt: 'json',
+        facet: 'true', 'facet.field': 'mods_originInfo_publisher_s', 'facet.limit': '-1', 'facet.mincount': '1'
+    });
+    try {
+        const antwort = await fetch(`${DORA_SOLR_SELECT}?${parameter}`);
+        if (!antwort.ok) throw new Error(`Solr antwortet mit HTTP ${antwort.status}`);
+        const f = (await antwort.json()).facet_counts.facet_fields.mods_originInfo_publisher_s || [];
+        const liste = [];
+        for (let i = 0; i < f.length; i += 2) liste.push([f[i], f[i + 1]]);
+        liste.sort((a, b) => b[1] - a[1]);
+        await chrome.storage.local.set({ [PUBLISHER_CACHE_KEY]: { zeit: Date.now(), liste } });
+        return liste;
+    } catch (e) {
+        // Lieber eine aeltere Liste als keine
+        if (gespeichert && gespeichert.liste.length) return gespeichert.liste;
+        throw e;
+    }
+}
+
+function issnNachTyp(issnTyp, issnListe) {
+    const ergebnis = { print: '', online: '' };
+    (issnTyp || []).forEach(e => {
+        if (e.type === 'print' && !ergebnis.print) ergebnis.print = e.value;
+        if (e.type === 'electronic' && !ergebnis.online) ergebnis.online = e.value;
+    });
+    // Ohne Typangabe: erste ISSN als Print, zweite als E-ISSN (nur als Vorschlag)
+    if (!ergebnis.print && !ergebnis.online && issnListe && issnListe.length) {
+        ergebnis.print = issnListe[0] || '';
+        ergebnis.online = issnListe[1] || '';
+    }
+    return ergebnis;
+}
+
+async function journalDatenHolen({ issn, doi }) {
+    const daten = { titel: '', publisher: '', print: '', online: '', abk: '', abkSicher: false, abkQuelle: '', fruehereTitel: [], quellen: [] };
+
+    if (doi) {
+        const werk = await holeJson(`https://api.crossref.org/works/${encodeURIComponent(doi)}?mailto=${PDF_KONTAKT}`);
+        const m = werk && werk.message;
+        if (m) {
+            daten.titel = (m['container-title'] || [])[0] || '';
+            daten.publisher = m.publisher || '';
+            Object.assign(daten, issnNachTyp(m['issn-type'], m.ISSN));
+            const kurz = (m['short-container-title'] || [])[0] || '';
+            if (kurz && kurz.includes('.')) { daten.abk = kurz; daten.abkSicher = true; daten.abkQuelle = 'Crossref'; }
+            daten.quellen.push('Crossref (Artikel)');
+            issn = issn || daten.print || daten.online;
+        }
+    }
+
+    if (issn) {
+        if (!daten.titel) {
+            const j = await holeJson(`https://api.crossref.org/journals/${encodeURIComponent(issn)}?mailto=${PDF_KONTAKT}`);
+            const m = j && j.message;
+            if (m) {
+                daten.titel = m.title || '';
+                daten.publisher = daten.publisher || m.publisher || '';
+                const typ = issnNachTyp(m['issn-type'], m.ISSN);
+                daten.print = daten.print || typ.print;
+                daten.online = daten.online || typ.online;
+                daten.quellen.push('Crossref (Journal)');
+            }
+        }
+        const oa = await holeJson(`https://api.openalex.org/sources/issn:${encodeURIComponent(issn)}?mailto=${PDF_KONTAKT}`
+            + '&select=display_name,host_organization_name,issn,alternate_titles,abbreviated_title');
+        if (oa && oa.display_name) {
+            daten.titel = daten.titel || oa.display_name;
+            daten.publisher = daten.publisher || oa.host_organization_name || '';
+            if (!daten.print && !daten.online) Object.assign(daten, issnNachTyp(null, oa.issn));
+            if (!daten.abk && oa.abbreviated_title && oa.abbreviated_title.includes('.')) {
+                daten.abk = oa.abbreviated_title; daten.abkSicher = true; daten.abkQuelle = 'OpenAlex';
+            }
+            // Fruehere Titel fuer den Dubletten-Check; "(Print)"-Varianten weglassen
+            const vergleich = t => String(t || '').toLowerCase().replace(/\(.*?\)/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+            const eigener = vergleich(daten.titel);
+            daten.fruehereTitel = (oa.alternate_titles || [])
+                .filter(t => vergleich(t) && vergleich(t) !== eigener)
+                .slice(0, 5);
+            daten.quellen.push('OpenAlex');
+        }
+    }
+
+    if (!daten.titel) return null;
+    if (!daten.abk) {
+        daten.abk = await iso4Abkuerzen(daten.titel);
+        daten.abkSicher = true;
+        daten.abkQuelle = 'ISO 4 (berechnet)';
+    }
+    return daten;
 }
 
 async function analyzePdf(dataUrl, institut) {
