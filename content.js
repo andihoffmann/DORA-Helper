@@ -6584,7 +6584,13 @@ function validateForm() {
         catch (e) { console.error('DORA Helper: Regel «' + name + '» abgebrochen.', e); }
     };
 
-    regel('Article Title', () => checkSentenceCase(titleEl, 'Article Title', errors));
+    // Journal-Objekte (MADS in journals:collection, Neuerfassung und Bearbeitung):
+    // der Titel ist der Journalname, ein Eigenname in Title Case - keine
+    // Sentence-case-Pruefung. Die Journal-Pruefung macht journal_neu.js.
+    const istJournalObjekt = /journals(%3A|:)/i.test(window.location.pathname);
+    if (!istJournalObjekt) {
+        regel('Article Title', () => checkSentenceCase(titleEl, 'Article Title', errors));
+    }
     regel('Conference Name', () => checkSentenceCase(confNameEl, 'Conference Name', errors));
     regel('Host Title', () => checkSentenceCase(procTitleEl,
         hostIstJournal ? 'Journal Title' : 'Proceedings Title', errors,
@@ -7878,7 +7884,7 @@ function isEditPage() {
 
     // Check URL patterns
     const loc = window.location.href;
-    if (loc.includes('/ingest') || loc.includes('/edit') || loc.includes('/manage') || loc.includes('lib4ridora_pdf_management')) return true;
+    if (loc.includes('/ingest') || loc.includes('/edit') || loc.includes('/manage') || loc.includes('lib4ridora_pdf_management') || loc.includes('lib4ridora_pdf_upload')) return true;
 
     return false;
 }

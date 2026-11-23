@@ -385,7 +385,7 @@ if (typeof document !== 'undefined' && typeof chrome !== 'undefined' && chrome.r
 
         function istUploadSeite() {
             const loc = window.location.href;
-            return /\/(ingest|manage|edit)\b|pdf_management|datastream/i.test(loc);
+            return /\/(ingest|manage|edit)\b|pdf_management|pdf_upload|datastream/i.test(loc);
         }
 
         function dateienPruefen(dateien) {
