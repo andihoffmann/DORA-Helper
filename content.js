@@ -1,5 +1,5 @@
 // content.js - Dora Lib4ri Helper
-// Version: 2.81
+// Version: 2.82
 
 let observerTimeout = null;
 let dragSrcEl = null;
